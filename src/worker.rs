@@ -5,7 +5,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::{BatchFn, BatchLimit};
+use crate::batcher::{BatchFn, BatchLimit};
 
 pub struct Worker<K, I, O, F> {
     state: Arc<Mutex<State<K, I, O>>>,
