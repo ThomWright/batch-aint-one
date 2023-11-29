@@ -1,6 +1,6 @@
-use std::{collections::HashMap, hash::Hash, sync::Arc};
+use std::{collections::HashMap, hash::Hash};
 
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     batch::Batch,
@@ -12,7 +12,7 @@ pub struct Worker<K, I, O, F> {
     /// Used to receive new batch items.
     item_rx: mpsc::Receiver<BatchItem<K, I, O>>,
     /// The callback to process a batch of inputs.
-    process_batch: F,
+    processor: F,
 
     /// Used to signal that a batch for key `K` should be processed.
     process_tx: mpsc::Sender<K>,
@@ -22,8 +22,8 @@ pub struct Worker<K, I, O, F> {
     /// Controls when to start processing a batch.
     limits: Limits<K, I, O>,
 
-    /// The batches.
-    state: Arc<Mutex<State<K, I, O>>>,
+    /// Unprocessed batches, grouped by key `K`.
+    batches: HashMap<K, Batch<K, I, O>>,
 }
 
 #[derive(Debug)]
@@ -33,35 +33,28 @@ pub struct BatchItem<K, I, O> {
     pub tx: oneshot::Sender<O>,
 }
 
-/// Unprocessed batches, grouped by `K`.
-#[derive(Debug)]
-struct State<K, I, O> {
-    batches: HashMap<K, Batch<K, I, O>>,
-}
-
 impl<K, I, O, F> Worker<K, I, O, F>
 where
-    K: Send + Sync + 'static + Eq + Hash + Clone,
-    I: Send + Sync + 'static,
-    O: Send + 'static,
-    F: BatchFn<I, O> + Send + Sync + 'static + Clone,
+    K: 'static + Send + Sync + Eq + Hash + Clone,
+    I: 'static + Send + Sync,
+    O: 'static + Send,
+    F: 'static + Send + Sync + Clone + BatchFn<I, O>,
 {
-    pub fn spawn(process_batch: F, limits: Limits<K, I, O>) -> mpsc::Sender<BatchItem<K, I, O>> {
+    pub fn spawn(processor: F, limits: Limits<K, I, O>) -> mpsc::Sender<BatchItem<K, I, O>> {
         let (item_tx, item_rx) = mpsc::channel(10);
 
         let (timeout_tx, timeout_rx) = mpsc::channel(10);
 
         let mut worker = Worker {
-            state: Arc::new(Mutex::new(State {
-                batches: HashMap::new(),
-            })),
             item_rx,
-            process_batch,
+            processor,
 
             process_tx: timeout_tx,
             process_rx: timeout_rx,
 
             limits,
+
+            batches: HashMap::new(),
         };
 
         tokio::spawn(async move {
@@ -72,12 +65,10 @@ where
     }
 
     /// Add an item to the batch.
-    async fn add(&self, item: BatchItem<K, I, O>) {
-        let mut state = self.state.lock().await;
-
+    async fn add(&mut self, item: BatchItem<K, I, O>) {
         let key = item.key.clone();
 
-        let batch = state
+        let batch = self
             .batches
             .entry(key.clone())
             .or_insert_with(|| Batch::new(key.clone()));
@@ -88,12 +79,10 @@ where
             let limit_result = limit.limit(batch);
             match limit_result {
                 LimitResult::Process => {
-                    let batch = state
+                    let batch = self
                         .batches
                         .remove(&key)
                         .expect("batch should exist (we just used it)");
-
-                    drop(state);
 
                     self.process(batch).await;
 
@@ -111,7 +100,7 @@ where
 
     async fn process(&self, mut batch: Batch<K, I, O>) {
         if batch.start_processing() {
-            let processor = self.process_batch.clone();
+            let processor = self.processor.clone();
 
             // Spawn a new task so we can process multiple batches concurrently,
             // without blocking the run loop.
@@ -128,12 +117,8 @@ where
         }
     }
 
-    async fn handle_timeout(&self, key: K) {
-        let mut state = self.state.lock().await;
-
-        let batch = state.batches.remove(&key).expect("batch should exist");
-
-        drop(state);
+    async fn handle_timeout(&mut self, key: K) {
+        let batch = self.batches.remove(&key).expect("batch should exist");
 
         self.process(batch).await;
     }

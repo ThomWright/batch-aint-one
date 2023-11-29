@@ -43,15 +43,15 @@ type Result<T> = std::result::Result<T, BatchError>;
 
 impl<K, I, O> Batcher<K, I, O>
 where
-    K: Send + Sync + 'static + Eq + Hash + Clone,
-    I: Send + Sync + 'static,
-    O: Send + 'static,
+    K: 'static + Send + Sync + Eq + Hash + Clone,
+    I: 'static + Send + Sync,
+    O: 'static + Send,
 {
-    pub(crate) fn new<F>(process_batch: F, limits: Limits<K, I, O>) -> Self
+    pub(crate) fn new<F>(processor: F, limits: Limits<K, I, O>) -> Self
     where
         F: BatchFn<I, O> + Send + Sync + 'static + Clone,
     {
-        let tx = Worker::spawn(process_batch, limits);
+        let tx = Worker::spawn(processor, limits);
 
         Self { tx }
     }

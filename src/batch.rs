@@ -13,9 +13,7 @@ pub struct Batch<K, I, O> {
     key: K,
     items: Vec<BatchItem<K, I, O>>,
 
-    // TODO: better name. Essentially: scheduled to be processed.
     processing: bool,
-
     timeout_deadline: Option<Instant>,
     timeout_handle: Option<JoinHandle<()>>,
 }
@@ -79,8 +77,8 @@ where
 
         if let Some(current_deadline) = self.timeout_deadline {
             if new_deadline < current_deadline {
-                self.timeout_deadline = Some(new_deadline);
                 self.cancel_timeout();
+                self.timeout_deadline = Some(new_deadline);
 
                 let key = self.key();
                 let tx = timeout_tx.clone();

@@ -53,7 +53,7 @@ impl DurationLimit {
 
 impl<K, I, O> LimitStrategy<K, I, O> for DurationLimit
 where
-    K: Clone + Send + Sync,
+    K: Send + Sync + Clone,
     I: Send + Sync,
     O: Send + Sync,
 {
@@ -74,7 +74,7 @@ impl DebounceLimit {
 
 impl<K, I, O> LimitStrategy<K, I, O> for DebounceLimit
 where
-    K: Clone + Send + Sync,
+    K: Send + Sync + Clone,
     I: Send + Sync,
     O: Send + Sync,
 {
