@@ -44,7 +44,7 @@ type Result<T> = std::result::Result<T, BatchError>;
 impl<K, I, O> Batcher<K, I, O>
 where
     K: 'static + Send + Sync + Eq + Hash + Clone,
-    I: 'static + Send + Sync,
+    I: 'static + Send,
     O: 'static + Send,
 {
     pub(crate) fn new<F>(processor: F, limits: Limits<K, I, O>) -> Self

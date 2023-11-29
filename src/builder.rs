@@ -25,7 +25,7 @@ where
 impl<K, I, O, F> BatcherBuilder<K, I, O, F>
 where
     K: 'static + Send + Sync + Eq + Hash + Clone,
-    I: 'static + Send + Sync,
+    I: 'static + Send,
     O: 'static + Send,
     F: 'static + Send + Sync + Clone + BatchFn<I, O>,
 {

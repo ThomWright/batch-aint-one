@@ -36,7 +36,7 @@ pub struct BatchItem<K, I, O> {
 impl<K, I, O, F> Worker<K, I, O, F>
 where
     K: 'static + Send + Sync + Eq + Hash + Clone,
-    I: 'static + Send + Sync,
+    I: 'static + Send,
     O: 'static + Send,
     F: 'static + Send + Sync + Clone + BatchFn<I, O>,
 {
@@ -84,7 +84,9 @@ where
                         .remove(&key)
                         .expect("batch should exist (we just used it)");
 
-                    self.process(batch).await;
+                    let processor = self.processor.clone();
+
+                    Self::process(processor, batch).await;
 
                     return;
                 }
@@ -98,15 +100,13 @@ where
         }
     }
 
-    async fn process(&self, mut batch: Batch<K, I, O>) {
+    async fn process(processor: F, mut batch: Batch<K, I, O>) {
         if batch.start_processing() {
-            let processor = self.processor.clone();
+            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<O>>) = batch.unzip_items();
 
             // Spawn a new task so we can process multiple batches concurrently,
             // without blocking the run loop.
             tokio::spawn(async move {
-                let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<O>>) = batch.unzip_items();
-
                 let outputs = processor.process_batch(inputs.into_iter()).await;
 
                 for (tx, output) in txs.into_iter().zip(outputs) {
@@ -119,8 +119,9 @@ where
 
     async fn handle_timeout(&mut self, key: K) {
         let batch = self.batches.remove(&key).expect("batch should exist");
+        let processor = self.processor.clone();
 
-        self.process(batch).await;
+        Self::process(processor, batch).await;
     }
 
     async fn run(&mut self) {
