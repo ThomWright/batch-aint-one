@@ -73,25 +73,21 @@ where
     }
 
     pub(crate) fn time_out_after(&mut self, duration: Duration, timeout_tx: &mpsc::Sender<K>) {
+        self.cancel_timeout();
+
         let new_deadline = Instant::now() + duration;
+        self.timeout_deadline = Some(new_deadline);
 
-        if let Some(current_deadline) = self.timeout_deadline {
-            if new_deadline < current_deadline {
-                self.cancel_timeout();
-                self.timeout_deadline = Some(new_deadline);
+        let key = self.key();
+        let tx = timeout_tx.clone();
 
-                let key = self.key();
-                let tx = timeout_tx.clone();
+        let new_handle = tokio::spawn(async move {
+            tokio::time::sleep_until(new_deadline).await;
 
-                let new_handle = tokio::spawn(async move {
-                    tokio::time::sleep_until(new_deadline).await;
+            // FIXME: handle error
+            tx.send(key).await.unwrap_or_else(|_| panic!("TODO: fix"));
+        });
 
-                    // FIXME: handle error
-                    tx.send(key).await.unwrap_or_else(|_| panic!("TODO: fix"));
-                });
-
-                self.timeout_handle = Some(new_handle);
-            }
-        }
+        self.timeout_handle = Some(new_handle);
     }
 }

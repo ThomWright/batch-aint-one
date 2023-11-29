@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     batch::Batch,
-    batcher::BatchFn,
+    batcher::Processor,
     limit::{LimitResult, Limits},
 };
 
@@ -38,7 +38,7 @@ where
     K: 'static + Send + Eq + Hash + Clone,
     I: 'static + Send,
     O: 'static + Send,
-    F: 'static + Send + Clone + BatchFn<I, O>,
+    F: 'static + Send + Clone + Processor<I, O>,
 {
     pub fn spawn(processor: F, limits: Limits<K, I, O>) -> mpsc::Sender<BatchItem<K, I, O>> {
         let (item_tx, item_rx) = mpsc::channel(10);
@@ -107,7 +107,7 @@ where
             // Spawn a new task so we can process multiple batches concurrently,
             // without blocking the run loop.
             tokio::spawn(async move {
-                let outputs = processor.process_batch(inputs.into_iter()).await;
+                let outputs = processor.process(inputs.into_iter()).await;
 
                 for (tx, output) in txs.into_iter().zip(outputs) {
                     // FIXME: handle error

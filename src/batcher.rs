@@ -35,8 +35,8 @@ pub enum BatchError {
 /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs in
 /// the given iterator.
 #[async_trait]
-pub trait BatchFn<I, O> {
-    async fn process_batch(&self, inputs: impl Iterator<Item = I>) -> Vec<O>;
+pub trait Processor<I, O> {
+    async fn process(&self, inputs: impl Iterator<Item = I>) -> Vec<O>;
 }
 
 type Result<T> = std::result::Result<T, BatchError>;
@@ -49,7 +49,7 @@ where
 {
     pub(crate) fn new<F>(processor: F, limits: Limits<K, I, O>) -> Self
     where
-        F: BatchFn<I, O> + Send + 'static + Clone,
+        F: 'static + Send + Clone + Processor<I, O>,
     {
         let tx = Worker::spawn(processor, limits);
 
