@@ -1,4 +1,4 @@
-use std::{hash::Hash, time::Duration};
+use std::hash::Hash;
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -7,7 +7,10 @@ use tokio::sync::{
     oneshot::{self, error::RecvError},
 };
 
-use crate::worker::{BatchItem, Worker};
+use crate::{
+    limit::Limits,
+    worker::{BatchItem, Worker},
+};
 
 /// Groups items to be processed in batches.
 ///
@@ -16,11 +19,6 @@ use crate::worker::{BatchItem, Worker};
 #[derive(Debug, Clone)]
 pub struct Batcher<K, I, O> {
     tx: mpsc::Sender<BatchItem<K, I, O>>,
-}
-
-pub enum BatchLimit {
-    Duration(Duration),
-    Size(usize),
 }
 
 #[derive(Error, Debug)]
@@ -34,7 +32,7 @@ pub enum BatchError {
 
 /// Process a batch of inputs.
 ///
-/// The order of the outputs in the returned `Vec` must be the same as the order as the inputs in
+/// The order of the outputs in the returned `Vec` must be the same as the order of the inputs in
 /// the given iterator.
 #[async_trait]
 pub trait BatchFn<I, O> {
@@ -49,11 +47,11 @@ where
     I: Send + Sync + 'static,
     O: Send + 'static,
 {
-    pub fn new<F>(batch_fn: F, limits: impl Iterator<Item = BatchLimit>) -> Self
+    pub(crate) fn new<F>(process_batch: F, limits: Limits<K, I, O>) -> Self
     where
-        F: BatchFn<I, O> + Send + Sync + 'static,
+        F: BatchFn<I, O> + Send + Sync + 'static + Clone,
     {
-        let tx = Worker::spawn(batch_fn, limits);
+        let tx = Worker::spawn(process_batch, limits);
 
         Self { tx }
     }
