@@ -66,7 +66,7 @@ impl<K, I, O> Batch<K, I, O> {
 
 impl<K, I, O> Batch<K, I, O>
 where
-    K: Clone + Send + 'static,
+    K: 'static + Send + Clone,
 {
     pub fn key(&self) -> K {
         self.key.clone()

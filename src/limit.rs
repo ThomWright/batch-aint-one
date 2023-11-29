@@ -51,12 +51,7 @@ impl DurationLimit {
     }
 }
 
-impl<K, I, O> LimitStrategy<K, I, O> for DurationLimit
-where
-    K: Send + Sync + Clone,
-    I: Send + Sync,
-    O: Send + Sync,
-{
+impl<K, I, O> LimitStrategy<K, I, O> for DurationLimit {
     fn limit(&self, batch: &Batch<K, I, O>) -> LimitResult {
         if batch.len() == 1 {
             LimitResult::ProcessAfter(self.duration)
@@ -72,12 +67,7 @@ impl DebounceLimit {
     }
 }
 
-impl<K, I, O> LimitStrategy<K, I, O> for DebounceLimit
-where
-    K: Send + Sync + Clone,
-    I: Send + Sync,
-    O: Send + Sync,
-{
+impl<K, I, O> LimitStrategy<K, I, O> for DebounceLimit {
     fn limit(&self, _: &Batch<K, I, O>) -> LimitResult {
         LimitResult::ProcessAfter(self.duration)
     }
