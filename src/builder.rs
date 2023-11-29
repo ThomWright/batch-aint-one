@@ -12,7 +12,7 @@ pub struct BatcherBuilder<K, I, O, F> {
 
 impl<K, I, O, F> BatcherBuilder<K, I, O, F>
 where
-    F: BatchFn<I, O> + Send + Sync,
+    F: BatchFn<I, O> + Send,
 {
     pub fn new(processor: F) -> Self {
         Self {
@@ -24,10 +24,10 @@ where
 
 impl<K, I, O, F> BatcherBuilder<K, I, O, F>
 where
-    K: 'static + Send + Sync + Eq + Hash + Clone,
+    K: 'static + Send + Eq + Hash + Clone,
     I: 'static + Send,
     O: 'static + Send,
-    F: 'static + Send + Sync + Clone + BatchFn<I, O>,
+    F: 'static + Send + Clone + BatchFn<I, O>,
 {
     /// Multiple limits can be set. The batch will be processed whenever one is reached.
     pub fn with_limit(mut self, limit: impl LimitStrategy<K, I, O> + 'static) -> Self {

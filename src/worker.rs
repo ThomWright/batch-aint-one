@@ -35,10 +35,10 @@ pub struct BatchItem<K, I, O> {
 
 impl<K, I, O, F> Worker<K, I, O, F>
 where
-    K: 'static + Send + Sync + Eq + Hash + Clone,
+    K: 'static + Send + Eq + Hash + Clone,
     I: 'static + Send,
     O: 'static + Send,
-    F: 'static + Send + Sync + Clone + BatchFn<I, O>,
+    F: 'static + Send + Clone + BatchFn<I, O>,
 {
     pub fn spawn(processor: F, limits: Limits<K, I, O>) -> mpsc::Sender<BatchItem<K, I, O>> {
         let (item_tx, item_rx) = mpsc::channel(10);
