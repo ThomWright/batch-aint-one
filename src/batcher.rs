@@ -18,21 +18,26 @@ pub struct Batcher<K, I, O> {
     tx: mpsc::Sender<BatchItem<K, I, O>>,
 }
 
+/// An error that occurred while trying to batch.
 #[derive(Error, Debug)]
 pub enum BatchError {
     // TODO: better error variants
+    /// Something went wrong while waiting for the output of a batch.
     #[error(transparent)]
     Rx(RecvError),
+
+    /// Something went wrong while submitting an input for processing.
     #[error("UIUUGGGHH")]
     Tx,
 }
 
 /// Process a batch of inputs.
-///
-/// The order of the outputs in the returned `Vec` must be the same as the order of the inputs in
-/// the given iterator.
 #[async_trait]
 pub trait Processor<I, O> {
+    /// Process the batch.
+    ///
+    /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs in
+    /// the given iterator.
     async fn process(&self, inputs: impl Iterator<Item = I>) -> Vec<O>;
 }
 
@@ -53,6 +58,7 @@ where
         Self { tx }
     }
 
+    /// Add an item to the batch.
     pub async fn add(&self, key: K, input: I) -> Result<O> {
         let (tx, rx) = oneshot::channel();
         self.tx.send(BatchItem { key, input, tx }).await?;

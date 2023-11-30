@@ -40,6 +40,7 @@ where
         self
     }
 
+    /// Create a new [Batcher].
     pub fn build(self) -> Batcher<K, I, O> {
         Batcher::new(
             self.processor,

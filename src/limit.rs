@@ -1,9 +1,14 @@
+/*!
+ * Limits to control when batches start processing.
+ */
+
 use std::{fmt::Debug, time::Duration};
 
 use crate::batch::Batch;
 
 /// Controls when processing starts for a batch.
 pub trait LimitStrategy<K, I, O>: Debug + Send + Sync {
+    /// Has the batch reached some limit which means we should start processing it?
     fn limit(&self, batch: &Batch<K, I, O>) -> LimitResult;
 }
 
@@ -39,6 +44,7 @@ pub struct DebounceLimit {
 }
 
 impl SizeLimit {
+    /// Create a limit on the size of a batch.
     pub fn new(size: usize) -> Self {
         Self { size }
     }
@@ -55,6 +61,7 @@ impl<K, I, O> LimitStrategy<K, I, O> for SizeLimit {
 }
 
 impl DurationLimit {
+    /// Create a limit on how long we wait for new items in a batch.
     pub fn new(duration: Duration) -> Self {
         Self { duration }
     }
@@ -71,6 +78,7 @@ impl<K, I, O> LimitStrategy<K, I, O> for DurationLimit {
 }
 
 impl DebounceLimit {
+    /// Create a limit on how long we wait in between new items being added to a batch.
     pub fn new(duration: Duration) -> Self {
         Self { duration }
     }
