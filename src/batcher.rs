@@ -7,10 +7,7 @@ use tokio::sync::{
     oneshot::{self, error::RecvError},
 };
 
-use crate::{
-    limit::Limits,
-    worker::{BatchItem, Worker},
-};
+use crate::{batch::BatchItem, limit::Limits, worker::Worker};
 
 /// Groups items to be processed in batches.
 ///

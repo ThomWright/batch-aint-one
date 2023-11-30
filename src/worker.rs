@@ -1,36 +1,29 @@
 use std::{collections::HashMap, hash::Hash};
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use crate::{
-    batch::Batch,
+    batch::{Batch, BatchItem, Generation, GenerationalBatch},
     batcher::Processor,
     limit::{LimitResult, Limits},
 };
 
-pub struct Worker<K, I, O, F> {
+pub(crate) struct Worker<K, I, O, F> {
     /// Used to receive new batch items.
     item_rx: mpsc::Receiver<BatchItem<K, I, O>>,
     /// The callback to process a batch of inputs.
     processor: F,
 
     /// Used to signal that a batch for key `K` should be processed.
-    process_tx: mpsc::Sender<K>,
+    process_tx: mpsc::Sender<(K, Generation)>,
     /// Receives signals to process a batch for key `K`.
-    process_rx: mpsc::Receiver<K>,
+    process_rx: mpsc::Receiver<(K, Generation)>,
 
     /// Controls when to start processing a batch.
     limits: Limits<K, I, O>,
 
     /// Unprocessed batches, grouped by key `K`.
-    batches: HashMap<K, Batch<K, I, O>>,
-}
-
-#[derive(Debug)]
-pub struct BatchItem<K, I, O> {
-    pub key: K,
-    pub input: I,
-    pub tx: oneshot::Sender<O>,
+    batches: HashMap<K, GenerationalBatch<K, I, O>>,
 }
 
 impl<K, I, O, F> Worker<K, I, O, F>
@@ -65,34 +58,30 @@ where
     }
 
     /// Add an item to the batch.
-    async fn add(&mut self, item: BatchItem<K, I, O>) {
+    fn add(&mut self, item: BatchItem<K, I, O>) {
         let key = item.key.clone();
 
         let batch = self
             .batches
             .entry(key.clone())
-            .or_insert_with(|| Batch::new(key.clone()));
+            .or_insert_with(|| GenerationalBatch::Batch(Batch::new(key.clone(), 0)));
 
-        batch.add_item(item);
+        let batch_inner = batch.add_item(item);
 
         for limit in self.limits.iter() {
-            let limit_result = limit.limit(batch);
+            let limit_result = limit.limit(batch_inner);
             match limit_result {
                 LimitResult::Process => {
-                    let batch = self
-                        .batches
-                        .remove(&key)
-                        .expect("batch should exist (we just used it)");
-
+                    let generation = batch_inner.generation();
                     let processor = self.processor.clone();
 
-                    Self::process(processor, batch).await;
+                    Self::process(processor, batch, generation);
 
                     return;
                 }
 
                 LimitResult::ProcessAfter(duration) => {
-                    batch.time_out_after(duration, &self.process_tx);
+                    batch_inner.time_out_after(duration, self.process_tx.clone());
                 }
 
                 LimitResult::DoNothing => {}
@@ -100,9 +89,10 @@ where
         }
     }
 
-    async fn process(processor: F, mut batch: Batch<K, I, O>) {
-        if batch.start_processing() {
-            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<O>>) = batch.unzip_items();
+    fn process(processor: F, batch: &mut GenerationalBatch<K, I, O>, generation: Generation) {
+        // Only process this batch if it's the correct generation.
+        if let Some(batch) = batch.take_batch(generation) {
+            let (inputs, txs) = batch.start_processing();
 
             // Spawn a new task so we can process multiple batches concurrently,
             // without blocking the run loop.
@@ -117,22 +107,23 @@ where
         }
     }
 
-    async fn handle_timeout(&mut self, key: K) {
-        let batch = self.batches.remove(&key).expect("batch should exist");
+    fn handle_timeout(&mut self, key: K, generation: Generation) {
         let processor = self.processor.clone();
+        let batch = self.batches.get_mut(&key).expect("batch should exist");
 
-        Self::process(processor, batch).await;
+        Self::process(processor, batch, generation);
     }
 
+    /// Start running the worker event loop.
     async fn run(&mut self) {
         loop {
             tokio::select! {
                 Some(item) = self.item_rx.recv() => {
-                    self.add(item).await;
+                    self.add(item);
                 }
 
-                Some(key) = self.process_rx.recv() => {
-                    self.handle_timeout(key).await;
+                Some((key, generation)) = self.process_rx.recv() => {
+                    self.handle_timeout(key, generation);
                 }
             }
         }
