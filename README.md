@@ -20,3 +20,13 @@ TODO:
 ```rust
 // TODO:
 ```
+
+## Roadmap
+
+- [ ] Tests
+- [ ] Better error handling
+- [ ] Garbage collection for old generation placeholders
+- [ ] Docs
+  - [ ] Why
+  - [ ] Examples
+- [ ] Observability
