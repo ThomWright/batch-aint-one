@@ -13,12 +13,49 @@ Batch up multiple items for processing as a single unit.
 
 TODO:
 
-## Examples
-
-TODO:
+## Example
 
 ```rust
-// TODO:
+use std::{marker::Send, sync::Arc};
+
+use async_trait::async_trait;
+use batch_aint_one::{
+    limit::SizeLimit,
+    Batch, BatcherBuilder, Processor,
+};
+
+#[derive(Debug, Clone)]
+struct SimpleBatchProcessor;
+
+#[async_trait]
+impl Processor<String, String> for SimpleBatchProcessor {
+    async fn process(&self, inputs: impl Iterator<Item = String> + Send) -> Vec<String> {
+        inputs.map(|s| s + " processed").collect()
+    }
+}
+
+tokio_test::block_on(async {
+    let batcher = Arc::new(BatcherBuilder::new(SimpleBatchProcessor)
+        .with_limit(SizeLimit::new(2))
+        .build());
+
+    // Request handler 1
+    let b1 = batcher.clone();
+    tokio::spawn(async move {
+        let fo1 = b1.add("A".to_string(), "1".to_string()).await.unwrap();
+
+        assert_eq!("1 processed".to_string(), fo1.await.unwrap());
+
+    });
+
+    // Request handler 2
+    let b2 = batcher.clone();
+    tokio::spawn(async move {
+        let fo2 = b2.add("A".to_string(), "2".to_string()).await.unwrap();
+
+        assert_eq!("2 processed".to_string(), fo2.await.unwrap());
+    });
+});
 ```
 
 ## Roadmap
