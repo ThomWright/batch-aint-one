@@ -1,11 +1,12 @@
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     batch::{Batch, BatchItem, Generation, GenerationalBatch},
     batcher::Processor,
     limit::{LimitResult, Limits},
+    BatchError,
 };
 
 pub(crate) struct Worker<K, I, O, F> {
@@ -26,6 +27,12 @@ pub(crate) struct Worker<K, I, O, F> {
     batches: HashMap<K, GenerationalBatch<K, I, O>>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct WorkerHandle<K, I, O> {
+    handle: Arc<JoinHandle<()>>,
+    tx: mpsc::Sender<BatchItem<K, I, O>>,
+}
+
 impl<K, I, O, F> Worker<K, I, O, F>
 where
     K: 'static + Send + Eq + Hash + Clone,
@@ -33,7 +40,7 @@ where
     O: 'static + Send,
     F: 'static + Send + Clone + Processor<I, O>,
 {
-    pub fn spawn(processor: F, limits: Limits<K, I, O>) -> mpsc::Sender<BatchItem<K, I, O>> {
+    pub fn spawn(processor: F, limits: Limits<K, I, O>) -> WorkerHandle<K, I, O> {
         let (item_tx, item_rx) = mpsc::channel(10);
 
         let (timeout_tx, timeout_rx) = mpsc::channel(10);
@@ -50,11 +57,14 @@ where
             batches: HashMap::new(),
         };
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             worker.run().await;
         });
 
-        item_tx
+        WorkerHandle {
+            handle: Arc::new(handle),
+            tx: item_tx,
+        }
     }
 
     /// Add an item to the batch.
@@ -127,5 +137,79 @@ where
                 }
             }
         }
+    }
+}
+
+impl<K, I, O> WorkerHandle<K, I, O> {
+    pub async fn send(&self, value: BatchItem<K, I, O>) -> Result<(), BatchError> {
+        Ok(self.tx.send(value).await?)
+    }
+}
+
+impl<K, I, O> Drop for WorkerHandle<K, I, O> {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use async_trait::async_trait;
+    use tokio::sync::oneshot;
+
+    use crate::limit::SizeLimit;
+
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    struct SimpleBatchProcessor;
+
+    #[async_trait]
+    impl Processor<String, String> for SimpleBatchProcessor {
+        async fn process(&self, inputs: impl Iterator<Item = String> + Send) -> Vec<String> {
+            inputs.map(|s| s + " processed").collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn simple_test_over_channel() {
+        let worker_handle = Worker::<String, _, _, _>::spawn(
+            SimpleBatchProcessor,
+            vec![Box::new(SizeLimit::new(2))],
+        );
+
+        let rx1 = {
+            let (tx, rx) = oneshot::channel();
+            worker_handle
+                .send(BatchItem {
+                    key: "K1".to_string(),
+                    input: "I1".to_string(),
+                    tx,
+                })
+                .await
+                .unwrap();
+
+            rx
+        };
+
+        let rx2 = {
+            let (tx, rx) = oneshot::channel();
+            worker_handle
+                .send(BatchItem {
+                    key: "K1".to_string(),
+                    input: "I2".to_string(),
+                    tx,
+                })
+                .await
+                .unwrap();
+
+            rx
+        };
+
+        let o1 = rx1.await.unwrap();
+        let o2 = rx2.await.unwrap();
+
+        assert_eq!(o1, "I1 processed".to_string());
+        assert_eq!(o2, "I2 processed".to_string());
     }
 }

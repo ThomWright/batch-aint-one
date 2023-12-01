@@ -12,8 +12,11 @@ doctest!("../README.md");
 mod batch;
 mod batcher;
 mod builder;
+mod error;
 pub mod limit;
 mod worker;
 
-pub use batcher::{BatchError, Batcher, Processor};
+pub use batch::Batch;
+pub use batcher::{Batcher, Processor};
 pub use builder::BatcherBuilder;
+pub use error::BatchError;

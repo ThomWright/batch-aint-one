@@ -23,10 +23,10 @@ TODO:
 
 ## Roadmap
 
-- [ ] Tests
+- [x] Tests
 - [ ] Better error handling
 - [ ] Garbage collection for old generation placeholders
 - [ ] Docs
-  - [ ] Why
-  - [ ] Examples
+  - [ ] Why – motivating example
+  - [ ] Code examples
 - [ ] Observability

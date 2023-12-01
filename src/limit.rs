@@ -15,6 +15,7 @@ pub trait LimitStrategy<K, I, O>: Debug + Send + Sync {
 pub(crate) type Limits<K, I, O> = Vec<Box<dyn LimitStrategy<K, I, O>>>;
 
 /// Whether a batch limit has been hit.
+#[derive(Debug)]
 pub enum LimitResult {
     /// Process now.
     Process,

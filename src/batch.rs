@@ -13,6 +13,7 @@ pub(crate) struct BatchItem<K, I, O> {
     pub tx: oneshot::Sender<O>,
 }
 
+/// A batch of items to process.
 #[derive(Debug)]
 pub struct Batch<K, I, O> {
     key: K,
@@ -46,8 +47,16 @@ impl<K, I, O> Batch<K, I, O> {
         }
     }
 
+    /// The size of the batch.
     pub fn len(&self) -> usize {
         self.items.len()
+    }
+
+    /// Returns whether this batch is empty.
+    ///
+    /// Just appeasing clippy. Batches should not be observed to be empty.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
     }
 
     pub(crate) fn generation(&self) -> Generation {
@@ -58,6 +67,7 @@ impl<K, I, O> Batch<K, I, O> {
         self.generation == generation
     }
 
+    /// Get the key for this batch, by reference.
     pub fn key_ref(&self) -> &K {
         &self.key
     }
@@ -86,6 +96,7 @@ impl<K, I, O> Batch<K, I, O>
 where
     K: Clone,
 {
+    /// Get the key for this batch.
     pub fn key(&self) -> K {
         self.key.clone()
     }
