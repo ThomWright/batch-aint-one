@@ -16,6 +16,7 @@ tokio = { version = "1.33.0", features = [
   "rt",
   "macros",
 ] }
+tracing = "0.1.40"
 
 [dev-dependencies]
 doc-comment = "0.3.3"

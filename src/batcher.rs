@@ -3,6 +3,7 @@ use std::{future::Future, hash::Hash};
 use async_trait::async_trait;
 use pin_project::pin_project;
 use tokio::sync::oneshot;
+use tracing::Span;
 
 use crate::{
     batch::BatchItem,
@@ -32,8 +33,8 @@ pub struct AddedToBatch<O> {
 pub trait Processor<I, O> {
     /// Process the batch.
     ///
-    /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs in
-    /// the given iterator.
+    /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs
+    /// in the given iterator.
     async fn process(&self, inputs: impl Iterator<Item = I> + Send) -> Vec<O>;
 }
 
@@ -55,9 +56,20 @@ where
     /// Add an item to the batch.
     ///
     /// The returned future adds the item to the batch.
+    ///
     pub async fn add(&self, key: K, input: I) -> Result<AddedToBatch<O>> {
+        // Record the span ID so we can link the shared processing span.
+        let span_id = Span::current().id();
+
         let (tx, rx) = oneshot::channel();
-        self.worker.send(BatchItem { key, input, tx }).await?;
+        self.worker
+            .send(BatchItem {
+                key,
+                input,
+                tx,
+                span_id,
+            })
+            .await?;
 
         Ok(AddedToBatch { rx })
     }
@@ -66,8 +78,17 @@ where
     ///
     /// The returned future adds the item to the batch and awaits the result.
     pub async fn add_and_wait(&self, key: K, input: I) -> Result<O> {
+        let span_id = Span::current().id();
+
         let (tx, rx) = oneshot::channel();
-        self.worker.send(BatchItem { key, input, tx }).await?;
+        self.worker
+            .send(BatchItem {
+                key,
+                input,
+                tx,
+                span_id,
+            })
+            .await?;
 
         Ok(rx.await?)
     }

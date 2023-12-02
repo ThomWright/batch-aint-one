@@ -5,12 +5,18 @@ use tokio::{
     task::JoinHandle,
     time::Instant,
 };
+use tracing::{span, Instrument, Level};
+
+use crate::Processor;
 
 #[derive(Debug)]
 pub(crate) struct BatchItem<K, I, O> {
     pub key: K,
     pub input: I,
+    /// Used to send the output back.
     pub tx: oneshot::Sender<O>,
+    /// This item was added to the batch as part of this span.
+    pub span_id: Option<span::Id>,
 }
 
 /// A batch of items to process.
@@ -81,15 +87,6 @@ impl<K, I, O> Batch<K, I, O> {
             handle.abort();
         }
     }
-
-    pub(crate) fn start_processing(mut self) -> (Vec<I>, Vec<oneshot::Sender<O>>) {
-        self.cancel_timeout();
-
-        self.items
-            .into_iter()
-            .map(|item| (item.input, item.tx))
-            .unzip()
-    }
 }
 
 impl<K, I, O> Batch<K, I, O>
@@ -99,6 +96,44 @@ where
     /// Get the key for this batch.
     pub fn key(&self) -> K {
         self.key.clone()
+    }
+}
+
+impl<K, I, O> Batch<K, I, O>
+where
+    K: 'static + Send,
+    I: 'static + Send,
+    O: 'static + Send,
+{
+    pub(crate) fn process<F>(mut self, processor: F)
+    where
+        F: 'static + Send + Clone + Processor<I, O>,
+    {
+        self.cancel_timeout();
+
+        // Spawn a new task so we can process multiple batches concurrently, without blocking the
+        // run loop.
+        tokio::spawn(async move {
+            let span = span!(Level::DEBUG, "process batch");
+
+            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<O>>) = self
+                .items
+                .into_iter()
+                .map(|item| {
+                    // Link the shared batch processing span to the span for each batch item.
+                    span.follows_from(item.span_id);
+
+                    (item.input, item.tx)
+                })
+                .unzip();
+
+            let outputs = processor.process(inputs.into_iter()).instrument(span).await;
+
+            for (tx, output) in txs.into_iter().zip(outputs) {
+                // FIXME: handle error
+                tx.send(output).unwrap_or_else(|_| panic!("TODO: fix"));
+            }
+        });
     }
 }
 

@@ -102,18 +102,7 @@ where
     fn process(processor: F, batch: &mut GenerationalBatch<K, I, O>, generation: Generation) {
         // Only process this batch if it's the correct generation.
         if let Some(batch) = batch.take_batch(generation) {
-            let (inputs, txs) = batch.start_processing();
-
-            // Spawn a new task so we can process multiple batches concurrently,
-            // without blocking the run loop.
-            tokio::spawn(async move {
-                let outputs = processor.process(inputs.into_iter()).await;
-
-                for (tx, output) in txs.into_iter().zip(outputs) {
-                    // FIXME: handle error
-                    tx.send(output).unwrap_or_else(|_| panic!("TODO: fix"));
-                }
-            });
+            batch.process(processor);
         }
     }
 
@@ -185,6 +174,7 @@ mod test {
                     key: "K1".to_string(),
                     input: "I1".to_string(),
                     tx,
+                    span_id: None,
                 })
                 .await
                 .unwrap();
@@ -199,6 +189,7 @@ mod test {
                     key: "K1".to_string(),
                     input: "I2".to_string(),
                     tx,
+                    span_id: None,
                 })
                 .await
                 .unwrap();
