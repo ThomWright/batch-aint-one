@@ -1,6 +1,6 @@
 # Batch ain't one
 
-![GitHub Workflow Status](https://img.shields.io/github/workflow/status/ThomWright/batch-aint-one/ci)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/ThomWright/batch-aint-one/ci.yaml?branch=main)
 ![GitHub](https://img.shields.io/github/license/ThomWright/batch-aint-one)
 ![Crates.io](https://img.shields.io/crates/v/batch-aint-one)
 ![docs.rs](https://img.shields.io/docsrs/batch-aint-one)
@@ -61,9 +61,9 @@ tokio_test::block_on(async {
 ## Roadmap
 
 - [x] Tests
-- [ ] Better error handling
+- [x] Better error handling
 - [ ] Garbage collection for old generation placeholders
 - [ ] Docs
   - [ ] Why – motivating example
-  - [ ] Code examples
-- [ ] Observability
+  - [x] Code examples
+- [x] Observability

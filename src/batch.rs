@@ -1,11 +1,11 @@
-use std::time::Duration;
+use std::{mem, time::Duration};
 
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
     time::Instant,
 };
-use tracing::{span, Instrument, Level};
+use tracing::{debug, span, Instrument, Level};
 
 use crate::Processor;
 
@@ -116,11 +116,17 @@ where
         tokio::spawn(async move {
             let span = span!(Level::DEBUG, "process batch");
 
-            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<O>>) = self
-                .items
+            // Replace with a placeholder to keep the Drop impl working. TODO: is there a better
+            // way?!
+            let mut items = Vec::new();
+            mem::swap(&mut self.items, &mut items);
+
+            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<O>>) = items
                 .into_iter()
                 .map(|item| {
-                    // Link the shared batch processing span to the span for each batch item.
+                    // Link the shared batch processing span to the span for each batch item. We
+                    // don't use a parent relationship because that's 1:many (parent:child), and
+                    // this is many:1.
                     span.follows_from(item.span_id);
 
                     (item.input, item.tx)
@@ -130,8 +136,12 @@ where
             let outputs = processor.process(inputs.into_iter()).instrument(span).await;
 
             for (tx, output) in txs.into_iter().zip(outputs) {
-                // FIXME: handle error
-                tx.send(output).unwrap_or_else(|_| panic!("TODO: fix"));
+                if tx.send(output).is_err() {
+                    // Whatever was waiting for the output must have shut down. Presumably it
+                    // doesn't care anymore, but we log here anyway. There's not much else we can do
+                    // here.
+                    debug!("Unable to send output over oneshot channel. Receiver deallocated.");
+                }
             }
         });
     }
@@ -153,13 +163,22 @@ where
         let new_handle = tokio::spawn(async move {
             tokio::time::sleep_until(new_deadline).await;
 
-            // FIXME: handle error
-            tx.send((key, generation))
-                .await
-                .unwrap_or_else(|_| panic!("TODO: fix"));
+            if tx.send((key, generation)).await.is_err() {
+                // The worker must have shut down. In this case, we don't want to process any more
+                // batches anyway.
+                debug!("A batch reached a timeout but the worker has shut down");
+            }
         });
 
         self.timeout_handle = Some(new_handle);
+    }
+}
+
+impl<K, I, O> Drop for Batch<K, I, O> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.timeout_handle.take() {
+            handle.abort();
+        }
     }
 }
 
