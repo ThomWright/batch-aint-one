@@ -100,6 +100,8 @@ async fn strategy_sequential() {
     assert_duration!(d, processing_dur * 2, std::time::Duration::from_millis(2));
 }
 
+// TODO: test what happens if we add items to a key when no batch is running for Sequential
+
 #[macro_export]
 macro_rules! assert_elapsed {
     ($start:expr, $dur:expr, $tolerance:expr) => {{
