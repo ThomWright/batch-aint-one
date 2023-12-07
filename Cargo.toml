@@ -7,15 +7,8 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1.74"
-pin-project = "1.1.3"
 thiserror = "1.0.50"
-tokio = { version = "1.33.0", features = [
-  "sync",
-  "time",
-  "tracing",
-  "rt",
-  "macros",
-] }
+tokio = { version = "1.33.0", features = ["sync", "time", "tracing", "rt"] }
 tracing = "0.1.40"
 
 [dev-dependencies]

@@ -11,7 +11,29 @@ Batch up multiple items for processing as a single unit.
 
 ## Why
 
-TODO:
+Sometimes it is more efficient to process many items at once rather than one at a time. Especially when the processing step has overheads which can be shared between many items.
+
+### Example: Inserting multiple rows
+
+For example, each database operation, such as an `INSERT`, has the overhead of a round trip to the database.
+
+![Unbatched example](./docs/images/example-insert-unbatched.png)
+
+Multi-row inserts can share this overhead between many items. This also allows us to share a single database connection to insert these three items, potentially reducing contention if the connection pool is highly utilised.
+
+![Batched example](./docs/images/example-insert-batched.png)
+
+### Example: With locking and transactions
+
+Insert into database tables can often be done concurrently. In cases where these must be done serially, throughput can suffer. In the example below, six round trips to the database are necessary for each item. All subsequent items must wait until this is finished.
+
+If each round trip takes 1ms, then this results in a minimum of 6ms per item, or 167 items/sec maximum.
+
+![Unbatched example](./docs/images/example-unbatched.png)
+
+With batching, we can improve the throughput. Acquiring/releasing the lock and beginning/committing the transaction can be shared for the whole batch. With four items per batch, we can increase the theoretical maximum throughput to 667 items/sec. In reality each `INSERT` will take longer, but the multi-row inserts are likely to share some overheads in a similar way.
+
+![Batched example](./docs/images/example-batched.png)
 
 ## Example
 
@@ -19,10 +41,7 @@ TODO:
 use std::{marker::Send, sync::Arc};
 
 use async_trait::async_trait;
-use batch_aint_one::{
-    limit::SizeLimit,
-    Batch, BatcherBuilder, Processor,
-};
+use batch_aint_one::{Batcher, Processor, BatchingStrategy};
 
 #[derive(Debug, Clone)]
 struct SimpleBatchProcessor;
@@ -35,25 +54,23 @@ impl Processor<String, String> for SimpleBatchProcessor {
 }
 
 tokio_test::block_on(async {
-    let batcher = Arc::new(BatcherBuilder::new(SimpleBatchProcessor)
-        .with_limit(SizeLimit::new(2))
-        .build());
+    let batcher = Arc::new(Batcher::new(SimpleBatchProcessor, BatchingStrategy::Size(2)));
 
     // Request handler 1
     let b1 = batcher.clone();
     tokio::spawn(async move {
-        let fo1 = b1.add("A".to_string(), "1".to_string()).await.unwrap();
+        let output = b1.add("A".to_string(), "1".to_string()).await.unwrap();
 
-        assert_eq!("1 processed".to_string(), fo1.await.unwrap());
+        assert_eq!("1 processed".to_string(), output);
 
     });
 
     // Request handler 2
     let b2 = batcher.clone();
     tokio::spawn(async move {
-        let fo2 = b2.add("A".to_string(), "2".to_string()).await.unwrap();
+        let output = b2.add("A".to_string(), "2".to_string()).await.unwrap();
 
-        assert_eq!("2 processed".to_string(), fo2.await.unwrap());
+        assert_eq!("2 processed".to_string(), output);
     });
 });
 ```
@@ -63,7 +80,7 @@ tokio_test::block_on(async {
 - [x] Tests
 - [x] Better error handling
 - [ ] Garbage collection for old generation placeholders
-- [ ] Docs
-  - [ ] Why – motivating example
+- [x] Docs
+  - [x] Why – motivating example
   - [x] Code examples
 - [x] Observability

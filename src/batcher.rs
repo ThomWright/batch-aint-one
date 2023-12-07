@@ -1,15 +1,14 @@
-use std::{future::Future, hash::Hash};
+use std::{hash::Hash};
 
 use async_trait::async_trait;
-use pin_project::pin_project;
 use tokio::sync::oneshot;
 use tracing::Span;
 
 use crate::{
     batch::BatchItem,
     error::Result,
-    limit::Limits,
     worker::{Worker, WorkerHandle},
+    BatchingStrategy,
 };
 
 /// Groups items to be processed in batches.
@@ -17,15 +16,8 @@ use crate::{
 /// Takes inputs (`I`) grouped by a key (`K`) and processes multiple together in a batch. An output
 /// (`O`) is produced for each input.
 #[derive(Debug, Clone)]
-pub struct Batcher<K, I, O> {
+pub struct Batcher<K, I, O = ()> {
     worker: WorkerHandle<K, I, O>,
-}
-
-/// Awaits the output for an item added to a batch.
-#[pin_project]
-pub struct AddedToBatch<O> {
-    #[pin]
-    rx: oneshot::Receiver<O>,
 }
 
 /// Process a batch of inputs.
@@ -44,20 +36,18 @@ where
     I: 'static + Send,
     O: 'static + Send,
 {
-    pub(crate) fn new<F>(processor: F, limits: Limits<K, I, O>) -> Self
+    /// Create a new batcher.
+    pub fn new<F>(processor: F, batching_strategy: BatchingStrategy) -> Self
     where
         F: 'static + Send + Clone + Processor<I, O>,
     {
-        let handle = Worker::spawn(processor, limits);
+        let handle = Worker::spawn(processor, batching_strategy);
 
         Self { worker: handle }
     }
 
-    /// Add an item to the batch.
-    ///
-    /// The returned future adds the item to the batch.
-    ///
-    pub async fn add(&self, key: K, input: I) -> Result<AddedToBatch<O>> {
+    /// Add an item to the batch and await the result.
+    pub async fn add(&self, key: K, input: I) -> Result<O> {
         // Record the span ID so we can link the shared processing span.
         let span_id = Span::current().id();
 
@@ -71,37 +61,6 @@ where
             })
             .await?;
 
-        Ok(AddedToBatch { rx })
-    }
-
-    /// Add an item to the batch.
-    ///
-    /// The returned future adds the item to the batch and awaits the result.
-    pub async fn add_and_wait(&self, key: K, input: I) -> Result<O> {
-        let span_id = Span::current().id();
-
-        let (tx, rx) = oneshot::channel();
-        self.worker
-            .send(BatchItem {
-                key,
-                input,
-                tx,
-                span_id,
-            })
-            .await?;
-
         Ok(rx.await?)
-    }
-}
-
-impl<O> Future for AddedToBatch<O> {
-    type Output = Result<O>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let this = self.project();
-        this.rx.poll(cx).map_err(|err| err.into())
     }
 }

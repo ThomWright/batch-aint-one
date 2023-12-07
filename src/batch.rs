@@ -1,4 +1,11 @@
-use std::{mem, time::Duration};
+use std::{
+    mem,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -21,16 +28,26 @@ pub(crate) struct BatchItem<K, I, O> {
 
 /// A batch of items to process.
 #[derive(Debug)]
-pub struct Batch<K, I, O> {
+pub(crate) struct Batch<K, I, O> {
     key: K,
     generation: u32,
     items: Vec<BatchItem<K, I, O>>,
 
     timeout_deadline: Option<Instant>,
     timeout_handle: Option<JoinHandle<()>>,
+
+    process_next: Option<mpsc::Sender<(K, Generation)>>,
+    key_currently_processing: Arc<AtomicBool>,
 }
 
 pub(crate) type Generation = u32;
+
+pub(crate) struct NextGen<K> {
+    key: K,
+    generation: Generation,
+    process_next: Option<mpsc::Sender<(K, Generation)>>,
+    key_currently_processing: Arc<AtomicBool>,
+}
 
 /// Generations are used to handle the case where a timer goes off after the associated batch has
 /// already been processed, and a new batch has already been created with the same key.
@@ -38,31 +55,38 @@ pub(crate) type Generation = u32;
 /// TODO: garbage collection of old generation placeholders.
 pub(crate) enum GenerationalBatch<K, I, O> {
     Batch(Batch<K, I, O>),
-    NextGeneration(Generation),
+    NextGeneration(NextGen<K>),
 }
 
 impl<K, I, O> Batch<K, I, O> {
-    pub(crate) fn new(key: K, generation: Generation) -> Self {
+    pub(crate) fn new(
+        key: K,
+        gen: Option<NextGen<K>>,
+        process_next: Option<mpsc::Sender<(K, Generation)>>,
+    ) -> Self {
         Self {
             key,
-            generation,
+            generation: gen.as_ref().map(|g| g.generation).unwrap_or_default(),
             items: Vec::default(),
 
             timeout_deadline: None,
             timeout_handle: None,
+
+            process_next,
+            key_currently_processing: gen
+                .map(|g| g.key_currently_processing.clone())
+                .unwrap_or_default(),
         }
     }
 
     /// The size of the batch.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.items.len()
     }
 
-    /// Returns whether this batch is empty.
-    ///
-    /// Just appeasing clippy. Batches should not be observed to be empty.
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+    pub(crate) fn is_running(&self) -> bool {
+        self.key_currently_processing
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub(crate) fn generation(&self) -> Generation {
@@ -71,11 +95,6 @@ impl<K, I, O> Batch<K, I, O> {
 
     pub(crate) fn is_generation(&self, generation: Generation) -> bool {
         self.generation == generation
-    }
-
-    /// Get the key for this batch, by reference.
-    pub fn key_ref(&self) -> &K {
-        &self.key
     }
 
     pub(crate) fn add_item(&mut self, item: BatchItem<K, I, O>) {
@@ -101,7 +120,7 @@ where
 
 impl<K, I, O> Batch<K, I, O>
 where
-    K: 'static + Send,
+    K: 'static + Send + Clone,
     I: 'static + Send,
     O: 'static + Send,
 {
@@ -109,6 +128,8 @@ where
     where
         F: 'static + Send + Clone + Processor<I, O>,
     {
+        self.key_currently_processing.store(true, Ordering::Release);
+
         self.cancel_timeout();
 
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
@@ -143,6 +164,21 @@ where
                     debug!("Unable to send output over oneshot channel. Receiver deallocated.");
                 }
             }
+
+            self.key_currently_processing.store(true, Ordering::Release);
+
+            // We're finished with this batch, maybe we can process the next one
+            if let Some(tx) = self.process_next.as_ref() {
+                if tx
+                    .send((self.key.clone(), self.generation.wrapping_add(1)))
+                    .await
+                    .is_err()
+                {
+                    // The worker must have shut down. In this case, we don't want to process any more
+                    // batches anyway.
+                    debug!("Tried to signal a batch had finished but the worker has shut down");
+                }
+            };
         });
     }
 }
@@ -174,6 +210,25 @@ where
     }
 }
 
+impl<K, I, O> From<&NextGen<K>> for Batch<K, I, O>
+where
+    K: Clone,
+{
+    fn from(gen: &NextGen<K>) -> Self {
+        Self {
+            key: gen.key.clone(),
+            generation: gen.generation,
+            items: Vec::default(),
+
+            timeout_deadline: None,
+            timeout_handle: None,
+
+            process_next: gen.process_next.clone(),
+            key_currently_processing: gen.key_currently_processing.clone(),
+        }
+    }
+}
+
 impl<K, I, O> Drop for Batch<K, I, O> {
     fn drop(&mut self) {
         if let Some(handle) = self.timeout_handle.take() {
@@ -195,7 +250,8 @@ where
             }
 
             Self::NextGeneration(generation) => {
-                let mut new_batch = Batch::new(item.key.clone(), *generation);
+                // let generation = std::mem::replace(generation, NextGen { key: (), generation: (), finished: (), key_currently_processing: () })
+                let mut new_batch = Batch::from(&*generation);
                 new_batch.add_item(item);
 
                 *self = Self::Batch(new_batch);
@@ -210,12 +266,21 @@ where
 
     /// If a batch exists for the given generation, returns it and replaces it with a
     /// `NextGeneration` placeholder.
-    pub fn take_batch(&mut self, generation: Generation) -> Option<Batch<K, I, O>> {
+    pub fn take_batch_for_processing(&mut self, generation: Generation) -> Option<Batch<K, I, O>> {
         match self {
             Self::Batch(batch) if batch.is_generation(generation) => {
                 // TODO: there must be a nicer way?
-                let batch = std::mem::replace(batch, Batch::new(batch.key(), 0));
-                *self = Self::NextGeneration(batch.generation().wrapping_add(1));
+                let batch = std::mem::replace(
+                    batch,
+                    Batch::new(batch.key(), None, batch.process_next.clone()),
+                );
+
+                *self = Self::NextGeneration(NextGen {
+                    key: batch.key.clone(),
+                    generation: batch.generation().wrapping_add(1),
+                    process_next: batch.process_next.clone(),
+                    key_currently_processing: batch.key_currently_processing.clone(),
+                });
 
                 Some(batch)
             }

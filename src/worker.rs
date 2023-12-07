@@ -5,7 +5,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::{
     batch::{Batch, BatchItem, Generation, GenerationalBatch},
     batcher::Processor,
-    limit::{LimitResult, Limits},
+    batching::BatchingStrategy,
     BatchError,
 };
 
@@ -21,7 +21,7 @@ pub(crate) struct Worker<K, I, O, F> {
     process_rx: mpsc::Receiver<(K, Generation)>,
 
     /// Controls when to start processing a batch.
-    limits: Limits<K, I, O>,
+    batching_strategy: BatchingStrategy,
 
     /// Unprocessed batches, grouped by key `K`.
     batches: HashMap<K, GenerationalBatch<K, I, O>>,
@@ -40,7 +40,7 @@ where
     O: 'static + Send,
     F: 'static + Send + Clone + Processor<I, O>,
 {
-    pub fn spawn(processor: F, limits: Limits<K, I, O>) -> WorkerHandle<K, I, O> {
+    pub fn spawn(processor: F, batching_strategy: BatchingStrategy) -> WorkerHandle<K, I, O> {
         let (item_tx, item_rx) = mpsc::channel(10);
 
         let (timeout_tx, timeout_rx) = mpsc::channel(10);
@@ -52,7 +52,7 @@ where
             process_tx: timeout_tx,
             process_rx: timeout_rx,
 
-            limits,
+            batching_strategy,
 
             batches: HashMap::new(),
         };
@@ -71,46 +71,64 @@ where
     fn add(&mut self, item: BatchItem<K, I, O>) {
         let key = item.key.clone();
 
-        let batch = self
-            .batches
-            .entry(key.clone())
-            .or_insert_with(|| GenerationalBatch::Batch(Batch::new(key.clone(), 0)));
+        let mut new_batch = false;
+
+        let batch = self.batches.entry(key.clone()).or_insert_with(|| {
+            new_batch = true;
+            GenerationalBatch::Batch(Batch::new(
+                key.clone(),
+                None,
+                self.batching_strategy
+                    .is_sequential()
+                    .then(|| self.process_tx.clone()),
+            ))
+        });
 
         let batch_inner = batch.add_item(item);
 
-        for limit in self.limits.iter() {
-            let limit_result = limit.limit(batch_inner);
-            match limit_result {
-                LimitResult::Process => {
+        match self.batching_strategy {
+            BatchingStrategy::Size(size) => {
+                if batch_inner.len() >= size {
                     let generation = batch_inner.generation();
                     let processor = self.processor.clone();
 
-                    Self::process(processor, batch, generation);
-
-                    return;
+                    Self::process_batch(processor, batch, generation);
                 }
+            }
 
-                LimitResult::ProcessAfter(duration) => {
-                    batch_inner.time_out_after(duration, self.process_tx.clone());
+            BatchingStrategy::Duration(duration) if new_batch => {
+                batch_inner.time_out_after(duration, self.process_tx.clone());
+            }
+            BatchingStrategy::Duration(_) => {}
+
+            BatchingStrategy::Debounce(duration) => {
+                batch_inner.time_out_after(duration, self.process_tx.clone());
+            }
+
+            BatchingStrategy::Sequential if new_batch => {
+                if !batch_inner.is_running() {
+                    let generation = batch_inner.generation();
+                    let processor = self.processor.clone();
+
+                    Self::process_batch(processor, batch, generation);
                 }
-
-                LimitResult::DoNothing => {}
-            };
-        }
+            }
+            BatchingStrategy::Sequential => {}
+        };
     }
 
-    fn process(processor: F, batch: &mut GenerationalBatch<K, I, O>, generation: Generation) {
+    fn process_batch(processor: F, batch: &mut GenerationalBatch<K, I, O>, generation: Generation) {
         // Only process this batch if it's the correct generation.
-        if let Some(batch) = batch.take_batch(generation) {
+        if let Some(batch) = batch.take_batch_for_processing(generation) {
             batch.process(processor);
         }
     }
 
-    fn handle_timeout(&mut self, key: K, generation: Generation) {
+    fn process(&mut self, key: K, generation: Generation) {
         let processor = self.processor.clone();
         let batch = self.batches.get_mut(&key).expect("batch should exist");
 
-        Self::process(processor, batch, generation);
+        Self::process_batch(processor, batch, generation);
     }
 
     /// Start running the worker event loop.
@@ -122,7 +140,7 @@ where
                 }
 
                 Some((key, generation)) = self.process_rx.recv() => {
-                    self.handle_timeout(key, generation);
+                    self.process(key, generation);
                 }
             }
         }
@@ -146,8 +164,6 @@ mod test {
     use async_trait::async_trait;
     use tokio::sync::oneshot;
 
-    use crate::limit::SizeLimit;
-
     use super::*;
 
     #[derive(Debug, Clone)]
@@ -162,10 +178,8 @@ mod test {
 
     #[tokio::test]
     async fn simple_test_over_channel() {
-        let worker_handle = Worker::<String, _, _, _>::spawn(
-            SimpleBatchProcessor,
-            vec![Box::new(SizeLimit::new(2))],
-        );
+        let worker_handle =
+            Worker::<String, _, _, _>::spawn(SimpleBatchProcessor, BatchingStrategy::Size(2));
 
         let rx1 = {
             let (tx, rx) = oneshot::channel();
