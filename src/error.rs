@@ -4,14 +4,13 @@ use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 /// An error that occurred while trying to batch.
 #[derive(Error, Debug)]
 pub enum BatchError {
-    // TODO: better error variants
-    /// Something went wrong while waiting for the output of a batch.
-    #[error(transparent)]
-    Rx(RecvError),
-
     /// Something went wrong while submitting an input for processing.
-    #[error("UIUUGGGHH")]
+    #[error("Unable to send item to the worker for batching: channel closed")]
     Tx,
+
+    /// Something went wrong while waiting for the output of a batch.
+    #[error("Error while waiting for batch results: channel closed. {}", .0)]
+    Rx(RecvError),
 }
 
 pub type Result<T> = std::result::Result<T, BatchError>;
