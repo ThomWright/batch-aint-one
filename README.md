@@ -49,6 +49,7 @@ struct SimpleBatchProcessor;
 #[async_trait]
 impl Processor<String, String> for SimpleBatchProcessor {
     async fn process(&self, inputs: impl Iterator<Item = String> + Send) -> Vec<String> {
+        // In this example, inputs will be: ["1", "2"]
         inputs.map(|s| s + " processed").collect()
     }
 }

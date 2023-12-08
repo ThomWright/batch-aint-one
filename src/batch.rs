@@ -84,6 +84,10 @@ impl<K, I, O> Batch<K, I, O> {
         self.items.len()
     }
 
+    pub(crate) fn is_new_batch(&self) -> bool {
+        self.len() == 1
+    }
+
     pub(crate) fn is_running(&self) -> bool {
         self.key_currently_processing
             .load(std::sync::atomic::Ordering::Acquire)
@@ -165,7 +169,8 @@ where
                 }
             }
 
-            self.key_currently_processing.store(true, Ordering::Release);
+            self.key_currently_processing
+                .store(false, Ordering::Release);
 
             // We're finished with this batch, maybe we can process the next one
             if let Some(tx) = self.process_next.as_ref() {

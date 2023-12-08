@@ -68,7 +68,7 @@ async fn strategy_duration() {
 
 /// Given we use a Sequential strategy
 /// When we process two items
-/// Then it should take twice the duration of processing one item
+/// Then it should process them serially, i.e. it should take twice the processing duration
 #[tokio::test]
 async fn strategy_sequential() {
     tokio::time::pause();
@@ -100,7 +100,36 @@ async fn strategy_sequential() {
     assert_duration!(d, processing_dur * 2, std::time::Duration::from_millis(2));
 }
 
-// TODO: test what happens if we add items to a key when no batch is running for Sequential
+/// Given we use a Sequential strategy
+/// When we process the first item
+///     And wait for it to complete
+///     And then add another item
+/// Then it should succeed
+#[tokio::test]
+async fn strategy_sequential_with_gap() {
+    tokio::time::pause();
+
+    let processing_dur = Duration::from_millis(50);
+
+    let batcher = Batcher::new(
+        SimpleBatchProcessor(processing_dur),
+        BatchingStrategy::Sequential,
+    );
+
+    let handler = || async {
+        let now = Instant::now();
+
+        batcher.add("A".to_string(), "1".to_string()).await.unwrap();
+
+        now.elapsed()
+    };
+
+    let d1 = tokio_test::task::spawn(handler()).await;
+    assert_duration!(d1, processing_dur, std::time::Duration::from_millis(2));
+
+    let d1 = tokio_test::task::spawn(handler()).await;
+    assert_duration!(d1, processing_dur, std::time::Duration::from_millis(2));
+}
 
 #[macro_export]
 macro_rules! assert_elapsed {

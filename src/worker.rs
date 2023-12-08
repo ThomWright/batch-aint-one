@@ -71,10 +71,7 @@ where
     fn add(&mut self, item: BatchItem<K, I, O>) {
         let key = item.key.clone();
 
-        let mut new_batch = false;
-
         let batch = self.batches.entry(key.clone()).or_insert_with(|| {
-            new_batch = true;
             GenerationalBatch::Batch(Batch::new(
                 key.clone(),
                 None,
@@ -96,7 +93,7 @@ where
                 }
             }
 
-            BatchingStrategy::Duration(duration) if new_batch => {
+            BatchingStrategy::Duration(duration) if batch_inner.is_new_batch() => {
                 batch_inner.time_out_after(duration, self.process_tx.clone());
             }
             BatchingStrategy::Duration(_) => {}
@@ -105,7 +102,7 @@ where
                 batch_inner.time_out_after(duration, self.process_tx.clone());
             }
 
-            BatchingStrategy::Sequential if new_batch => {
+            BatchingStrategy::Sequential if batch_inner.is_new_batch() => {
                 if !batch_inner.is_running() {
                     let generation = batch_inner.generation();
                     let processor = self.processor.clone();
