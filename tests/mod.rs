@@ -106,7 +106,7 @@ async fn strategy_sequential() {
 ///     And then add another item
 /// Then it should succeed
 #[tokio::test]
-async fn strategy_sequential_with_gap() {
+async fn strategy_sequential_with_wait() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);

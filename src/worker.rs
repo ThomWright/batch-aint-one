@@ -5,7 +5,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::{
     batch::{Batch, BatchItem, Generation, GenerationalBatch},
     batcher::Processor,
-    batching::BatchingStrategy,
+    batching::{BatchingStrategy, BatchingResult},
     BatchError,
 };
 
@@ -81,37 +81,20 @@ where
             ))
         });
 
-        let batch_inner = batch.add_item(item);
+        let batch_inner: &mut Batch<K, I, O> = batch.add_item(item);
 
-        match self.batching_strategy {
-            BatchingStrategy::Size(size) => {
-                if batch_inner.len() >= size {
-                    let generation = batch_inner.generation();
-                    let processor = self.processor.clone();
+        match self.batching_strategy.apply(batch_inner) {
+            BatchingResult::Process => {
+                let generation = batch_inner.generation();
+                let processor = self.processor.clone();
 
-                    Self::process_batch(processor, batch, generation);
-                }
+                Self::process_batch(processor, batch, generation);
             }
-
-            BatchingStrategy::Duration(duration) if batch_inner.is_new_batch() => {
+            BatchingResult::ProcessAfter(duration) => {
                 batch_inner.time_out_after(duration, self.process_tx.clone());
             }
-            BatchingStrategy::Duration(_) => {}
-
-            BatchingStrategy::Debounce(duration) => {
-                batch_inner.time_out_after(duration, self.process_tx.clone());
-            }
-
-            BatchingStrategy::Sequential if batch_inner.is_new_batch() => {
-                if !batch_inner.is_running() {
-                    let generation = batch_inner.generation();
-                    let processor = self.processor.clone();
-
-                    Self::process_batch(processor, batch, generation);
-                }
-            }
-            BatchingStrategy::Sequential => {}
-        };
+            BatchingResult::DoNothing => {}
+        }
     }
 
     fn process_batch(processor: F, batch: &mut GenerationalBatch<K, I, O>, generation: Generation) {
