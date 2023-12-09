@@ -84,6 +84,8 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-22.04
+    permissions:
+      checks: write
     steps:
       - uses: actions/checkout@v3
       - run: rustup component add clippy
