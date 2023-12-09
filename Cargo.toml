@@ -2,8 +2,17 @@
 name = "batch-aint-one"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["Thom Wright <dev@thomwright.co.uk>"]
+description = """
+I got 99 problems, but a batch ain't one
+"""
+documentation = "https://docs.rs/batch-aint-one"
+homepage = "https://github.com/ThomWright/batch-aint-one"
+repository = "https://github.com/ThomWright/batch-aint-one"
+readme = "README.md"
+keywords = ["batching", "batch", "async", "concurrency"]
+categories = ["concurrency"]
+license = "MIT"
 
 [dependencies]
 async-trait = "0.1.74"
