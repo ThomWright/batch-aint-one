@@ -36,7 +36,6 @@ pub(crate) struct Batch<K, I, O> {
     timeout_deadline: Option<Instant>,
     timeout_handle: Option<JoinHandle<()>>,
 
-    process_next: Option<mpsc::Sender<(K, Generation)>>,
     key_currently_processing: Arc<AtomicBool>,
 }
 
@@ -45,7 +44,6 @@ pub(crate) type Generation = u32;
 pub(crate) struct NextGen<K> {
     key: K,
     generation: Generation,
-    process_next: Option<mpsc::Sender<(K, Generation)>>,
     key_currently_processing: Arc<AtomicBool>,
 }
 
@@ -59,11 +57,7 @@ pub(crate) enum GenerationalBatch<K, I, O> {
 }
 
 impl<K, I, O> Batch<K, I, O> {
-    pub(crate) fn new(
-        key: K,
-        gen: Option<NextGen<K>>,
-        process_next: Option<mpsc::Sender<(K, Generation)>>,
-    ) -> Self {
+    pub(crate) fn new(key: K, gen: Option<NextGen<K>>) -> Self {
         Self {
             key,
             generation: gen.as_ref().map(|g| g.generation).unwrap_or_default(),
@@ -72,7 +66,6 @@ impl<K, I, O> Batch<K, I, O> {
             timeout_deadline: None,
             timeout_handle: None,
 
-            process_next,
             key_currently_processing: gen
                 .map(|g| g.key_currently_processing.clone())
                 .unwrap_or_default(),
@@ -128,8 +121,11 @@ where
     I: 'static + Send,
     O: 'static + Send,
 {
-    pub(crate) fn process<F>(mut self, processor: F)
-    where
+    pub(crate) fn process<F>(
+        mut self,
+        processor: F,
+        process_next: Option<mpsc::Sender<(K, Generation)>>,
+    ) where
         F: 'static + Send + Clone + Processor<I, O>,
     {
         self.key_currently_processing.store(true, Ordering::Release);
@@ -173,7 +169,7 @@ where
                 .store(false, Ordering::Release);
 
             // We're finished with this batch, maybe we can process the next one
-            if let Some(tx) = self.process_next.as_ref() {
+            if let Some(tx) = process_next {
                 if tx
                     .send((self.key.clone(), self.generation.wrapping_add(1)))
                     .await
@@ -228,7 +224,6 @@ where
             timeout_deadline: None,
             timeout_handle: None,
 
-            process_next: gen.process_next.clone(),
             key_currently_processing: gen.key_currently_processing.clone(),
         }
     }
@@ -255,7 +250,6 @@ where
             }
 
             Self::NextGeneration(generation) => {
-                // let generation = std::mem::replace(generation, NextGen { key: (), generation: (), finished: (), key_currently_processing: () })
                 let mut new_batch = Batch::from(&*generation);
                 new_batch.add_item(item);
 
@@ -275,15 +269,11 @@ where
         match self {
             Self::Batch(batch) if batch.is_generation(generation) => {
                 // TODO: there must be a nicer way?
-                let batch = std::mem::replace(
-                    batch,
-                    Batch::new(batch.key(), None, batch.process_next.clone()),
-                );
+                let batch = std::mem::replace(batch, Batch::new(batch.key(), None));
 
                 *self = Self::NextGeneration(NextGen {
                     key: batch.key.clone(),
                     generation: batch.generation().wrapping_add(1),
-                    process_next: batch.process_next.clone(),
                     key_currently_processing: batch.key_currently_processing.clone(),
                 });
 

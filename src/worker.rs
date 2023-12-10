@@ -5,7 +5,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::{
     batch::{Batch, BatchItem, Generation, GenerationalBatch},
     batcher::Processor,
-    batching::{BatchingStrategy, BatchingResult},
+    batching::{BatchingResult, BatchingStrategy},
     BatchError,
 };
 
@@ -71,24 +71,18 @@ where
     fn add(&mut self, item: BatchItem<K, I, O>) {
         let key = item.key.clone();
 
-        let batch = self.batches.entry(key.clone()).or_insert_with(|| {
-            GenerationalBatch::Batch(Batch::new(
-                key.clone(),
-                None,
-                self.batching_strategy
-                    .is_sequential()
-                    .then(|| self.process_tx.clone()),
-            ))
-        });
+        let batch = self
+            .batches
+            .entry(key.clone())
+            .or_insert_with(|| GenerationalBatch::Batch(Batch::new(key.clone(), None)));
 
         let batch_inner: &mut Batch<K, I, O> = batch.add_item(item);
 
         match self.batching_strategy.apply(batch_inner) {
             BatchingResult::Process => {
                 let generation = batch_inner.generation();
-                let processor = self.processor.clone();
 
-                Self::process_batch(processor, batch, generation);
+                self.process(key, generation);
             }
             BatchingResult::ProcessAfter(duration) => {
                 batch_inner.time_out_after(duration, self.process_tx.clone());
@@ -97,18 +91,17 @@ where
         }
     }
 
-    fn process_batch(processor: F, batch: &mut GenerationalBatch<K, I, O>, generation: Generation) {
-        // Only process this batch if it's the correct generation.
-        if let Some(batch) = batch.take_batch_for_processing(generation) {
-            batch.process(processor);
-        }
-    }
-
     fn process(&mut self, key: K, generation: Generation) {
-        let processor = self.processor.clone();
         let batch = self.batches.get_mut(&key).expect("batch should exist");
 
-        Self::process_batch(processor, batch, generation);
+        if let Some(batch) = batch.take_batch_for_processing(generation) {
+            let process_next = self
+                .batching_strategy
+                .is_sequential()
+                .then(|| self.process_tx.clone());
+
+            batch.process(self.processor.clone(), process_next);
+        }
     }
 
     /// Start running the worker event loop.
