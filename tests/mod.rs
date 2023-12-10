@@ -2,6 +2,7 @@ use std::{marker::Send, time::Duration};
 
 use async_trait::async_trait;
 use batch_aint_one::{Batcher, BatchingStrategy, Processor};
+use futures::future::join_all;
 use tokio::{join, time::Instant};
 // use tokio_test::assert_elapsed;
 
@@ -34,6 +35,35 @@ async fn strategy_size() {
     assert_eq!("3 processed".to_string(), o3.unwrap());
 }
 
+/// Given we use a Size strategy
+/// When we process lots of items
+/// Then they should all succeed
+#[tokio::test]
+async fn strategy_size_loaded() {
+    tokio::time::pause();
+
+    let processing_dur = Duration::from_millis(50);
+
+    let batcher = Batcher::new(
+        SimpleBatchProcessor(processing_dur),
+        BatchingStrategy::Size(10),
+    );
+
+    let handler = |i: i32| {
+        let f = batcher.add("key".to_string(), i.to_string());
+        async move { f.await.unwrap() }
+    };
+
+    let mut tasks = vec![];
+    for i in 1..=100 {
+        tasks.push(tokio_test::task::spawn(handler(i)));
+    }
+
+    let outputs = join_all(tasks.into_iter()).await;
+
+    assert_eq!(outputs.last().unwrap(), "100 processed");
+}
+
 /// Given we use a Duration strategy
 /// When we process one item
 /// Then it should take as long at the batching duration + the processing duration
@@ -64,6 +94,35 @@ async fn strategy_duration() {
     h1.await;
 
     assert_elapsed!(now, batching_dur + processing_dur, Duration::from_millis(2));
+}
+
+/// Given we use a Duration strategy
+/// When we process lots of items
+/// Then they should all succeed
+#[tokio::test]
+async fn strategy_duration_loaded() {
+    tokio::time::pause();
+
+    let processing_dur = Duration::from_millis(50);
+
+    let batcher = Batcher::new(
+        SimpleBatchProcessor(processing_dur),
+        BatchingStrategy::Duration(Duration::from_millis(10)),
+    );
+
+    let handler = |i: i32| {
+        let f = batcher.add("key".to_string(), i.to_string());
+        async move { f.await.unwrap() }
+    };
+
+    let mut tasks = vec![];
+    for i in 1..=100 {
+        tasks.push(tokio_test::task::spawn(handler(i)));
+    }
+
+    let outputs = join_all(tasks.into_iter()).await;
+
+    assert_eq!(outputs.last().unwrap(), "100 processed");
 }
 
 /// Given we use a Sequential strategy
@@ -129,6 +188,35 @@ async fn strategy_sequential_with_wait() {
 
     let d1 = tokio_test::task::spawn(handler()).await;
     assert_duration!(d1, processing_dur, std::time::Duration::from_millis(2));
+}
+
+/// Given we use a Sequential strategy
+/// When we process lots of items
+/// Then they should all succeed
+#[tokio::test]
+async fn strategy_sequential_loaded() {
+    tokio::time::pause();
+
+    let processing_dur = Duration::from_millis(50);
+
+    let batcher = Batcher::new(
+        SimpleBatchProcessor(processing_dur),
+        BatchingStrategy::Sequential,
+    );
+
+    let handler = |i: i32| {
+        let f = batcher.add("key".to_string(), i.to_string());
+        async move { f.await.unwrap() }
+    };
+
+    let mut tasks = vec![];
+    for i in 1..=100 {
+        tasks.push(tokio_test::task::spawn(handler(i)));
+    }
+
+    let outputs = join_all(tasks.into_iter()).await;
+
+    assert_eq!(outputs.last().unwrap(), "100 processed");
 }
 
 #[macro_export]
