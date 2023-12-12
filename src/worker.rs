@@ -157,8 +157,8 @@ mod test {
             &self,
             _key: String,
             inputs: impl Iterator<Item = String> + Send,
-        ) -> Vec<String> {
-            inputs.map(|s| s + " processed").collect()
+        ) -> Result<Vec<String>, String> {
+            Ok(inputs.map(|s| s + " processed").collect())
         }
     }
 
@@ -197,8 +197,8 @@ mod test {
             rx
         };
 
-        let o1 = rx1.await.unwrap();
-        let o2 = rx2.await.unwrap();
+        let o1 = rx1.await.unwrap().unwrap();
+        let o2 = rx2.await.unwrap().unwrap();
 
         assert_eq!(o1, "I1 processed".to_string());
         assert_eq!(o2, "I2 processed".to_string());

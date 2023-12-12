@@ -11,9 +11,13 @@ struct SimpleBatchProcessor(Duration);
 
 #[async_trait]
 impl Processor<String, String, String> for SimpleBatchProcessor {
-    async fn process(&self, _key: String, inputs: impl Iterator<Item = String> + Send) -> Vec<String> {
+    async fn process(
+        &self,
+        _key: String,
+        inputs: impl Iterator<Item = String> + Send,
+    ) -> Result<Vec<String>, String> {
         tokio::time::sleep(self.0).await;
-        inputs.map(|s| s + " processed").collect()
+        Ok(inputs.map(|s| s + " processed").collect())
     }
 }
 
@@ -24,7 +28,7 @@ type Cloneable = Batcher<String, NotCloneable, NotCloneable>;
 #[derive(Clone)]
 #[allow(unused)]
 struct CanDeriveClone {
-    batcher: Cloneable
+    batcher: Cloneable,
 }
 
 #[tokio::test]

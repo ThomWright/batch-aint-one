@@ -21,7 +21,7 @@ pub(crate) struct BatchItem<K, I, O> {
     pub key: K,
     pub input: I,
     /// Used to send the output back.
-    pub tx: oneshot::Sender<O>,
+    pub tx: oneshot::Sender<Result<O, String>>,
     /// This item was added to the batch as part of this span.
     pub span_id: Option<span::Id>,
 }
@@ -142,7 +142,7 @@ where
             let mut items = Vec::new();
             mem::swap(&mut self.items, &mut items);
 
-            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<O>>) = items
+            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<Result<O, String>>>) = items
                 .into_iter()
                 .map(|item| {
                     // Link the shared batch processing span to the span for each batch item. We
@@ -154,7 +154,17 @@ where
                 })
                 .unzip();
 
-            let outputs = processor.process(self.key.clone(), inputs.into_iter()).instrument(span).await;
+            let size = inputs.len();
+
+            let result = processor
+                .process(self.key.clone(), inputs.into_iter())
+                .instrument(span)
+                .await;
+
+            let outputs: Vec<_> = match result {
+                Ok(outputs) => outputs.into_iter().map(|o| Ok(o)).collect(),
+                Err(err) => std::iter::repeat(err).take(size).map(|e| Err(e)).collect(),
+            };
 
             for (tx, output) in txs.into_iter().zip(outputs) {
                 if tx.send(output).is_err() {

@@ -8,7 +8,7 @@ use crate::{
     batch::BatchItem,
     error::Result,
     worker::{Worker, WorkerHandle},
-    BatchingStrategy,
+    BatchError, BatchingStrategy,
 };
 
 /// Groups items to be processed in batches.
@@ -29,7 +29,11 @@ pub trait Processor<K, I, O> {
     ///
     /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs
     /// in the given iterator.
-    async fn process(&self, key: K, inputs: impl Iterator<Item = I> + Send) -> Vec<O>;
+    async fn process(
+        &self,
+        key: K,
+        inputs: impl Iterator<Item = I> + Send,
+    ) -> std::result::Result<Vec<O>, String>;
 }
 
 impl<K, I, O> Batcher<K, I, O>
@@ -63,7 +67,7 @@ where
             })
             .await?;
 
-        Ok(rx.await?)
+        rx.await?.map_err(BatchError::from)
     }
 }
 

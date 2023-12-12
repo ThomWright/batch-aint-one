@@ -87,3 +87,4 @@ tokio_test::block_on(async {
   - [x] Why – motivating example
   - [x] Code examples
 - [x] Observability
+- [ ] Metrics?
