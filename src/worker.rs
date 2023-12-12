@@ -27,7 +27,7 @@ pub(crate) struct Worker<K, I, O, F> {
     batches: HashMap<K, GenerationalBatch<K, I, O>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct WorkerHandle<K, I, O> {
     handle: Arc<JoinHandle<()>>,
     tx: mpsc::Sender<BatchItem<K, I, O>>,
@@ -129,6 +129,15 @@ impl<K, I, O> WorkerHandle<K, I, O> {
 impl<K, I, O> Drop for WorkerHandle<K, I, O> {
     fn drop(&mut self) {
         self.handle.abort();
+    }
+}
+
+impl<K, I, O> Clone for WorkerHandle<K, I, O> {
+    fn clone(&self) -> Self {
+        Self {
+            handle: self.handle.clone(),
+            tx: self.tx.clone(),
+        }
     }
 }
 

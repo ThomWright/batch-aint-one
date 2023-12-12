@@ -15,7 +15,9 @@ use crate::{
 ///
 /// Takes inputs (`I`) grouped by a key (`K`) and processes multiple together in a batch. An output
 /// (`O`) is produced for each input.
-#[derive(Debug, Clone)]
+///
+/// Cheap to clone.
+#[derive(Debug)]
 pub struct Batcher<K, I, O = ()> {
     worker: WorkerHandle<K, I, O>,
 }
@@ -62,5 +64,13 @@ where
             .await?;
 
         Ok(rx.await?)
+    }
+}
+
+impl<K,I,O> Clone for Batcher<K,I,O> {
+    fn clone(&self) -> Self {
+        Self {
+            worker: self.worker.clone()
+        }
     }
 }

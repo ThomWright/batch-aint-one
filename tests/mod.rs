@@ -17,6 +17,16 @@ impl Processor<String, String> for SimpleBatchProcessor {
     }
 }
 
+struct NotCloneable {}
+type Cloneable = Batcher<String, NotCloneable, NotCloneable>;
+
+/// A [Batcher] should be cloneable, even when the `I`s and `O`s are not.
+#[derive(Clone)]
+#[allow(unused)]
+struct CanDeriveClone {
+    batcher: Cloneable
+}
+
 #[tokio::test]
 async fn strategy_size() {
     let batcher = Batcher::new(
