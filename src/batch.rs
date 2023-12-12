@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     mem,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -17,21 +18,21 @@ use tracing::{debug, span, Instrument, Level};
 use crate::Processor;
 
 #[derive(Debug)]
-pub(crate) struct BatchItem<K, I, O> {
+pub(crate) struct BatchItem<K, I, O, E> {
     pub key: K,
     pub input: I,
     /// Used to send the output back.
-    pub tx: oneshot::Sender<Result<O, String>>,
+    pub tx: oneshot::Sender<Result<O, E>>,
     /// This item was added to the batch as part of this span.
     pub span_id: Option<span::Id>,
 }
 
 /// A batch of items to process.
 #[derive(Debug)]
-pub(crate) struct Batch<K, I, O> {
+pub(crate) struct Batch<K, I, O, E> {
     key: K,
     generation: u32,
-    items: Vec<BatchItem<K, I, O>>,
+    items: Vec<BatchItem<K, I, O, E>>,
 
     timeout_deadline: Option<Instant>,
     timeout_handle: Option<JoinHandle<()>>,
@@ -51,12 +52,12 @@ pub(crate) struct NextGen<K> {
 /// already been processed, and a new batch has already been created with the same key.
 ///
 /// TODO: garbage collection of old generation placeholders.
-pub(crate) enum GenerationalBatch<K, I, O> {
-    Batch(Batch<K, I, O>),
+pub(crate) enum GenerationalBatch<K, I, O, E> {
+    Batch(Batch<K, I, O, E>),
     NextGeneration(NextGen<K>),
 }
 
-impl<K, I, O> Batch<K, I, O> {
+impl<K, I, O, E> Batch<K, I, O, E> {
     pub(crate) fn new(key: K, gen: Option<NextGen<K>>) -> Self {
         Self {
             key,
@@ -94,7 +95,7 @@ impl<K, I, O> Batch<K, I, O> {
         self.generation == generation
     }
 
-    pub(crate) fn add_item(&mut self, item: BatchItem<K, I, O>) {
+    pub(crate) fn add_item(&mut self, item: BatchItem<K, I, O, E>) {
         self.items.push(item);
     }
 
@@ -105,7 +106,7 @@ impl<K, I, O> Batch<K, I, O> {
     }
 }
 
-impl<K, I, O> Batch<K, I, O>
+impl<K, I, O, E> Batch<K, I, O, E>
 where
     K: Clone,
 {
@@ -115,18 +116,19 @@ where
     }
 }
 
-impl<K, I, O> Batch<K, I, O>
+impl<K, I, O, E> Batch<K, I, O, E>
 where
     K: 'static + Send + Clone,
     I: 'static + Send,
     O: 'static + Send,
+    E: 'static + Send + Clone + Display,
 {
     pub(crate) fn process<F>(
         mut self,
         processor: F,
         process_next: Option<mpsc::Sender<(K, Generation)>>,
     ) where
-        F: 'static + Send + Clone + Processor<K, I, O>,
+        F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
         self.key_currently_processing.store(true, Ordering::Release);
 
@@ -142,7 +144,7 @@ where
             let mut items = Vec::new();
             mem::swap(&mut self.items, &mut items);
 
-            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<Result<O, String>>>) = items
+            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<Result<O, E>>>) = items
                 .into_iter()
                 .map(|item| {
                     // Link the shared batch processing span to the span for each batch item. We
@@ -194,7 +196,7 @@ where
     }
 }
 
-impl<K, I, O> Batch<K, I, O>
+impl<K, I, O, E> Batch<K, I, O, E>
 where
     K: 'static + Send + Clone,
 {
@@ -221,7 +223,7 @@ where
     }
 }
 
-impl<K, I, O> From<&NextGen<K>> for Batch<K, I, O>
+impl<K, I, O, E> From<&NextGen<K>> for Batch<K, I, O, E>
 where
     K: Clone,
 {
@@ -239,7 +241,7 @@ where
     }
 }
 
-impl<K, I, O> Drop for Batch<K, I, O> {
+impl<K, I, O, E> Drop for Batch<K, I, O, E> {
     fn drop(&mut self) {
         if let Some(handle) = self.timeout_handle.take() {
             handle.abort();
@@ -247,11 +249,11 @@ impl<K, I, O> Drop for Batch<K, I, O> {
     }
 }
 
-impl<K, I, O> GenerationalBatch<K, I, O>
+impl<K, I, O, E> GenerationalBatch<K, I, O, E>
 where
     K: Clone,
 {
-    pub fn add_item(&mut self, item: BatchItem<K, I, O>) -> &mut Batch<K, I, O> {
+    pub fn add_item(&mut self, item: BatchItem<K, I, O, E>) -> &mut Batch<K, I, O, E> {
         match self {
             Self::Batch(batch) => {
                 batch.add_item(item);
@@ -275,7 +277,10 @@ where
 
     /// If a batch exists for the given generation, returns it and replaces it with a
     /// `NextGeneration` placeholder.
-    pub fn take_batch_for_processing(&mut self, generation: Generation) -> Option<Batch<K, I, O>> {
+    pub fn take_batch_for_processing(
+        &mut self,
+        generation: Generation,
+    ) -> Option<Batch<K, I, O, E>> {
         match self {
             Self::Batch(batch) if batch.is_generation(generation) => {
                 // TODO: there must be a nicer way?

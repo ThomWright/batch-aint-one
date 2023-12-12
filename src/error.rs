@@ -1,9 +1,11 @@
+use std::fmt::Display;
+
 use thiserror::Error;
 use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 
 /// An error that occurred while trying to batch.
 #[derive(Error, Debug)]
-pub enum BatchError {
+pub enum BatchError<E: Display> {
     /// Something went wrong while submitting an input for processing.
     #[error("Unable to send item to the worker for batching: channel closed")]
     Tx,
@@ -14,25 +16,25 @@ pub enum BatchError {
 
     /// Something went wrong while processing a batch.
     #[error("The entire batch failed with message: {}", .0)]
-    BatchFailed(String),
+    BatchFailed(E),
 }
 
-pub type Result<T> = std::result::Result<T, BatchError>;
+pub type Result<T, E> = std::result::Result<T, BatchError<E>>;
 
-impl From<RecvError> for BatchError {
+impl<E: Display> From<RecvError> for BatchError<E> {
     fn from(rx_err: RecvError) -> Self {
         BatchError::Rx(rx_err)
     }
 }
 
-impl<T> From<SendError<T>> for BatchError {
+impl<T, E: Display> From<SendError<T>> for BatchError<E> {
     fn from(_tx_err: SendError<T>) -> Self {
         BatchError::Tx
     }
 }
 
-impl From<String> for BatchError {
-    fn from(s: String) -> Self {
-        BatchError::BatchFailed(s)
-    }
-}
+// impl<E> From<E> for BatchError<E> {
+//     fn from(s: E) -> Self {
+//         BatchError::BatchFailed(s)
+//     }
+// }

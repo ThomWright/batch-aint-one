@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash, sync::Arc};
+use std::{collections::HashMap, fmt::Display, hash::Hash, sync::Arc};
 
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -9,9 +9,9 @@ use crate::{
     BatchError,
 };
 
-pub(crate) struct Worker<K, I, O, F> {
+pub(crate) struct Worker<K, I, O, F, E> {
     /// Used to receive new batch items.
-    item_rx: mpsc::Receiver<BatchItem<K, I, O>>,
+    item_rx: mpsc::Receiver<BatchItem<K, I, O, E>>,
     /// The callback to process a batch of inputs.
     processor: F,
 
@@ -24,23 +24,24 @@ pub(crate) struct Worker<K, I, O, F> {
     batching_strategy: BatchingStrategy,
 
     /// Unprocessed batches, grouped by key `K`.
-    batches: HashMap<K, GenerationalBatch<K, I, O>>,
+    batches: HashMap<K, GenerationalBatch<K, I, O, E>>,
 }
 
 #[derive(Debug)]
-pub(crate) struct WorkerHandle<K, I, O> {
+pub(crate) struct WorkerHandle<K, I, O, E> {
     handle: Arc<JoinHandle<()>>,
-    tx: mpsc::Sender<BatchItem<K, I, O>>,
+    tx: mpsc::Sender<BatchItem<K, I, O, E>>,
 }
 
-impl<K, I, O, F> Worker<K, I, O, F>
+impl<K, I, O, F, E> Worker<K, I, O, F, E>
 where
     K: 'static + Send + Eq + Hash + Clone,
     I: 'static + Send,
     O: 'static + Send,
-    F: 'static + Send + Clone + Processor<K, I, O>,
+    F: 'static + Send + Clone + Processor<K, I, O, E>,
+    E: 'static + Send + Clone + Display,
 {
-    pub fn spawn(processor: F, batching_strategy: BatchingStrategy) -> WorkerHandle<K, I, O> {
+    pub fn spawn(processor: F, batching_strategy: BatchingStrategy) -> WorkerHandle<K, I, O, E> {
         let (item_tx, item_rx) = mpsc::channel(10);
 
         let (timeout_tx, timeout_rx) = mpsc::channel(10);
@@ -68,7 +69,7 @@ where
     }
 
     /// Add an item to the batch.
-    fn add(&mut self, item: BatchItem<K, I, O>) {
+    fn add(&mut self, item: BatchItem<K, I, O, E>) {
         let key = item.key.clone();
 
         let batch = self
@@ -76,7 +77,7 @@ where
             .entry(key.clone())
             .or_insert_with(|| GenerationalBatch::Batch(Batch::new(key.clone(), None)));
 
-        let batch_inner: &mut Batch<K, I, O> = batch.add_item(item);
+        let batch_inner: &mut Batch<K, I, O, E> = batch.add_item(item);
 
         match self.batching_strategy.apply(batch_inner) {
             BatchingResult::Process => {
@@ -120,19 +121,19 @@ where
     }
 }
 
-impl<K, I, O> WorkerHandle<K, I, O> {
-    pub async fn send(&self, value: BatchItem<K, I, O>) -> Result<(), BatchError> {
+impl<K, I, O, E: Display> WorkerHandle<K, I, O, E> {
+    pub async fn send(&self, value: BatchItem<K, I, O, E>) -> Result<(), BatchError<E>> {
         Ok(self.tx.send(value).await?)
     }
 }
 
-impl<K, I, O> Drop for WorkerHandle<K, I, O> {
+impl<K, I, O, E> Drop for WorkerHandle<K, I, O, E> {
     fn drop(&mut self) {
         self.handle.abort();
     }
 }
 
-impl<K, I, O> Clone for WorkerHandle<K, I, O> {
+impl<K, I, O, E> Clone for WorkerHandle<K, I, O, E> {
     fn clone(&self) -> Self {
         Self {
             handle: self.handle.clone(),
@@ -165,7 +166,7 @@ mod test {
     #[tokio::test]
     async fn simple_test_over_channel() {
         let worker_handle =
-            Worker::<String, _, _, _>::spawn(SimpleBatchProcessor, BatchingStrategy::Size(2));
+            Worker::<String, _, _, _, _>::spawn(SimpleBatchProcessor, BatchingStrategy::Size(2));
 
         let rx1 = {
             let (tx, rx) = oneshot::channel();

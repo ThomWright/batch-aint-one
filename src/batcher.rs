@@ -1,4 +1,4 @@
-use std::hash::Hash;
+use std::{fmt::Display, hash::Hash};
 
 use async_trait::async_trait;
 use tokio::sync::oneshot;
@@ -18,13 +18,16 @@ use crate::{
 ///
 /// Cheap to clone.
 #[derive(Debug)]
-pub struct Batcher<K, I, O = ()> {
-    worker: WorkerHandle<K, I, O>,
+pub struct Batcher<K, I, O = (), E = String> {
+    worker: WorkerHandle<K, I, O, E>,
 }
 
 /// Process a batch of inputs.
 #[async_trait]
-pub trait Processor<K, I, O> {
+pub trait Processor<K, I, O = (), E = String>
+where
+    E: Display,
+{
     /// Process the batch.
     ///
     /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs
@@ -33,19 +36,20 @@ pub trait Processor<K, I, O> {
         &self,
         key: K,
         inputs: impl Iterator<Item = I> + Send,
-    ) -> std::result::Result<Vec<O>, String>;
+    ) -> std::result::Result<Vec<O>, E>;
 }
 
-impl<K, I, O> Batcher<K, I, O>
+impl<K, I, O, E> Batcher<K, I, O, E>
 where
     K: 'static + Send + Eq + Hash + Clone,
     I: 'static + Send,
     O: 'static + Send,
+    E: 'static + Send + Clone + Display,
 {
     /// Create a new batcher.
     pub fn new<F>(processor: F, batching_strategy: BatchingStrategy) -> Self
     where
-        F: 'static + Send + Clone + Processor<K, I, O>,
+        F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
         let handle = Worker::spawn(processor, batching_strategy);
 
@@ -53,7 +57,7 @@ where
     }
 
     /// Add an item to the batch and await the result.
-    pub async fn add(&self, key: K, input: I) -> Result<O> {
+    pub async fn add(&self, key: K, input: I) -> Result<O, E> {
         // Record the span ID so we can link the shared processing span.
         let span_id = Span::current().id();
 
@@ -67,7 +71,7 @@ where
             })
             .await?;
 
-        rx.await?.map_err(BatchError::from)
+        rx.await?.map_err(BatchError::BatchFailed)
     }
 }
 

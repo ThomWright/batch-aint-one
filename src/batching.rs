@@ -28,7 +28,7 @@ impl BatchingStrategy {
         matches!(self, Self::Sequential)
     }
 
-    pub(crate) fn apply<K, I, O>(&self, batch: &Batch<K, I, O>) -> BatchingResult
+    pub(crate) fn apply<K, I, O, E>(&self, batch: &Batch<K, I, O, E>) -> BatchingResult
     where
         K: 'static + Send + Clone,
     {
