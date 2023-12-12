@@ -126,7 +126,7 @@ where
         processor: F,
         process_next: Option<mpsc::Sender<(K, Generation)>>,
     ) where
-        F: 'static + Send + Clone + Processor<I, O>,
+        F: 'static + Send + Clone + Processor<K, I, O>,
     {
         self.key_currently_processing.store(true, Ordering::Release);
 
@@ -154,7 +154,7 @@ where
                 })
                 .unzip();
 
-            let outputs = processor.process(inputs.into_iter()).instrument(span).await;
+            let outputs = processor.process(self.key.clone(), inputs.into_iter()).instrument(span).await;
 
             for (tx, output) in txs.into_iter().zip(outputs) {
                 if tx.send(output).is_err() {

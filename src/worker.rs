@@ -38,7 +38,7 @@ where
     K: 'static + Send + Eq + Hash + Clone,
     I: 'static + Send,
     O: 'static + Send,
-    F: 'static + Send + Clone + Processor<I, O>,
+    F: 'static + Send + Clone + Processor<K, I, O>,
 {
     pub fn spawn(processor: F, batching_strategy: BatchingStrategy) -> WorkerHandle<K, I, O> {
         let (item_tx, item_rx) = mpsc::channel(10);
@@ -152,8 +152,12 @@ mod test {
     struct SimpleBatchProcessor;
 
     #[async_trait]
-    impl Processor<String, String> for SimpleBatchProcessor {
-        async fn process(&self, inputs: impl Iterator<Item = String> + Send) -> Vec<String> {
+    impl Processor<String, String, String> for SimpleBatchProcessor {
+        async fn process(
+            &self,
+            _key: String,
+            inputs: impl Iterator<Item = String> + Send,
+        ) -> Vec<String> {
             inputs.map(|s| s + " processed").collect()
         }
     }

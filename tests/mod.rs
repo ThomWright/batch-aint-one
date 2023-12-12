@@ -10,8 +10,8 @@ use tokio::{join, time::Instant};
 struct SimpleBatchProcessor(Duration);
 
 #[async_trait]
-impl Processor<String, String> for SimpleBatchProcessor {
-    async fn process(&self, inputs: impl Iterator<Item = String> + Send) -> Vec<String> {
+impl Processor<String, String, String> for SimpleBatchProcessor {
+    async fn process(&self, _key: String, inputs: impl Iterator<Item = String> + Send) -> Vec<String> {
         tokio::time::sleep(self.0).await;
         inputs.map(|s| s + " processed").collect()
     }

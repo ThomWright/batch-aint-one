@@ -24,12 +24,12 @@ pub struct Batcher<K, I, O = ()> {
 
 /// Process a batch of inputs.
 #[async_trait]
-pub trait Processor<I, O> {
+pub trait Processor<K, I, O> {
     /// Process the batch.
     ///
     /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs
     /// in the given iterator.
-    async fn process(&self, inputs: impl Iterator<Item = I> + Send) -> Vec<O>;
+    async fn process(&self, key: K, inputs: impl Iterator<Item = I> + Send) -> Vec<O>;
 }
 
 impl<K, I, O> Batcher<K, I, O>
@@ -41,7 +41,7 @@ where
     /// Create a new batcher.
     pub fn new<F>(processor: F, batching_strategy: BatchingStrategy) -> Self
     where
-        F: 'static + Send + Clone + Processor<I, O>,
+        F: 'static + Send + Clone + Processor<K, I, O>,
     {
         let handle = Worker::spawn(processor, batching_strategy);
 
@@ -67,10 +67,10 @@ where
     }
 }
 
-impl<K,I,O> Clone for Batcher<K,I,O> {
+impl<K, I, O> Clone for Batcher<K, I, O> {
     fn clone(&self) -> Self {
         Self {
-            worker: self.worker.clone()
+            worker: self.worker.clone(),
         }
     }
 }
