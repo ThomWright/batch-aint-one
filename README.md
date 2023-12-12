@@ -47,9 +47,11 @@ use batch_aint_one::{Batcher, Processor, BatchingStrategy};
 struct SimpleBatchProcessor;
 
 #[async_trait]
-impl Processor<String, String> for SimpleBatchProcessor {
-    async fn process(&self, inputs: impl Iterator<Item = String> + Send) -> Vec<String> {
-        // In this example, inputs will be: ["1", "2"]
+impl Processor<String, String, String> for SimpleBatchProcessor {
+    async fn process(&self, key: String, inputs: impl Iterator<Item = String> + Send) -> Vec<String> {
+        // In this example:
+        // - `key`: "A"
+        // - `inputs`: ["1", "2"]
         inputs.map(|s| s + " processed").collect()
     }
 }
