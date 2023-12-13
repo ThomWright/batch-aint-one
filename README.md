@@ -88,3 +88,7 @@ tokio_test::block_on(async {
   - [x] Code examples
 - [x] Observability
 - [ ] Metrics?
+
+## Further reading
+
+- [Postgres Performance: Multi-Row Insert](https://json.codes/posts/databases/postgres-multi-row-insert/)

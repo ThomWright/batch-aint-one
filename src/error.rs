@@ -33,8 +33,15 @@ impl<T, E: Display> From<SendError<T>> for BatchError<E> {
     }
 }
 
-// impl<E> From<E> for BatchError<E> {
-//     fn from(s: E) -> Self {
-//         BatchError::BatchFailed(s)
-//     }
-// }
+impl<E> BatchError<E>
+where
+    E: Display,
+{
+    /// Get the inner error for general batch failures, otherwise self.
+    pub fn inner(self) -> Result<E, E> {
+        match self {
+            BatchError::BatchFailed(e) => Ok(e),
+            _ => Err(self),
+        }
+    }
+}

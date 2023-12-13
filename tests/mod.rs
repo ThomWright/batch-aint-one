@@ -80,7 +80,7 @@ async fn strategy_size_loaded() {
 
 /// Given we use a Duration strategy
 /// When we process one item
-/// Then it should take as long at the batching duration + the processing duration
+/// Then it should take as long as the batching duration + the processing duration
 #[tokio::test]
 async fn strategy_duration() {
     tokio::time::pause();
