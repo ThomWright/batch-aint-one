@@ -75,7 +75,7 @@ where
     }
 }
 
-impl<K, I, O> Clone for Batcher<K, I, O> {
+impl<K, I, O, E> Clone for Batcher<K, I, O, E> {
     fn clone(&self) -> Self {
         Self {
             worker: self.worker.clone(),
