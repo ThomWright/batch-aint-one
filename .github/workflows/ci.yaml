@@ -96,6 +96,7 @@ jobs:
 
   publish:
     name: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     needs: [clippy, test]
     steps:
