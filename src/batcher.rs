@@ -1,7 +1,7 @@
-use std::{fmt::Display, hash::Hash};
+use std::{fmt::Display, hash::Hash, sync::Arc};
 
 use async_trait::async_trait;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tracing::Span;
 
 use crate::{
@@ -18,8 +18,15 @@ use crate::{
 ///
 /// Cheap to clone.
 #[derive(Debug)]
-pub struct Batcher<K, I, O = (), E = String> {
-    worker: WorkerHandle<K, I, O, E>,
+pub struct Batcher<K, I, O = (), E = String>
+where
+    K: 'static + Send + Eq + Hash + Clone,
+    I: 'static + Send,
+    O: 'static + Send,
+    E: 'static + Send + Clone + Display,
+{
+    worker: Arc<WorkerHandle>,
+    item_tx: mpsc::Sender<BatchItem<K, I, O, E>>,
 }
 
 /// Process a batch of inputs.
@@ -51,9 +58,13 @@ where
     where
         F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
-        let handle = Worker::spawn(processor, batching_strategy);
 
-        Self { worker: handle }
+        let (handle, item_tx) = Worker::spawn(processor, batching_strategy);
+
+        Self {
+            worker: Arc::new(handle),
+            item_tx,
+        }
     }
 
     /// Add an item to the batch and await the result.
@@ -62,7 +73,7 @@ where
         let span_id = Span::current().id();
 
         let (tx, rx) = oneshot::channel();
-        self.worker
+        self.item_tx
             .send(BatchItem {
                 key,
                 input,
@@ -75,10 +86,17 @@ where
     }
 }
 
-impl<K, I, O, E> Clone for Batcher<K, I, O, E> {
+impl<K, I, O, E> Clone for Batcher<K, I, O, E>
+where
+    K: 'static + Send + Eq + Hash + Clone,
+    I: 'static + Send,
+    O: 'static + Send,
+    E: 'static + Send + Clone + Display,
+{
     fn clone(&self) -> Self {
         Self {
             worker: self.worker.clone(),
+            item_tx: self.item_tx.clone(),
         }
     }
 }

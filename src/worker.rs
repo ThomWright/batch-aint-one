@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, hash::Hash, sync::Arc};
+use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -6,7 +6,6 @@ use crate::{
     batch::{Batch, BatchItem, Generation, GenerationalBatch},
     batcher::Processor,
     batching::{BatchingResult, BatchingStrategy},
-    BatchError,
 };
 
 pub(crate) struct Worker<K, I, O, F, E> {
@@ -28,9 +27,8 @@ pub(crate) struct Worker<K, I, O, F, E> {
 }
 
 #[derive(Debug)]
-pub(crate) struct WorkerHandle<K, I, O, E> {
-    handle: Arc<JoinHandle<()>>,
-    tx: mpsc::Sender<BatchItem<K, I, O, E>>,
+pub(crate) struct WorkerHandle {
+    handle: JoinHandle<()>,
 }
 
 impl<K, I, O, F, E> Worker<K, I, O, F, E>
@@ -41,7 +39,10 @@ where
     F: 'static + Send + Clone + Processor<K, I, O, E>,
     E: 'static + Send + Clone + Display,
 {
-    pub fn spawn(processor: F, batching_strategy: BatchingStrategy) -> WorkerHandle<K, I, O, E> {
+    pub fn spawn(
+        processor: F,
+        batching_strategy: BatchingStrategy,
+    ) -> (WorkerHandle, mpsc::Sender<BatchItem<K, I, O, E>>) {
         let (item_tx, item_rx) = mpsc::channel(10);
 
         let (timeout_tx, timeout_rx) = mpsc::channel(10);
@@ -62,10 +63,7 @@ where
             worker.run().await;
         });
 
-        WorkerHandle {
-            handle: Arc::new(handle),
-            tx: item_tx,
-        }
+        (WorkerHandle { handle }, item_tx)
     }
 
     /// Add an item to the batch.
@@ -121,24 +119,12 @@ where
     }
 }
 
-impl<K, I, O, E: Display> WorkerHandle<K, I, O, E> {
-    pub async fn send(&self, value: BatchItem<K, I, O, E>) -> Result<(), BatchError<E>> {
-        Ok(self.tx.send(value).await?)
-    }
-}
-
-impl<K, I, O, E> Drop for WorkerHandle<K, I, O, E> {
+impl Drop for WorkerHandle {
     fn drop(&mut self) {
+        // TODO: this is too late really.
+        // Ideally we'd signal to the worker to stop, wait for it,
+        // then drop the Batcher with the tx side of the channel.
         self.handle.abort();
-    }
-}
-
-impl<K, I, O, E> Clone for WorkerHandle<K, I, O, E> {
-    fn clone(&self) -> Self {
-        Self {
-            handle: self.handle.clone(),
-            tx: self.tx.clone(),
-        }
     }
 }
 
@@ -165,12 +151,12 @@ mod test {
 
     #[tokio::test]
     async fn simple_test_over_channel() {
-        let worker_handle =
+        let (_worker_handle, item_tx) =
             Worker::<String, _, _, _, _>::spawn(SimpleBatchProcessor, BatchingStrategy::Size(2));
 
         let rx1 = {
             let (tx, rx) = oneshot::channel();
-            worker_handle
+            item_tx
                 .send(BatchItem {
                     key: "K1".to_string(),
                     input: "I1".to_string(),
@@ -185,7 +171,7 @@ mod test {
 
         let rx2 = {
             let (tx, rx) = oneshot::channel();
-            worker_handle
+            item_tx
                 .send(BatchItem {
                     key: "K1".to_string(),
                     input: "I2".to_string(),
