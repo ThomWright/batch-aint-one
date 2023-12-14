@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Display, hash::Hash};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    batch::{Batch, BatchItem, Generation, GenerationalBatch},
+    batch::{Batch, BatchItem, Generation},
     batcher::Processor,
     batching::{BatchingResult, BatchingStrategy},
 };
@@ -23,7 +23,7 @@ pub(crate) struct Worker<K, I, O, F, E> {
     batching_strategy: BatchingStrategy,
 
     /// Unprocessed batches, grouped by key `K`.
-    batches: HashMap<K, GenerationalBatch<K, I, O, E>>,
+    batches: HashMap<K, Batch<K, I, O, E>>,
 }
 
 #[derive(Debug)]
@@ -73,18 +73,18 @@ where
         let batch = self
             .batches
             .entry(key.clone())
-            .or_insert_with(|| GenerationalBatch::Batch(Batch::new(key.clone(), None)));
+            .or_insert_with(|| Batch::new(key.clone()));
 
-        let batch_inner: &mut Batch<K, I, O, E> = batch.add_item(item);
+        batch.add_item(item);
 
-        match self.batching_strategy.apply(batch_inner) {
+        match self.batching_strategy.apply(batch) {
             BatchingResult::Process => {
-                let generation = batch_inner.generation();
+                let generation = batch.generation();
 
                 self.process(key, generation);
             }
             BatchingResult::ProcessAfter(duration) => {
-                batch_inner.time_out_after(duration, self.process_tx.clone());
+                batch.time_out_after(duration, self.process_tx.clone());
             }
             BatchingResult::DoNothing => {}
         }

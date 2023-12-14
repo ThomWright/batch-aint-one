@@ -40,36 +40,23 @@ pub(crate) struct Batch<K, I, O, E> {
     key_currently_processing: Arc<AtomicBool>,
 }
 
-pub(crate) type Generation = u32;
-
-pub(crate) struct NextGen<K> {
-    key: K,
-    generation: Generation,
-    key_currently_processing: Arc<AtomicBool>,
-}
-
 /// Generations are used to handle the case where a timer goes off after the associated batch has
 /// already been processed, and a new batch has already been created with the same key.
 ///
 /// TODO: garbage collection of old generation placeholders.
-pub(crate) enum GenerationalBatch<K, I, O, E> {
-    Batch(Batch<K, I, O, E>),
-    NextGeneration(NextGen<K>),
-}
+pub(crate) type Generation = u32;
 
 impl<K, I, O, E> Batch<K, I, O, E> {
-    pub(crate) fn new(key: K, gen: Option<NextGen<K>>) -> Self {
+    pub(crate) fn new(key: K) -> Self {
         Self {
             key,
-            generation: gen.as_ref().map(|g| g.generation).unwrap_or_default(),
+            generation: Generation::default(),
             items: Vec::default(),
 
             timeout_deadline: None,
             timeout_handle: None,
 
-            key_currently_processing: gen
-                .map(|g| g.key_currently_processing.clone())
-                .unwrap_or_default(),
+            key_currently_processing: Arc::<AtomicBool>::default(),
         }
     }
 
@@ -91,8 +78,8 @@ impl<K, I, O, E> Batch<K, I, O, E> {
         self.generation
     }
 
-    pub(crate) fn is_generation(&self, generation: Generation) -> bool {
-        self.generation == generation
+    pub(crate) fn is_processable(&self, generation: Generation) -> bool {
+        self.generation == generation && self.len() > 0
     }
 
     pub(crate) fn add_item(&mut self, item: BatchItem<K, I, O, E>) {
@@ -123,6 +110,34 @@ where
     O: 'static + Send,
     E: 'static + Send + Clone + Display,
 {
+    fn new_generation(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            generation: self.generation.wrapping_add(1),
+            items: Vec::default(),
+
+            timeout_deadline: None,
+            timeout_handle: None,
+
+            key_currently_processing: self.key_currently_processing.clone(),
+        }
+    }
+
+    /// If a batch exists for the given generation, returns it and replaces it with an empty
+    /// placeholder for the next generation.
+    pub fn take_batch_for_processing(
+        &mut self,
+        generation: Generation,
+    ) -> Option<Batch<K, I, O, E>> {
+        if self.is_processable(generation) {
+            let batch = std::mem::replace(self, self.new_generation());
+
+            Some(batch)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn process<F>(
         mut self,
         processor: F,
@@ -223,79 +238,10 @@ where
     }
 }
 
-impl<K, I, O, E> From<&NextGen<K>> for Batch<K, I, O, E>
-where
-    K: Clone,
-{
-    fn from(gen: &NextGen<K>) -> Self {
-        Self {
-            key: gen.key.clone(),
-            generation: gen.generation,
-            items: Vec::default(),
-
-            timeout_deadline: None,
-            timeout_handle: None,
-
-            key_currently_processing: gen.key_currently_processing.clone(),
-        }
-    }
-}
-
 impl<K, I, O, E> Drop for Batch<K, I, O, E> {
     fn drop(&mut self) {
         if let Some(handle) = self.timeout_handle.take() {
             handle.abort();
-        }
-    }
-}
-
-impl<K, I, O, E> GenerationalBatch<K, I, O, E>
-where
-    K: Clone,
-{
-    pub fn add_item(&mut self, item: BatchItem<K, I, O, E>) -> &mut Batch<K, I, O, E> {
-        match self {
-            Self::Batch(batch) => {
-                batch.add_item(item);
-
-                batch
-            }
-
-            Self::NextGeneration(generation) => {
-                let mut new_batch = Batch::from(&*generation);
-                new_batch.add_item(item);
-
-                *self = Self::Batch(new_batch);
-
-                match self {
-                    Self::Batch(batch) => batch,
-                    _ => panic!("should be a Batch, we just set it"),
-                }
-            }
-        }
-    }
-
-    /// If a batch exists for the given generation, returns it and replaces it with a
-    /// `NextGeneration` placeholder.
-    pub fn take_batch_for_processing(
-        &mut self,
-        generation: Generation,
-    ) -> Option<Batch<K, I, O, E>> {
-        match self {
-            Self::Batch(batch) if batch.is_generation(generation) => {
-                // TODO: there must be a nicer way?
-                let batch = std::mem::replace(batch, Batch::new(batch.key(), None));
-
-                *self = Self::NextGeneration(NextGen {
-                    key: batch.key.clone(),
-                    generation: batch.generation().wrapping_add(1),
-                    key_currently_processing: batch.key_currently_processing.clone(),
-                });
-
-                Some(batch)
-            }
-
-            _ => None,
         }
     }
 }
