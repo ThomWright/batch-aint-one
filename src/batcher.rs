@@ -16,6 +16,8 @@ use crate::{
 /// Takes inputs (`I`) grouped by a key (`K`) and processes multiple together in a batch. An output
 /// (`O`) is produced for each input.
 ///
+/// Errors (`E`) can be returned from a batch.
+///
 /// Cheap to clone.
 #[derive(Debug)]
 pub struct Batcher<K, I, O = (), E = String>
