@@ -1,7 +1,7 @@
 use std::{marker::Send, time::Duration};
 
 use async_trait::async_trait;
-use batch_aint_one::{Batcher, BatchingStrategy, Processor};
+use batch_aint_one::{Batcher, BatchingPolicy, OnFull, Processor};
 use futures::future::join_all;
 use tokio::{join, time::Instant};
 // use tokio_test::assert_elapsed;
@@ -35,7 +35,8 @@ struct CanDeriveClone {
 async fn strategy_size() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(Duration::ZERO),
-        BatchingStrategy::Size(3),
+        3,
+        BatchingPolicy::Size,
     );
 
     let h1 = tokio_test::task::spawn(batcher.add("A".to_string(), "1".to_string()));
@@ -60,7 +61,8 @@ async fn strategy_size_loaded() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        BatchingStrategy::Size(10),
+        10,
+        BatchingPolicy::Size,
     );
 
     let handler = |i: i32| {
@@ -90,7 +92,8 @@ async fn strategy_duration() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        BatchingStrategy::Duration(batching_dur),
+        10,
+        BatchingPolicy::Duration(batching_dur, OnFull::Process),
     );
 
     let now = Instant::now();
@@ -121,7 +124,8 @@ async fn strategy_duration_loaded() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        BatchingStrategy::Duration(Duration::from_millis(10)),
+        10,
+        BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Process),
     );
 
     let handler = |i: i32| {
@@ -150,7 +154,8 @@ async fn strategy_sequential() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        BatchingStrategy::Sequential,
+        10,
+        BatchingPolicy::Sequential,
     );
 
     let handler = || async {
@@ -186,7 +191,8 @@ async fn strategy_sequential_with_wait() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        BatchingStrategy::Sequential,
+        10,
+        BatchingPolicy::Sequential,
     );
 
     let handler = || async {
@@ -215,7 +221,8 @@ async fn strategy_sequential_loaded() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        BatchingStrategy::Sequential,
+        200,
+        BatchingPolicy::Sequential,
     );
 
     let handler = |i: i32| {

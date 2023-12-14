@@ -1,46 +1,92 @@
-use std::{fmt::Debug, time::Duration};
+use std::{
+    fmt::{Debug, Display},
+    time::Duration,
+};
 
 use crate::batch::Batch;
 
-/// When to process a batch.
+/// A policy controlling when batches get processed.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum BatchingStrategy {
-    /// Process the batch when it reaches a given size.
-    Size(usize),
-    /// Process the batch a given duration after it was created.
-    Duration(Duration),
-    /// Process the batch a given duration after the most recent item was added.
-    Debounce(Duration),
+pub enum BatchingPolicy {
     /// Process the batch after the previous batch for the same key has finished.
+    ///
+    /// Rejects when full.
     Sequential,
-    // TODO: Duration/Debounce+Size
+
+    /// Process the batch when it reaches the maximum size.
+    ///
+    /// Warning: unbounded concurrency. There is no limit on the number of batches for the same key
+    /// which can be processed concurrently.
+    Size,
+
+    /// Process the batch a given duration after it was created.
+    ///
+    /// Warning: unbounded concurrency when OnFull::Process is used. There is no limit on the number of batches for the same key
+    /// which can be processed concurrently.
+    Duration(Duration, OnFull),
+
+    /// Process the batch a given duration after the most recent item was added.
+    ///
+    /// Warning: unbounded concurrency when OnFull::Process is used. There is no limit on the number
+    /// of batches for the same key which can be processed concurrently.
+    Debounce(Duration, OnFull),
 }
 
-pub enum BatchingResult {
+/// What to do when a batch becomes full (reaches `max_size`).
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum OnFull {
+    /// Immediately process the batch.
     Process,
-    ProcessAfter(Duration),
-    DoNothing,
+
+    /// Reject any additional items. The batch will be processed
+    /// when another condition is reached.
+    Reject,
 }
 
-impl BatchingStrategy {
+pub enum PolicyResult {
+    AddAndProcess,
+    AddAndProcessAfter(Duration),
+    Reject,
+    Add,
+}
+
+impl BatchingPolicy {
     pub(crate) fn is_sequential(&self) -> bool {
         matches!(self, Self::Sequential)
     }
 
-    pub(crate) fn apply<K, I, O, E>(&self, batch: &Batch<K, I, O, E>) -> BatchingResult
+    /// Should be applied _before_ adding the new item to the batch.
+    pub(crate) fn apply<K, I, O, E: Display>(
+        &self,
+        max_size: usize,
+        batch: &Batch<K, I, O, E>,
+    ) -> PolicyResult
     where
         K: 'static + Send + Clone,
     {
         match self {
-            Self::Size(size) if batch.len() >= *size => BatchingResult::Process,
+            Self::Size if batch.len() >= max_size - 1 => PolicyResult::AddAndProcess,
 
-            Self::Duration(dur) if batch.is_new_batch() => BatchingResult::ProcessAfter(*dur),
+            Self::Duration(_dur, on_full) if batch.len() >= max_size - 1 => match on_full {
+                OnFull::Process => PolicyResult::AddAndProcess,
+                OnFull::Reject => PolicyResult::Reject,
+            },
+            Self::Duration(dur, _on_full) if batch.is_new_batch() => {
+                PolicyResult::AddAndProcessAfter(*dur)
+            }
 
-            Self::Debounce(dur) => BatchingResult::ProcessAfter(*dur),
+            Self::Debounce(_dur, on_full) if batch.len() >= max_size - 1 => match on_full {
+                OnFull::Process => PolicyResult::AddAndProcess,
+                OnFull::Reject => PolicyResult::Reject,
+            },
+            Self::Debounce(dur, _on_full) => PolicyResult::AddAndProcessAfter(*dur),
 
-            Self::Sequential if !batch.is_running() => BatchingResult::Process,
-            _ => BatchingResult::DoNothing,
+            Self::Sequential if batch.len() >= max_size - 1 => PolicyResult::Reject,
+            Self::Sequential if !batch.is_running() => PolicyResult::AddAndProcess,
+
+            _ => PolicyResult::Add,
         }
     }
 }

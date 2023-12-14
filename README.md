@@ -41,7 +41,7 @@ With batching, we can improve the throughput. Acquiring/releasing the lock and b
 use std::{marker::Send, sync::Arc};
 
 use async_trait::async_trait;
-use batch_aint_one::{Batcher, Processor, BatchingStrategy};
+use batch_aint_one::{Batcher, Processor, BatchingPolicy};
 
 #[derive(Debug, Clone)]
 struct SimpleBatchProcessor;
@@ -57,7 +57,7 @@ impl Processor<String, String, String> for SimpleBatchProcessor {
 }
 
 tokio_test::block_on(async {
-    let batcher = Arc::new(Batcher::new(SimpleBatchProcessor, BatchingStrategy::Size(2)));
+    let batcher = Arc::new(Batcher::new(SimpleBatchProcessor, 2, BatchingPolicy::Size));
 
     // Request handler 1
     let b1 = batcher.clone();

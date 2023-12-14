@@ -1,14 +1,16 @@
 use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 use tokio::{sync::mpsc, task::JoinHandle};
+use tracing::debug;
 
 use crate::{
     batch::{Batch, BatchItem, Generation},
     batcher::Processor,
-    batching::{BatchingResult, BatchingStrategy},
+    batching::{BatchingPolicy, PolicyResult},
+    BatchError,
 };
 
-pub(crate) struct Worker<K, I, O, F, E> {
+pub(crate) struct Worker<K, I, O, F, E: Display> {
     /// Used to receive new batch items.
     item_rx: mpsc::Receiver<BatchItem<K, I, O, E>>,
     /// The callback to process a batch of inputs.
@@ -19,8 +21,10 @@ pub(crate) struct Worker<K, I, O, F, E> {
     /// Receives signals to process a batch for key `K`.
     process_rx: mpsc::Receiver<(K, Generation)>,
 
+    /// Controls the maximum size of a match.
+    max_size: usize,
     /// Controls when to start processing a batch.
-    batching_strategy: BatchingStrategy,
+    batching_policy: BatchingPolicy,
 
     /// Unprocessed batches, grouped by key `K`.
     batches: HashMap<K, Batch<K, I, O, E>>,
@@ -41,7 +45,8 @@ where
 {
     pub fn spawn(
         processor: F,
-        batching_strategy: BatchingStrategy,
+        max_size: usize,
+        batching_policy: BatchingPolicy,
     ) -> (WorkerHandle, mpsc::Sender<BatchItem<K, I, O, E>>) {
         let (item_tx, item_rx) = mpsc::channel(10);
 
@@ -54,7 +59,8 @@ where
             process_tx: timeout_tx,
             process_rx: timeout_rx,
 
-            batching_strategy,
+            max_size,
+            batching_policy,
 
             batches: HashMap::new(),
         };
@@ -75,18 +81,30 @@ where
             .entry(key.clone())
             .or_insert_with(|| Batch::new(key.clone()));
 
-        batch.add_item(item);
+        match self.batching_policy.apply(self.max_size, batch) {
+            PolicyResult::AddAndProcess => {
+                batch.push(item);
 
-        match self.batching_strategy.apply(batch) {
-            BatchingResult::Process => {
                 let generation = batch.generation();
 
                 self.process(key, generation);
             }
-            BatchingResult::ProcessAfter(duration) => {
+            PolicyResult::AddAndProcessAfter(duration) => {
+                batch.push(item);
+
                 batch.time_out_after(duration, self.process_tx.clone());
             }
-            BatchingResult::DoNothing => {}
+            PolicyResult::Add => {
+                batch.push(item);
+            }
+            PolicyResult::Reject => {
+                if item.tx.send(Err(BatchError::Rejected)).is_err() {
+                    // Whatever was waiting for the output must have shut down. Presumably it
+                    // doesn't care anymore, but we log here anyway. There's not much else we can do
+                    // here.
+                    debug!("Unable to send output over oneshot channel. Receiver deallocated.");
+                }
+            }
         }
     }
 
@@ -95,7 +113,7 @@ where
 
         if let Some(batch) = batch.take_batch_for_processing(generation) {
             let process_next = self
-                .batching_strategy
+                .batching_policy
                 .is_sequential()
                 .then(|| self.process_tx.clone());
 
@@ -152,7 +170,7 @@ mod test {
     #[tokio::test]
     async fn simple_test_over_channel() {
         let (_worker_handle, item_tx) =
-            Worker::<String, _, _, _, _>::spawn(SimpleBatchProcessor, BatchingStrategy::Size(2));
+            Worker::<String, _, _, _, _>::spawn(SimpleBatchProcessor, 2, BatchingPolicy::Size);
 
         let rx1 = {
             let (tx, rx) = oneshot::channel();

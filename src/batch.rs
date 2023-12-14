@@ -15,10 +15,10 @@ use tokio::{
 };
 use tracing::{debug, span, Instrument, Level};
 
-use crate::Processor;
+use crate::{batcher::Processor, error::Result, BatchError};
 
 #[derive(Debug)]
-pub(crate) struct BatchItem<K, I, O, E> {
+pub(crate) struct BatchItem<K, I, O, E: Display> {
     pub key: K,
     pub input: I,
     /// Used to send the output back.
@@ -29,7 +29,7 @@ pub(crate) struct BatchItem<K, I, O, E> {
 
 /// A batch of items to process.
 #[derive(Debug)]
-pub(crate) struct Batch<K, I, O, E> {
+pub(crate) struct Batch<K, I, O, E: Display> {
     key: K,
     generation: u32,
     items: Vec<BatchItem<K, I, O, E>>,
@@ -46,7 +46,7 @@ pub(crate) struct Batch<K, I, O, E> {
 /// TODO: garbage collection of old generation placeholders.
 pub(crate) type Generation = u32;
 
-impl<K, I, O, E> Batch<K, I, O, E> {
+impl<K, I, O, E: Display> Batch<K, I, O, E> {
     pub(crate) fn new(key: K) -> Self {
         Self {
             key,
@@ -66,7 +66,7 @@ impl<K, I, O, E> Batch<K, I, O, E> {
     }
 
     pub(crate) fn is_new_batch(&self) -> bool {
-        self.len() == 1
+        self.len() == 0
     }
 
     pub(crate) fn is_running(&self) -> bool {
@@ -82,7 +82,7 @@ impl<K, I, O, E> Batch<K, I, O, E> {
         self.generation == generation && self.len() > 0
     }
 
-    pub(crate) fn add_item(&mut self, item: BatchItem<K, I, O, E>) {
+    pub(crate) fn push(&mut self, item: BatchItem<K, I, O, E>) {
         self.items.push(item);
     }
 
@@ -93,7 +93,7 @@ impl<K, I, O, E> Batch<K, I, O, E> {
     }
 }
 
-impl<K, I, O, E> Batch<K, I, O, E>
+impl<K, I, O, E: Display> Batch<K, I, O, E>
 where
     K: Clone,
 {
@@ -184,7 +184,7 @@ where
             };
 
             for (tx, output) in txs.into_iter().zip(outputs) {
-                if tx.send(output).is_err() {
+                if tx.send(output.map_err(BatchError::BatchFailed)).is_err() {
                     // Whatever was waiting for the output must have shut down. Presumably it
                     // doesn't care anymore, but we log here anyway. There's not much else we can do
                     // here.
@@ -214,6 +214,7 @@ where
 impl<K, I, O, E> Batch<K, I, O, E>
 where
     K: 'static + Send + Clone,
+    E: Display,
 {
     pub(crate) fn time_out_after(&mut self, duration: Duration, tx: mpsc::Sender<(K, Generation)>) {
         self.cancel_timeout();
@@ -238,7 +239,7 @@ where
     }
 }
 
-impl<K, I, O, E> Drop for Batch<K, I, O, E> {
+impl<K, I, O, E: Display> Drop for Batch<K, I, O, E> {
     fn drop(&mut self) {
         if let Some(handle) = self.timeout_handle.take() {
             handle.abort();

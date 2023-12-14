@@ -15,6 +15,10 @@ pub enum BatchError<E: Display> {
     #[error("Error while waiting for batch results: channel closed. {}", .0)]
     Rx(RecvError),
 
+    /// The current batch is full so the item was rejected.
+    #[error("Unable to process item: the current batch is full")]
+    Rejected,
+
     /// Something went wrong while processing a batch.
     #[error("The entire batch failed with message: {}", .0)]
     BatchFailed(E),

@@ -6,9 +6,9 @@ use tracing::Span;
 
 use crate::{
     batch::BatchItem,
+    batching::BatchingPolicy,
     error::Result,
     worker::{Worker, WorkerHandle},
-    BatchError, BatchingStrategy,
 };
 
 /// Groups items to be processed in batches.
@@ -56,11 +56,11 @@ where
     E: 'static + Send + Clone + Display,
 {
     /// Create a new batcher.
-    pub fn new<F>(processor: F, batching_strategy: BatchingStrategy) -> Self
+    pub fn new<F>(processor: F, max_size: usize, batching_policy: BatchingPolicy) -> Self
     where
         F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
-        let (handle, item_tx) = Worker::spawn(processor, batching_strategy);
+        let (handle, item_tx) = Worker::spawn(processor, max_size, batching_policy);
 
         Self {
             worker: Arc::new(handle),
@@ -83,7 +83,7 @@ where
             })
             .await?;
 
-        rx.await?.map_err(BatchError::BatchFailed)
+        rx.await?
     }
 }
 
