@@ -58,7 +58,6 @@ where
     where
         F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
-
         let (handle, item_tx) = Worker::spawn(processor, batching_strategy);
 
         Self {
