@@ -16,5 +16,5 @@ mod error;
 mod worker;
 
 pub use batcher::{Batcher, Processor};
-pub use batching::{BatchingPolicy, OnFull};
+pub use batching::{BatchingPolicy, Limits, OnFull};
 pub use error::BatchError;

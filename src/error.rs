@@ -16,12 +16,28 @@ pub enum BatchError<E: Display> {
     Rx(RecvError),
 
     /// The current batch is full so the item was rejected.
-    #[error("Unable to process item: the current batch is full")]
-    Rejected,
+    #[error("Batch item rejected: {0}")]
+    Rejected(RejectionReason),
 
     /// Something went wrong while processing a batch.
     #[error("The entire batch failed with message: {}", .0)]
     BatchFailed(E),
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RejectionReason {
+    BatchFull,
+    MaxConcurrency,
+}
+
+impl Display for RejectionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            RejectionReason::BatchFull => "the batch is full",
+            RejectionReason::MaxConcurrency => "max concurrency limit reached for key",
+        })
+    }
 }
 
 pub type Result<T, E> = std::result::Result<T, BatchError<E>>;

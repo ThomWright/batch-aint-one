@@ -2,7 +2,7 @@ use std::{
     fmt::Display,
     mem,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -15,7 +15,7 @@ use tokio::{
 };
 use tracing::{debug, span, Instrument, Level};
 
-use crate::{batcher::Processor, error::Result, BatchError};
+use crate::{batcher::Processor, error::Result, worker::Message, BatchError};
 
 #[derive(Debug)]
 pub(crate) struct BatchItem<K, I, O, E: Display> {
@@ -37,7 +37,8 @@ pub(crate) struct Batch<K, I, O, E: Display> {
     timeout_deadline: Option<Instant>,
     timeout_handle: Option<JoinHandle<()>>,
 
-    key_currently_processing: Arc<AtomicBool>,
+    /// The number of batches with this key that are currently processing.
+    processing: Arc<AtomicUsize>,
 }
 
 /// Generations are used to handle the case where a timer goes off after the associated batch has
@@ -56,7 +57,7 @@ impl<K, I, O, E: Display> Batch<K, I, O, E> {
             timeout_deadline: None,
             timeout_handle: None,
 
-            key_currently_processing: Arc::<AtomicBool>::default(),
+            processing: Arc::<AtomicUsize>::default(),
         }
     }
 
@@ -69,17 +70,28 @@ impl<K, I, O, E: Display> Batch<K, I, O, E> {
         self.len() == 0
     }
 
-    pub(crate) fn is_running(&self) -> bool {
-        self.key_currently_processing
-            .load(std::sync::atomic::Ordering::Acquire)
+    pub(crate) fn is_full(&self, max: usize) -> bool {
+        self.len() >= max
+    }
+
+    pub(crate) fn has_single_space(&self, max: usize) -> bool {
+        self.len() == max - 1
+    }
+
+    pub(crate) fn processing(&self) -> usize {
+        self.processing.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub(crate) fn generation(&self) -> Generation {
         self.generation
     }
 
-    pub(crate) fn is_processable(&self, generation: Generation) -> bool {
-        self.generation == generation && self.len() > 0
+    pub(crate) fn is_generation(&self, generation: Generation) -> bool {
+        self.generation == generation
+    }
+
+    pub(crate) fn is_processable(&self) -> bool {
+        self.len() > 0
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<K, I, O, E>) {
@@ -119,17 +131,17 @@ where
             timeout_deadline: None,
             timeout_handle: None,
 
-            key_currently_processing: self.key_currently_processing.clone(),
+            processing: self.processing.clone(),
         }
     }
 
     /// If a batch exists for the given generation, returns it and replaces it with an empty
     /// placeholder for the next generation.
-    pub fn take_batch_for_processing(
+    pub fn take_generation_for_processing(
         &mut self,
         generation: Generation,
     ) -> Option<Batch<K, I, O, E>> {
-        if self.is_processable(generation) {
+        if self.is_generation(generation) && self.is_processable() {
             let batch = std::mem::replace(self, self.new_generation());
 
             Some(batch)
@@ -138,14 +150,21 @@ where
         }
     }
 
-    pub(crate) fn process<F>(
-        mut self,
-        processor: F,
-        process_next: Option<mpsc::Sender<(K, Generation)>>,
-    ) where
+    pub fn take_batch_for_processing(&mut self) -> Option<Batch<K, I, O, E>> {
+        if self.is_processable() {
+            let batch = std::mem::replace(self, self.new_generation());
+
+            Some(batch)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn process<F>(mut self, processor: F, on_finished: mpsc::Sender<Message<K>>)
+    where
         F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
-        self.key_currently_processing.store(true, Ordering::Release);
+        self.processing.fetch_add(1, Ordering::AcqRel);
 
         self.cancel_timeout();
 
@@ -192,21 +211,18 @@ where
                 }
             }
 
-            self.key_currently_processing
-                .store(false, Ordering::Release);
+            self.processing.fetch_sub(1, Ordering::AcqRel);
 
-            // We're finished with this batch, maybe we can process the next one
-            if let Some(tx) = process_next {
-                if tx
-                    .send((self.key.clone(), self.generation.wrapping_add(1)))
-                    .await
-                    .is_err()
-                {
-                    // The worker must have shut down. In this case, we don't want to process any more
-                    // batches anyway.
-                    debug!("Tried to signal a batch had finished but the worker has shut down");
-                }
-            };
+            // We're finished with this batch
+            if on_finished
+                .send(Message::Finished(self.key.clone()))
+                .await
+                .is_err()
+            {
+                // The worker must have shut down. In this case, we don't want to process any more
+                // batches anyway.
+                debug!("Tried to signal a batch had finished but the worker has shut down");
+            }
         });
     }
 }
@@ -216,7 +232,7 @@ where
     K: 'static + Send + Clone,
     E: Display,
 {
-    pub(crate) fn time_out_after(&mut self, duration: Duration, tx: mpsc::Sender<(K, Generation)>) {
+    pub(crate) fn time_out_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<K>>) {
         self.cancel_timeout();
 
         let new_deadline = Instant::now() + duration;
@@ -228,7 +244,7 @@ where
         let new_handle = tokio::spawn(async move {
             tokio::time::sleep_until(new_deadline).await;
 
-            if tx.send((key, generation)).await.is_err() {
+            if tx.send(Message::Process(key, generation)).await.is_err() {
                 // The worker must have shut down. In this case, we don't want to process any more
                 // batches anyway.
                 debug!("A batch reached a timeout but the worker has shut down");

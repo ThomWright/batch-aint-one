@@ -41,14 +41,18 @@ With batching, we can improve the throughput. Acquiring/releasing the lock and b
 use std::{marker::Send, sync::Arc};
 
 use async_trait::async_trait;
-use batch_aint_one::{Batcher, Processor, BatchingPolicy};
+use batch_aint_one::{Batcher, BatchingPolicy, Processor, Limits};
 
 #[derive(Debug, Clone)]
 struct SimpleBatchProcessor;
 
 #[async_trait]
 impl Processor<String, String, String> for SimpleBatchProcessor {
-    async fn process(&self, key: String, inputs: impl Iterator<Item = String> + Send) -> Result<Vec<String>, String> {
+    async fn process(
+        &self,
+        key: String,
+        inputs: impl Iterator<Item = String> + Send,
+    ) -> Result<Vec<String>, String> {
         // In this example:
         // - `key`: "A"
         // - `inputs`: ["1", "2"]
@@ -57,7 +61,13 @@ impl Processor<String, String, String> for SimpleBatchProcessor {
 }
 
 tokio_test::block_on(async {
-    let batcher = Arc::new(Batcher::new(SimpleBatchProcessor, 2, BatchingPolicy::Size));
+    let batcher = Arc::new(Batcher::new(
+        SimpleBatchProcessor,
+        Limits::default()
+          .max_batch_size(2)
+          .max_key_concurrency(1),
+        BatchingPolicy::Size,
+    ));
 
     // Request handler 1
     let b1 = batcher.clone();
@@ -65,7 +75,6 @@ tokio_test::block_on(async {
         let output = b1.add("A".to_string(), "1".to_string()).await.unwrap();
 
         assert_eq!("1 processed".to_string(), output);
-
     });
 
     // Request handler 2
@@ -76,6 +85,7 @@ tokio_test::block_on(async {
         assert_eq!("2 processed".to_string(), output);
     });
 });
+
 ```
 
 ## Roadmap

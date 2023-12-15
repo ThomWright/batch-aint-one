@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use crate::batch::Batch;
+use crate::{batch::Batch, error::RejectionReason};
 
 /// A policy controlling when batches get processed.
 #[derive(Debug)]
@@ -11,94 +11,160 @@ use crate::batch::Batch;
 pub enum BatchingPolicy {
     /// Process the batch after the previous batch for the same key has finished.
     ///
-    /// Rejects when full.
+    /// Rejects when the maximum limits have been reached.
     Sequential,
 
     /// Process the batch when it reaches the maximum size.
     ///
-    /// Warning: unbounded concurrency. There is no limit on the number of batches for the same key
-    /// which can be processed concurrently.
+    /// Rejects when the maximum limits have been reached.
     Size,
 
     /// Process the batch a given duration after it was created.
     ///
-    /// Warning: unbounded concurrency when OnFull::Process is used. There is no limit on the number of batches for the same key
-    /// which can be processed concurrently.
+    /// When OnFull::Process is used, it will attempt to process the batch when the batch size
+    /// limit is reached.
+    ///
+    /// Rejects when the maximum limits have been reached.
     Duration(Duration, OnFull),
 
     /// Process the batch a given duration after the most recent item was added.
     ///
-    /// Warning: unbounded concurrency when OnFull::Process is used. There is no limit on the number
-    /// of batches for the same key which can be processed concurrently.
+    /// When OnFull::Process is used, it will attempt to process the batch when the batch size
+    /// limit is reached.
+    ///
+    /// Rejects when the maximum limits have been reached.
     Debounce(Duration, OnFull),
 }
 
-/// What to do when a batch becomes full (reaches `max_size`).
+/// A policy controlling limits on batch sizes and concurrency.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Limits {
+    pub(crate) max_batch_size: usize,
+    pub(crate) max_key_concurrency: usize,
+}
+
+/// What to do when a batch becomes full.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OnFull {
-    /// Immediately process the batch.
+    /// Immediately attempt process the batch. If the maximum concurrency has been reached for the
+    /// key, it will reject.
     Process,
 
-    /// Reject any additional items. The batch will be processed
-    /// when another condition is reached.
+    /// Reject any additional items. The batch will be processed when another condition is reached.
     Reject,
 }
 
-pub enum PolicyResult {
+pub enum PreAdd {
     AddAndProcess,
     AddAndProcessAfter(Duration),
-    Reject,
+    Reject(RejectionReason),
     Add,
 }
 
-impl BatchingPolicy {
-    pub(crate) fn is_sequential(&self) -> bool {
-        matches!(self, Self::Sequential)
+pub enum PostFinish {
+    Process,
+    DoNothing,
+}
+
+impl Limits {
+    /// Limits the maximum size of a batch.
+    pub fn max_batch_size(self, max: usize) -> Self {
+        Self {
+            max_batch_size: max,
+            ..self
+        }
     }
 
+    /// Limits the maximum number of batches that can be processed concurrently for a key.
+    pub fn max_key_concurrency(self, max: usize) -> Self {
+        Self {
+            max_key_concurrency: max,
+            ..self
+        }
+    }
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_batch_size: 100,
+            max_key_concurrency: 10,
+        }
+    }
+}
+
+impl BatchingPolicy {
     /// Should be applied _before_ adding the new item to the batch.
-    pub(crate) fn apply<K, I, O, E: Display>(
+    pub(crate) fn pre_add<K, I, O, E: Display>(
         &self,
-        max_size: usize,
+        limits: &Limits,
         batch: &Batch<K, I, O, E>,
-    ) -> PolicyResult
+    ) -> PreAdd
     where
         K: 'static + Send + Clone,
     {
-        match self {
-            Self::Size if batch.len() >= max_size - 1 => PolicyResult::AddAndProcess,
+        if batch.is_full(limits.max_batch_size) {
+            if batch.processing() >= limits.max_key_concurrency {
+                return PreAdd::Reject(RejectionReason::MaxConcurrency);
+            } else {
+                return PreAdd::Reject(RejectionReason::BatchFull);
+            }
+        }
 
-            Self::Duration(_dur, on_full) if batch.len() >= max_size - 1 => match on_full {
-                OnFull::Process => PolicyResult::AddAndProcess,
-                OnFull::Reject => {
-                    if batch.len() >= max_size {
-                        PolicyResult::Reject
-                    } else {
-                        PolicyResult::Add
-                    }
+        match self {
+            Self::Size if batch.has_single_space(limits.max_batch_size) => {
+                if batch.processing() >= limits.max_key_concurrency {
+                    PreAdd::Add
+                } else {
+                    PreAdd::AddAndProcess
                 }
-            },
-            Self::Duration(dur, _on_full) if batch.is_new_batch() => {
-                PolicyResult::AddAndProcessAfter(*dur)
             }
 
-            Self::Debounce(_dur, on_full) if batch.len() >= max_size - 1 => match on_full {
-                OnFull::Process => PolicyResult::AddAndProcess,
-                OnFull::Reject => {
-                    if batch.len() >= max_size {
-                        PolicyResult::Reject
+            Self::Duration(_dur, on_full) | Self::Debounce(_dur, on_full)
+                if batch.has_single_space(limits.max_batch_size) =>
+            {
+                if batch.processing() >= limits.max_key_concurrency {
+                    PreAdd::Add
+                } else if matches!(on_full, OnFull::Process) {
+                    PreAdd::AddAndProcess
+                } else {
+                    PreAdd::Add
+                }
+            }
+
+            Self::Duration(dur, _on_full) if batch.is_new_batch() => {
+                PreAdd::AddAndProcessAfter(*dur)
+            }
+            Self::Debounce(dur, _on_full) => PreAdd::AddAndProcessAfter(*dur),
+
+            Self::Sequential if batch.processing() < limits.max_key_concurrency => {
+                PreAdd::AddAndProcess
+            }
+
+            _ => PreAdd::Add,
+        }
+    }
+
+    pub(crate) fn post_finish<K, I, O, E: Display>(
+        &self,
+        limits: &Limits,
+        next_batch: &Batch<K, I, O, E>,
+    ) -> PostFinish {
+        if next_batch.processing() < limits.max_key_concurrency {
+            match self {
+                BatchingPolicy::Sequential => PostFinish::Process,
+                _ => {
+                    if next_batch.is_full(limits.max_batch_size) {
+                        PostFinish::Process
                     } else {
-                        PolicyResult::Add
+                        PostFinish::DoNothing
                     }
                 }
-            },
-            Self::Debounce(dur, _on_full) => PolicyResult::AddAndProcessAfter(*dur),
-
-            Self::Sequential if batch.len() >= max_size => PolicyResult::Reject,
-            Self::Sequential if !batch.is_running() => PolicyResult::AddAndProcess,
-
-            _ => PolicyResult::Add,
+            }
+        } else {
+            PostFinish::DoNothing
         }
     }
 }

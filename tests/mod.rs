@@ -1,7 +1,7 @@
 use std::{marker::Send, time::Duration};
 
 use async_trait::async_trait;
-use batch_aint_one::{Batcher, BatchingPolicy, OnFull, Processor};
+use batch_aint_one::{Batcher, BatchingPolicy, Limits, OnFull, Processor};
 use futures::future::join_all;
 use tokio::{join, time::Instant};
 // use tokio_test::assert_elapsed;
@@ -35,7 +35,7 @@ struct CanDeriveClone {
 async fn strategy_size() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(Duration::ZERO),
-        3,
+        Limits::default().max_batch_size(3),
         BatchingPolicy::Size,
     );
 
@@ -61,7 +61,7 @@ async fn strategy_size_loaded() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        10,
+        Limits::default().max_batch_size(10),
         BatchingPolicy::Size,
     );
 
@@ -80,6 +80,39 @@ async fn strategy_size_loaded() {
     assert_eq!(outputs.last().unwrap(), "100 processed");
 }
 
+#[tokio::test]
+async fn strategy_size_max_concurrency_limit() {
+    let batcher = Batcher::new(
+        SimpleBatchProcessor(Duration::ZERO),
+        Limits::default().max_batch_size(1).max_key_concurrency(2),
+        BatchingPolicy::Size,
+    );
+
+    // Two processed immediately
+    let h1 = tokio_test::task::spawn(batcher.add("A".to_string(), "1".to_string()));
+    let h2 = tokio_test::task::spawn(batcher.add("A".to_string(), "2".to_string()));
+
+    // One processed after another finished
+    let h3 = tokio_test::task::spawn(batcher.add("A".to_string(), "3".to_string()));
+
+    // One rejected
+    let h4 = tokio_test::task::spawn(batcher.add("A".to_string(), "4".to_string()));
+
+    // One different key
+    let h5 = tokio_test::task::spawn(batcher.add("B".to_string(), "1".to_string()));
+
+    let (o1, o2, o3, o4, o5) = join!(h1, h2, h3, h4, h5);
+
+    assert_eq!("1 processed".to_string(), o1.unwrap());
+    assert_eq!("2 processed".to_string(), o2.unwrap());
+    assert_eq!("3 processed".to_string(), o3.unwrap());
+    assert_eq!(
+        "Batch item rejected: max concurrency limit reached for key",
+        o4.unwrap_err().to_string()
+    );
+    assert_eq!("1 processed".to_string(), o5.unwrap());
+}
+
 /// Given we use a Duration strategy
 /// When we process one item
 /// Then it should take as long as the batching duration + the processing duration
@@ -92,7 +125,7 @@ async fn strategy_duration() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        10,
+        Limits::default().max_batch_size(10),
         BatchingPolicy::Duration(batching_dur, OnFull::Process),
     );
 
@@ -125,7 +158,7 @@ async fn strategy_duration_loaded_process_on_full() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        10,
+        Limits::default().max_batch_size(10),
         BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Process),
     );
 
@@ -156,7 +189,7 @@ async fn strategy_duration_loaded_reject_on_full() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        10,
+        Limits::default().max_batch_size(10),
         BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Reject),
     );
 
@@ -181,18 +214,18 @@ async fn strategy_duration_loaded_reject_on_full() {
     assert_eq!(err.len(), 90);
 }
 
-/// Given we use a Sequential strategy
+/// Given we use a Sequential strategy with max concurrency = 1
 /// When we process two items
 /// Then it should process them serially, i.e. it should take twice the processing duration
 #[tokio::test]
-async fn strategy_sequential() {
+async fn strategy_sequential_single() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        10,
+        Limits::default().max_batch_size(10).max_key_concurrency(1),
         BatchingPolicy::Sequential,
     );
 
@@ -216,20 +249,55 @@ async fn strategy_sequential() {
     assert_duration!(d, processing_dur * 2, std::time::Duration::from_millis(2));
 }
 
-/// Given we use a Sequential strategy
-/// When we process the first item
-///  And wait for it to complete
-///  And then add another item
-/// Then it should succeed
+/// Given we use a Sequential strategy with max concurrency = 2
+/// When we process two items
+/// Then it should process them concurrently
 #[tokio::test]
-async fn strategy_sequential_with_wait() {
+async fn strategy_sequential_dual() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        10,
+        Limits::default().max_batch_size(1).max_key_concurrency(2),
+        BatchingPolicy::Sequential,
+    );
+
+    let handler = || async {
+        let now = Instant::now();
+
+        batcher.add("A".to_string(), "1".to_string()).await.unwrap();
+
+        now.elapsed()
+    };
+
+    let h1 = tokio_test::task::spawn(handler());
+    let h2 = tokio_test::task::spawn(handler());
+
+    let (dur1, dur2) = join!(h1, h2);
+
+    let d = dur1.min(dur2);
+    assert_duration!(d, processing_dur, std::time::Duration::from_millis(2));
+
+    let d = dur1.max(dur2);
+    assert_duration!(d, processing_dur, std::time::Duration::from_millis(2));
+}
+
+/// Given we use a Sequential strategy with max concurrency = 1
+/// When we process the first item
+///  And wait for it to complete
+///  And then add another item
+/// Then it should succeed
+#[tokio::test]
+async fn strategy_sequential_single_with_wait() {
+    tokio::time::pause();
+
+    let processing_dur = Duration::from_millis(50);
+
+    let batcher = Batcher::new(
+        SimpleBatchProcessor(processing_dur),
+        Limits::default().max_batch_size(10).max_key_concurrency(1),
         BatchingPolicy::Sequential,
     );
 
@@ -248,18 +316,18 @@ async fn strategy_sequential_with_wait() {
     assert_duration!(d1, processing_dur, std::time::Duration::from_millis(2));
 }
 
-/// Given we use a Sequential strategy
+/// Given we use a Sequential strategy with max concurrency = 1
 /// When we submit the maximum size + 1 at once (first batch of 1, then a full batch)
 /// Then they should all succeed
 #[tokio::test]
-async fn strategy_sequential_full() {
+async fn strategy_sequential_single_full() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        100,
+        Limits::default().max_batch_size(100).max_key_concurrency(1),
         BatchingPolicy::Sequential,
     );
 
@@ -278,18 +346,18 @@ async fn strategy_sequential_full() {
     assert_eq!(outputs.last().unwrap(), "101 processed");
 }
 
-/// Given we use a Sequential strategy
+/// Given we use a Sequential strategy with max concurrency = 1
 /// When we submit > the maximum size + 1 at once
 /// Then they should all succeed
 #[tokio::test]
-async fn strategy_sequential_reject() {
+async fn strategy_sequential_single_reject() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        100,
+        Limits::default().max_batch_size(100).max_key_concurrency(1),
         BatchingPolicy::Sequential,
     );
 

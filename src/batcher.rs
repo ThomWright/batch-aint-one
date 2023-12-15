@@ -6,7 +6,7 @@ use tracing::Span;
 
 use crate::{
     batch::BatchItem,
-    batching::BatchingPolicy,
+    batching::{BatchingPolicy, Limits},
     error::Result,
     worker::{Worker, WorkerHandle},
 };
@@ -56,11 +56,11 @@ where
     E: 'static + Send + Clone + Display,
 {
     /// Create a new batcher.
-    pub fn new<F>(processor: F, max_size: usize, batching_policy: BatchingPolicy) -> Self
+    pub fn new<F>(processor: F, limits: Limits, batching_policy: BatchingPolicy) -> Self
     where
         F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
-        let (handle, item_tx) = Worker::spawn(processor, max_size, batching_policy);
+        let (handle, item_tx) = Worker::spawn(processor, limits, batching_policy);
 
         Self {
             worker: Arc::new(handle),
