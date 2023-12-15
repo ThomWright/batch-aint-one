@@ -51,7 +51,7 @@ async fn strategy_size() {
 }
 
 /// Given we use a Size strategy
-/// When we process lots of items
+/// When we submit several batches worth of items at once
 /// Then they should all succeed
 #[tokio::test]
 async fn strategy_size_loaded() {
@@ -114,10 +114,11 @@ async fn strategy_duration() {
 }
 
 /// Given we use a Duration strategy
-/// When we process lots of items
+/// When we submit more items at once than the maximum size
+///  And we process when full
 /// Then they should all succeed
 #[tokio::test]
-async fn strategy_duration_loaded() {
+async fn strategy_duration_loaded_process_on_full() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
@@ -141,6 +142,43 @@ async fn strategy_duration_loaded() {
     let outputs = join_all(tasks.into_iter()).await;
 
     assert_eq!(outputs.last().unwrap(), "100 processed");
+}
+
+/// Given we use a Duration strategy
+/// When we submit more items at once than the maximum size
+///  And we reject when full
+/// Then only one batch should succeed, the rest should get rejected
+#[tokio::test]
+async fn strategy_duration_loaded_reject_on_full() {
+    tokio::time::pause();
+
+    let processing_dur = Duration::from_millis(50);
+
+    let batcher = Batcher::new(
+        SimpleBatchProcessor(processing_dur),
+        10,
+        BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Reject),
+    );
+
+    let handler = |i: i32| {
+        let f = batcher.add("key".to_string(), i.to_string());
+        f
+    };
+
+    let mut tasks = vec![];
+    for i in 1..=100 {
+        tasks.push(tokio_test::task::spawn(handler(i)));
+    }
+
+    let outputs = join_all(tasks.into_iter()).await;
+
+    let (ok, err): (Vec<bool>, Vec<bool>) = outputs
+        .iter()
+        .map(|item| item.is_ok())
+        .partition(|item| *item);
+
+    assert_eq!(ok.len(), 10);
+    assert_eq!(err.len(), 90);
 }
 
 /// Given we use a Sequential strategy
@@ -180,8 +218,8 @@ async fn strategy_sequential() {
 
 /// Given we use a Sequential strategy
 /// When we process the first item
-///     And wait for it to complete
-///     And then add another item
+///  And wait for it to complete
+///  And then add another item
 /// Then it should succeed
 #[tokio::test]
 async fn strategy_sequential_with_wait() {
@@ -211,17 +249,17 @@ async fn strategy_sequential_with_wait() {
 }
 
 /// Given we use a Sequential strategy
-/// When we process lots of items
+/// When we submit the maximum size + 1 at once (first batch of 1, then a full batch)
 /// Then they should all succeed
 #[tokio::test]
-async fn strategy_sequential_loaded() {
+async fn strategy_sequential_full() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        200,
+        100,
         BatchingPolicy::Sequential,
     );
 
@@ -231,13 +269,46 @@ async fn strategy_sequential_loaded() {
     };
 
     let mut tasks = vec![];
-    for i in 1..=100 {
+    for i in 1..=101 {
         tasks.push(tokio_test::task::spawn(handler(i)));
     }
 
     let outputs = join_all(tasks.into_iter()).await;
 
-    assert_eq!(outputs.last().unwrap(), "100 processed");
+    assert_eq!(outputs.last().unwrap(), "101 processed");
+}
+
+/// Given we use a Sequential strategy
+/// When we submit > the maximum size + 1 at once
+/// Then they should all succeed
+#[tokio::test]
+async fn strategy_sequential_reject() {
+    tokio::time::pause();
+
+    let processing_dur = Duration::from_millis(50);
+
+    let batcher = Batcher::new(
+        SimpleBatchProcessor(processing_dur),
+        100,
+        BatchingPolicy::Sequential,
+    );
+
+    let handler = |i: i32| {
+        let f = batcher.add("key".to_string(), i.to_string());
+        f
+    };
+
+    let mut tasks = vec![];
+    for i in 1..=102 {
+        tasks.push(tokio_test::task::spawn(handler(i)));
+    }
+
+    let outputs = join_all(tasks.into_iter()).await;
+
+    let (ok, err): (Vec<_>, Vec<_>) = outputs.into_iter().partition(|item| item.is_ok());
+
+    assert_eq!(ok.len(), 101);
+    assert_eq!(err.len(), 1);
 }
 
 #[macro_export]

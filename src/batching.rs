@@ -71,7 +71,13 @@ impl BatchingPolicy {
 
             Self::Duration(_dur, on_full) if batch.len() >= max_size - 1 => match on_full {
                 OnFull::Process => PolicyResult::AddAndProcess,
-                OnFull::Reject => PolicyResult::Reject,
+                OnFull::Reject => {
+                    if batch.len() >= max_size {
+                        PolicyResult::Reject
+                    } else {
+                        PolicyResult::Add
+                    }
+                }
             },
             Self::Duration(dur, _on_full) if batch.is_new_batch() => {
                 PolicyResult::AddAndProcessAfter(*dur)
@@ -79,11 +85,17 @@ impl BatchingPolicy {
 
             Self::Debounce(_dur, on_full) if batch.len() >= max_size - 1 => match on_full {
                 OnFull::Process => PolicyResult::AddAndProcess,
-                OnFull::Reject => PolicyResult::Reject,
+                OnFull::Reject => {
+                    if batch.len() >= max_size {
+                        PolicyResult::Reject
+                    } else {
+                        PolicyResult::Add
+                    }
+                }
             },
             Self::Debounce(dur, _on_full) => PolicyResult::AddAndProcessAfter(*dur),
 
-            Self::Sequential if batch.len() >= max_size - 1 => PolicyResult::Reject,
+            Self::Sequential if batch.len() >= max_size => PolicyResult::Reject,
             Self::Sequential if !batch.is_running() => PolicyResult::AddAndProcess,
 
             _ => PolicyResult::Add,
