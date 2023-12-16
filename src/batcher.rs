@@ -31,7 +31,7 @@ where
     item_tx: mpsc::Sender<BatchItem<K, I, O, E>>,
 }
 
-/// Process a batch of inputs.
+/// Process a batch of inputs for a given key.
 #[async_trait]
 pub trait Processor<K, I, O = (), E = String>
 where

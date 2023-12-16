@@ -9,34 +9,26 @@ use crate::{batch::Batch, error::RejectionReason};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum BatchingPolicy {
-    /// Process the batch after the previous batch for the same key has finished.
+    /// Immediately process the batch if possible.
     ///
-    /// Rejects when the maximum limits have been reached.
-    Sequential,
+    /// Will process as many batches concurrently as the limit allows. When concurrency is
+    /// maximised, as soon as a batch finishes the next batch will start. When concurrency is
+    /// limited to 1, it will run batches serially.
+    Immediate,
 
     /// Process the batch when it reaches the maximum size.
-    ///
-    /// Rejects when the maximum limits have been reached.
     Size,
 
     /// Process the batch a given duration after it was created.
-    ///
-    /// When OnFull::Process is used, it will attempt to process the batch when the batch size
-    /// limit is reached.
-    ///
-    /// Rejects when the maximum limits have been reached.
     Duration(Duration, OnFull),
 
     /// Process the batch a given duration after the most recent item was added.
-    ///
-    /// When OnFull::Process is used, it will attempt to process the batch when the batch size
-    /// limit is reached.
-    ///
-    /// Rejects when the maximum limits have been reached.
     Debounce(Duration, OnFull),
 }
 
 /// A policy controlling limits on batch sizes and concurrency.
+///
+/// New items will be rejected when both the limits have been reached.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Limits {
@@ -139,7 +131,7 @@ impl BatchingPolicy {
             }
             Self::Debounce(dur, _on_full) => PreAdd::AddAndProcessAfter(*dur),
 
-            Self::Sequential if batch.processing() < limits.max_key_concurrency => {
+            Self::Immediate if batch.processing() < limits.max_key_concurrency => {
                 PreAdd::AddAndProcess
             }
 
@@ -154,7 +146,7 @@ impl BatchingPolicy {
     ) -> PostFinish {
         if next_batch.processing() < limits.max_key_concurrency {
             match self {
-                BatchingPolicy::Sequential => PostFinish::Process,
+                BatchingPolicy::Immediate => PostFinish::Process,
                 _ => {
                     if next_batch.is_full(limits.max_batch_size) {
                         PostFinish::Process

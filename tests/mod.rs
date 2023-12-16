@@ -13,11 +13,11 @@ struct SimpleBatchProcessor(Duration);
 impl Processor<String, String, String> for SimpleBatchProcessor {
     async fn process(
         &self,
-        _key: String,
+        key: String,
         inputs: impl Iterator<Item = String> + Send,
     ) -> Result<Vec<String>, String> {
         tokio::time::sleep(self.0).await;
-        Ok(inputs.map(|s| s + " processed").collect())
+        Ok(inputs.map(|s| s + " processed for " + &key).collect())
     }
 }
 
@@ -45,9 +45,9 @@ async fn strategy_size() {
 
     let (o1, o2, o3) = join!(h1, h2, h3);
 
-    assert_eq!("1 processed".to_string(), o1.unwrap());
-    assert_eq!("2 processed".to_string(), o2.unwrap());
-    assert_eq!("3 processed".to_string(), o3.unwrap());
+    assert_eq!("1 processed for A".to_string(), o1.unwrap());
+    assert_eq!("2 processed for A".to_string(), o2.unwrap());
+    assert_eq!("3 processed for A".to_string(), o3.unwrap());
 }
 
 /// Given we use a Size strategy
@@ -77,7 +77,7 @@ async fn strategy_size_loaded() {
 
     let outputs = join_all(tasks.into_iter()).await;
 
-    assert_eq!(outputs.last().unwrap(), "100 processed");
+    assert_eq!(outputs.last().unwrap(), "100 processed for key");
 }
 
 #[tokio::test]
@@ -88,11 +88,11 @@ async fn strategy_size_max_concurrency_limit() {
         BatchingPolicy::Size,
     );
 
-    // Two processed immediately
+    // Two processed for A immediately
     let h1 = tokio_test::task::spawn(batcher.add("A".to_string(), "1".to_string()));
     let h2 = tokio_test::task::spawn(batcher.add("A".to_string(), "2".to_string()));
 
-    // One processed after another finished
+    // One processed for A after another finished
     let h3 = tokio_test::task::spawn(batcher.add("A".to_string(), "3".to_string()));
 
     // One rejected
@@ -103,14 +103,14 @@ async fn strategy_size_max_concurrency_limit() {
 
     let (o1, o2, o3, o4, o5) = join!(h1, h2, h3, h4, h5);
 
-    assert_eq!("1 processed".to_string(), o1.unwrap());
-    assert_eq!("2 processed".to_string(), o2.unwrap());
-    assert_eq!("3 processed".to_string(), o3.unwrap());
+    assert_eq!("1 processed for A".to_string(), o1.unwrap());
+    assert_eq!("2 processed for A".to_string(), o2.unwrap());
+    assert_eq!("3 processed for A".to_string(), o3.unwrap());
     assert_eq!(
-        "Batch item rejected: max concurrency limit reached for key",
+        "Batch item rejected: the key has reached maximum concurrency",
         o4.unwrap_err().to_string()
     );
-    assert_eq!("1 processed".to_string(), o5.unwrap());
+    assert_eq!("1 processed for B".to_string(), o5.unwrap());
 }
 
 /// Given we use a Duration strategy
@@ -174,7 +174,7 @@ async fn strategy_duration_loaded_process_on_full() {
 
     let outputs = join_all(tasks.into_iter()).await;
 
-    assert_eq!(outputs.last().unwrap(), "100 processed");
+    assert_eq!(outputs.last().unwrap(), "100 processed for key");
 }
 
 /// Given we use a Duration strategy
@@ -226,7 +226,7 @@ async fn strategy_sequential_single() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
         Limits::default().max_batch_size(10).max_key_concurrency(1),
-        BatchingPolicy::Sequential,
+        BatchingPolicy::Immediate,
     );
 
     let handler = || async {
@@ -261,7 +261,7 @@ async fn strategy_sequential_dual() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
         Limits::default().max_batch_size(1).max_key_concurrency(2),
-        BatchingPolicy::Sequential,
+        BatchingPolicy::Immediate,
     );
 
     let handler = || async {
@@ -298,7 +298,7 @@ async fn strategy_sequential_single_with_wait() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
         Limits::default().max_batch_size(10).max_key_concurrency(1),
-        BatchingPolicy::Sequential,
+        BatchingPolicy::Immediate,
     );
 
     let handler = || async {
@@ -328,7 +328,7 @@ async fn strategy_sequential_single_full() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
         Limits::default().max_batch_size(100).max_key_concurrency(1),
-        BatchingPolicy::Sequential,
+        BatchingPolicy::Immediate,
     );
 
     let handler = |i: i32| {
@@ -343,7 +343,7 @@ async fn strategy_sequential_single_full() {
 
     let outputs = join_all(tasks.into_iter()).await;
 
-    assert_eq!(outputs.last().unwrap(), "101 processed");
+    assert_eq!(outputs.last().unwrap(), "101 processed for key");
 }
 
 /// Given we use a Sequential strategy with max concurrency = 1
@@ -358,7 +358,7 @@ async fn strategy_sequential_single_reject() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
         Limits::default().max_batch_size(100).max_key_concurrency(1),
-        BatchingPolicy::Sequential,
+        BatchingPolicy::Immediate,
     );
 
     let handler = |i: i32| {

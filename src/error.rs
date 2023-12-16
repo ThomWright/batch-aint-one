@@ -8,19 +8,25 @@ use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 #[non_exhaustive]
 pub enum BatchError<E: Display> {
     /// Something went wrong while submitting an input for processing.
+    ///
+    /// Unrecoverable.
     #[error("Unable to send item to the worker for batching: channel closed")]
     Tx,
 
     /// Something went wrong while waiting for the output of a batch.
+    ///
+    /// Unrecoverable.
     #[error("Error while waiting for batch results: channel closed. {}", .0)]
     Rx(RecvError),
 
     /// The current batch is full so the item was rejected.
+    ///
+    /// Recoverable.
     #[error("Batch item rejected: {0}")]
     Rejected(RejectionReason),
 
     /// Something went wrong while processing a batch.
-    #[error("The entire batch failed with message: {}", .0)]
+    #[error("The entire batch failed: {}", .0)]
     BatchFailed(E),
 }
 
@@ -35,7 +41,7 @@ impl Display for RejectionReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             RejectionReason::BatchFull => "the batch is full",
-            RejectionReason::MaxConcurrency => "max concurrency limit reached for key",
+            RejectionReason::MaxConcurrency => "the key has reached maximum concurrency",
         })
     }
 }
