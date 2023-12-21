@@ -6,7 +6,7 @@ use tracing::debug;
 use crate::{
     batch::{Batch, BatchItem, Generation},
     batcher::Processor,
-    batching::{BatchingPolicy, Limits, PostFinish, PreAdd},
+    policies::{BatchingPolicy, Limits, PostFinish, PreAdd},
     BatchError,
 };
 

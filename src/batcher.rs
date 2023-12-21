@@ -6,7 +6,7 @@ use tracing::Span;
 
 use crate::{
     batch::BatchItem,
-    batching::{BatchingPolicy, Limits},
+    policies::{BatchingPolicy, Limits},
     error::Result,
     worker::{Worker, WorkerHandle},
 };
