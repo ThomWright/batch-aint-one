@@ -19,10 +19,10 @@ doctest!("../README.md");
 
 mod batch;
 mod batcher;
-mod policies;
 mod error;
+mod policies;
 mod worker;
 
 pub use batcher::{Batcher, Processor};
-pub use policies::{BatchingPolicy, Limits, OnFull};
 pub use error::BatchError;
+pub use policies::{BatchingPolicy, Limits, OnFull};
