@@ -7,8 +7,8 @@ use tracing::Span;
 use crate::{
     batch::BatchItem,
     error::Result,
+    policies::{BatchingPolicy, Limits},
     worker::{Worker, WorkerHandle},
-    BatchError, BatchingStrategy,
 };
 
 /// Groups items to be processed in batches.
@@ -31,7 +31,7 @@ where
     item_tx: mpsc::Sender<BatchItem<K, I, O, E>>,
 }
 
-/// Process a batch of inputs.
+/// Process a batch of inputs for a given key.
 #[async_trait]
 pub trait Processor<K, I, O = (), E = String>
 where
@@ -56,11 +56,11 @@ where
     E: 'static + Send + Clone + Display,
 {
     /// Create a new batcher.
-    pub fn new<F>(processor: F, batching_strategy: BatchingStrategy) -> Self
+    pub fn new<F>(processor: F, limits: Limits, batching_policy: BatchingPolicy) -> Self
     where
         F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
-        let (handle, item_tx) = Worker::spawn(processor, batching_strategy);
+        let (handle, item_tx) = Worker::spawn(processor, limits, batching_policy);
 
         Self {
             worker: Arc::new(handle),
@@ -83,7 +83,7 @@ where
             })
             .await?;
 
-        rx.await?.map_err(BatchError::BatchFailed)
+        rx.await?
     }
 }
 
