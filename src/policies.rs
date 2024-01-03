@@ -21,9 +21,6 @@ pub enum BatchingPolicy {
 
     /// Process the batch a given duration after it was created.
     Duration(Duration, OnFull),
-
-    /// Process the batch a given duration after the most recent item was added.
-    Debounce(Duration, OnFull),
 }
 
 /// A policy controlling limits on batch sizes and concurrency.
@@ -114,9 +111,7 @@ impl BatchingPolicy {
                 }
             }
 
-            Self::Duration(_dur, on_full) | Self::Debounce(_dur, on_full)
-                if batch.has_single_space(limits.max_batch_size) =>
-            {
+            Self::Duration(_dur, on_full) if batch.has_single_space(limits.max_batch_size) => {
                 if batch.processing() >= limits.max_key_concurrency {
                     PreAdd::Add
                 } else if matches!(on_full, OnFull::Process) {
@@ -129,7 +124,6 @@ impl BatchingPolicy {
             Self::Duration(dur, _on_full) if batch.is_new_batch() => {
                 PreAdd::AddAndProcessAfter(*dur)
             }
-            Self::Debounce(dur, _on_full) => PreAdd::AddAndProcessAfter(*dur),
 
             Self::Immediate if batch.processing() < limits.max_key_concurrency => {
                 PreAdd::AddAndProcess
