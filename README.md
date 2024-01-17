@@ -1,9 +1,9 @@
 # Batch ain't one
 
-![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/ThomWright/batch-aint-one/ci.yaml?branch=main)
-![GitHub](https://img.shields.io/github/license/ThomWright/batch-aint-one)
-![Crates.io](https://img.shields.io/crates/v/batch-aint-one)
-![docs.rs](https://img.shields.io/docsrs/batch-aint-one)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/ThomWright/batch-aint-one/ci.yaml?branch=main)](https://github.com/ThomWright/batch-aint-one/actions/workflows/ci.yaml)
+[![License](https://img.shields.io/github/license/ThomWright/batch-aint-one)](https://github.com/ThomWright/batch-aint-one/blob/main/LICENSE-MIT)
+[![Crates.io](https://img.shields.io/crates/v/batch-aint-one)](https://crates.io/crates/batch-aint-one)
+[![docs.rs](https://img.shields.io/docsrs/batch-aint-one)](https://docs.rs/batch-aint-one/latest/batch_aint_one/)
 
 _I got 99 problems, but a batch ain't one..._
 
