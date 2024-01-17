@@ -102,7 +102,11 @@ where
                 batch.push(item);
             }
             PreAdd::Reject(reason) => {
-                if item.tx.send(Err(BatchError::Rejected(reason))).is_err() {
+                if item
+                    .tx
+                    .send((Err(BatchError::Rejected(reason)), None))
+                    .is_err()
+                {
                     // Whatever was waiting for the output must have shut down. Presumably it
                     // doesn't care anymore, but we log here anyway. There's not much else we can do
                     // here.
@@ -228,8 +232,8 @@ mod test {
             rx
         };
 
-        let o1 = rx1.await.unwrap().unwrap();
-        let o2 = rx2.await.unwrap().unwrap();
+        let o1 = rx1.await.unwrap().0.unwrap();
+        let o2 = rx2.await.unwrap().0.unwrap();
 
         assert_eq!(o1, "I1 processed".to_string());
         assert_eq!(o2, "I2 processed".to_string());
