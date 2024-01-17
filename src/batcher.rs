@@ -2,7 +2,7 @@ use std::{fmt::Display, hash::Hash, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{span, Level, Span};
+use tracing::Span;
 
 use crate::{
     batch::BatchItem,
@@ -83,26 +83,7 @@ where
             })
             .await?;
 
-        let (o, batch_span_id) = rx.await?;
-
-        {
-            let link_back_span = span!(Level::INFO, "batch finished");
-            link_back_span.follows_from(batch_span_id);
-            link_back_span.in_scope(|| {
-                // Do nothing. This span is just here to work around a Honeycomb limitation:
-                //
-                // If the batch span is linked to a parent span like so:
-                //
-                // parent_span_1 <-link- batch_span
-                //
-                // then in Honeycomb, the link is only shown on the batch span. It it not possible
-                // to click through to the batch span from the parent.
-                //
-                // So, here we link back to the batch to make this easier.
-            })
-        }
-
-        o
+        rx.await?
     }
 }
 

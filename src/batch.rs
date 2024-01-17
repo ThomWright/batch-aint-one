@@ -17,14 +17,12 @@ use tracing::{debug, span, Instrument, Level};
 
 use crate::{batcher::Processor, error::Result, worker::Message, BatchError};
 
-type SendOutput<O, E> = oneshot::Sender<(Result<O, E>, Option<span::Id>)>;
-
 #[derive(Debug)]
 pub(crate) struct BatchItem<K, I, O, E: Display> {
     pub key: K,
     pub input: I,
     /// Used to send the output back.
-    pub tx: SendOutput<O, E>,
+    pub tx: oneshot::Sender<Result<O, E>>,
     /// This item was added to the batch as part of this span.
     pub span_id: Option<span::Id>,
 }
@@ -174,14 +172,13 @@ where
         // run loop.
         tokio::spawn(async move {
             let span = span!(Level::INFO, "process batch");
-            let span_id = span.id();
 
             // Replace with a placeholder to keep the Drop impl working. TODO: is there a better
             // way?!
             let mut items = Vec::new();
             mem::swap(&mut self.items, &mut items);
 
-            let (inputs, txs): (Vec<I>, Vec<SendOutput<O, E>>) = items
+            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<Result<O, E>>>) = items
                 .into_iter()
                 .map(|item| {
                     // Link the shared batch processing span to the span for each batch item. We
@@ -206,10 +203,7 @@ where
             };
 
             for (tx, output) in txs.into_iter().zip(outputs) {
-                if tx
-                    .send((output.map_err(BatchError::BatchFailed), span_id.clone()))
-                    .is_err()
-                {
+                if tx.send(output.map_err(BatchError::BatchFailed)).is_err() {
                     // Whatever was waiting for the output must have shut down. Presumably it
                     // doesn't care anymore, but we log here anyway. There's not much else we can do
                     // here.
