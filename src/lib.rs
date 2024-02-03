@@ -113,5 +113,23 @@ mod test {
             2,
             "should follow from both handler spans"
         );
+
+        let link_back_spans: Vec<_> = storage
+            .all_spans()
+            .filter(|span| span.metadata().name().contains("batch finished"))
+            .collect();
+        assert_eq!(
+            link_back_spans.len(),
+            2,
+            "should be two spans for linking back to the process span"
+        );
+
+        for span in link_back_spans {
+            assert_eq!(
+                span.follows_from().len(),
+                1,
+                "should follow from the process span"
+            );
+        }
     }
 }
