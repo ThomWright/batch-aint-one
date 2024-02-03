@@ -96,7 +96,7 @@ where
                 // then panic, because the span will have been closed and no longer exist.
                 //
                 // Don't ask me how long this took me to debug.
-                link_back_span.follows_from(span.id());
+                link_back_span.follows_from(&span);
                 link_back_span.in_scope(|| {
                     // Do nothing. This span is just here to work around a Honeycomb limitation:
                     //

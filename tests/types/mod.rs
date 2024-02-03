@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use batch_aint_one::{Processor, Batcher};
+use batch_aint_one::{Batcher, Processor};
 
 #[derive(Debug, Clone)]
 pub struct SimpleBatchProcessor(pub Duration);
