@@ -31,3 +31,5 @@ doc-comment = "0.3.3"
 futures = "0.3.29"
 tokio = { version = "1.28.1", features = ["rt", "macros", "test-util"] }
 tokio-test = "0.4.3"
+tracing-capture = { git = "https://github.com/ThomWright/tracing-toolbox.git", branch = "support-follows-from" }
+tracing-subscriber = "0.3.18"

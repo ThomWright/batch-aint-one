@@ -2,7 +2,7 @@ use std::{fmt::Display, hash::Hash, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
-use tracing::Span;
+use tracing::{span, Level, Span};
 
 use crate::{
     batch::BatchItem,
@@ -71,7 +71,7 @@ where
     /// Add an item to the batch and await the result.
     pub async fn add(&self, key: K, input: I) -> Result<O, E> {
         // Record the span ID so we can link the shared processing span.
-        let span_id = Span::current().id();
+        let requesting_span = Span::current().clone();
 
         let (tx, rx) = oneshot::channel();
         self.item_tx
@@ -79,11 +79,39 @@ where
                 key,
                 input,
                 tx,
-                span_id,
+                requesting_span,
             })
             .await?;
 
-        rx.await?
+        let (output, batch_span) = rx.await?;
+
+        {
+            let link_back_span = span!(Level::INFO, "batch finished");
+            if let Some(span) = batch_span {
+                // WARNING: It's very important that we don't drop the span until _after_
+                // follows_from().
+                //
+                // If we did e.g. `.follows_from(span)` then the span would get converted into an ID
+                // and dropped. Any attempt to look up the span by ID _inside_ follows_from() would
+                // then panic, because the span will have been closed and no longer exist.
+                //
+                // Don't ask me how long this took me to debug.
+                link_back_span.follows_from(&span);
+                link_back_span.in_scope(|| {
+                    // Do nothing. This span is just here to work around a Honeycomb limitation:
+                    //
+                    // If the batch span is linked to a parent span like so:
+                    //
+                    // parent_span_1 <-link- batch_span
+                    //
+                    // then in Honeycomb, the link is only shown on the batch span. It it not possible
+                    // to click through to the batch span from the parent.
+                    //
+                    // So, here we link back to the batch to make this easier.
+                });
+            }
+        }
+        output
     }
 }
 

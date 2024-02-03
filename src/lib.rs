@@ -26,3 +26,110 @@ mod worker;
 pub use batcher::{Batcher, Processor};
 pub use error::BatchError;
 pub use policies::{BatchingPolicy, Limits, OnFull};
+
+#[cfg(test)]
+mod test {
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use tokio::join;
+    use tracing::{span, Instrument};
+
+    use crate::{Batcher, BatchingPolicy, Limits, Processor};
+
+    #[derive(Debug, Clone)]
+    pub struct SimpleBatchProcessor(pub Duration);
+
+    #[async_trait]
+    impl Processor<String, String, String> for SimpleBatchProcessor {
+        async fn process(
+            &self,
+            key: String,
+            inputs: impl Iterator<Item = String> + Send,
+        ) -> Result<Vec<String>, String> {
+            tokio::time::sleep(self.0).await;
+            Ok(inputs.map(|s| s + " processed for " + &key).collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tracing() {
+        use tracing::Level;
+        use tracing_capture::{CaptureLayer, SharedStorage};
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let subscriber = tracing_subscriber::fmt()
+            .pretty()
+            .with_max_level(Level::INFO)
+            .finish();
+        // Add the capturing layer.
+        let storage = SharedStorage::default();
+        let subscriber = subscriber.with(CaptureLayer::new(&storage));
+
+        // Capture tracing information.
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let batcher = Batcher::new(
+            SimpleBatchProcessor(Duration::ZERO),
+            Limits::default().max_batch_size(2),
+            BatchingPolicy::Size,
+        );
+
+        let h1 = {
+            tokio_test::task::spawn({
+                let span = span!(Level::INFO, "test_handler_span1");
+
+                batcher
+                    .add("A".to_string(), "1".to_string())
+                    .instrument(span)
+            })
+        };
+        let h2 = {
+            tokio_test::task::spawn({
+                let span = span!(Level::INFO, "test_handler_span2");
+
+                batcher
+                    .add("A".to_string(), "2".to_string())
+                    .instrument(span)
+            })
+        };
+
+        let (_o1, _o2) = join!(h1, h2);
+
+        let storage = storage.lock();
+
+        let process_span: Vec<_> = storage
+            .all_spans()
+            .filter(|span| span.metadata().name().contains("process batch"))
+            .collect();
+        assert_eq!(
+            process_span.len(),
+            1,
+            "should be a single span for processing the batch"
+        );
+
+        assert_eq!(
+            process_span.first().unwrap().follows_from().len(),
+            2,
+            "should follow from both handler spans"
+        );
+
+        let link_back_spans: Vec<_> = storage
+            .all_spans()
+            .filter(|span| span.metadata().name().contains("batch finished"))
+            .collect();
+        assert_eq!(
+            link_back_spans.len(),
+            2,
+            "should be two spans for linking back to the process span"
+        );
+
+        for span in link_back_spans {
+            assert_eq!(
+                span.follows_from().len(),
+                1,
+                "should follow from the process span"
+            );
+        }
+    }
+}
