@@ -13,7 +13,7 @@ use tokio::{
     task::JoinHandle,
     time::Instant,
 };
-use tracing::{debug, span, Instrument, Level};
+use tracing::{debug, span, Instrument, Level, Span};
 
 use crate::{batcher::Processor, error::Result, worker::Message, BatchError};
 
@@ -22,10 +22,12 @@ pub(crate) struct BatchItem<K, I, O, E: Display> {
     pub key: K,
     pub input: I,
     /// Used to send the output back.
-    pub tx: oneshot::Sender<Result<O, E>>,
+    pub tx: SendOutput<O, E>,
     /// This item was added to the batch as part of this span.
-    pub span_id: Option<span::Id>,
+    pub requesting_span: Span,
 }
+
+type SendOutput<O, E> = oneshot::Sender<(Result<O, E>, Option<Span>)>;
 
 /// A batch of items to process.
 #[derive(Debug)]
@@ -178,13 +180,13 @@ where
             let mut items = Vec::new();
             mem::swap(&mut self.items, &mut items);
 
-            let (inputs, txs): (Vec<I>, Vec<oneshot::Sender<Result<O, E>>>) = items
+            let (inputs, txs): (Vec<I>, Vec<SendOutput<O, E>>) = items
                 .into_iter()
                 .map(|item| {
                     // Link the shared batch processing span to the span for each batch item. We
                     // don't use a parent relationship because that's 1:many (parent:child), and
                     // this is many:1.
-                    span.follows_from(item.span_id);
+                    span.follows_from(item.requesting_span.id());
 
                     (item.input, item.tx)
                 })
@@ -194,7 +196,7 @@ where
 
             let result = processor
                 .process(self.key.clone(), inputs.into_iter())
-                .instrument(span)
+                .instrument(span.clone())
                 .await;
 
             let outputs: Vec<_> = match result {
@@ -203,7 +205,10 @@ where
             };
 
             for (tx, output) in txs.into_iter().zip(outputs) {
-                if tx.send(output.map_err(BatchError::BatchFailed)).is_err() {
+                if tx
+                    .send((output.map_err(BatchError::BatchFailed), Some(span.clone())))
+                    .is_err()
+                {
                     // Whatever was waiting for the output must have shut down. Presumably it
                     // doesn't care anymore, but we log here anyway. There's not much else we can do
                     // here.
