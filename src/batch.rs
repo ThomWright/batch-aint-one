@@ -33,7 +33,7 @@ type SendOutput<O, E> = oneshot::Sender<(Result<O, E>, Option<Span>)>;
 #[derive(Debug)]
 pub(crate) struct Batch<K, I, O, E: Display> {
     key: K,
-    generation: u32,
+    generation: Generation,
     items: Vec<BatchItem<K, I, O, E>>,
 
     timeout_deadline: Option<Instant>,
@@ -45,9 +45,14 @@ pub(crate) struct Batch<K, I, O, E: Display> {
 
 /// Generations are used to handle the case where a timer goes off after the associated batch has
 /// already been processed, and a new batch has already been created with the same key.
-///
-/// TODO: garbage collection of old generation placeholders.
-pub(crate) type Generation = u32;
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub(crate) struct Generation(u32);
+
+impl Generation {
+    fn next(&self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
 
 impl<K, I, O, E: Display> Batch<K, I, O, E> {
     pub(crate) fn new(key: K) -> Self {
@@ -127,7 +132,7 @@ where
     fn new_generation(&self) -> Self {
         Self {
             key: self.key.clone(),
-            generation: self.generation.wrapping_add(1),
+            generation: self.generation.next(),
             items: Vec::default(),
 
             timeout_deadline: None,
