@@ -14,12 +14,18 @@ pub enum BatchingPolicy {
     /// Will process as many batches concurrently as the limit allows. When concurrency is
     /// maximised, as soon as a batch finishes the next batch will start. When concurrency is
     /// limited to 1, it will run batches serially.
+    ///
+    /// Prioritises low latency.
     Immediate,
 
     /// Process the batch when it reaches the maximum size.
+    ///
+    /// Prioritises high batch utilisation.
     Size,
 
     /// Process the batch a given duration after it was created.
+    ///
+    /// Prioritises regularity.
     Duration(Duration, OnFull),
 }
 
