@@ -15,7 +15,7 @@ use tokio::{
 };
 use tracing::{debug, span, Instrument, Level, Span};
 
-use crate::{batcher::Processor, error::Result, worker::Message, BatchError};
+use crate::{batcher::Processor, error::BatchResult, worker::Message, BatchError};
 
 #[derive(Debug)]
 pub(crate) struct BatchItem<K, I, O, E: Display> {
@@ -27,7 +27,7 @@ pub(crate) struct BatchItem<K, I, O, E: Display> {
     pub requesting_span: Span,
 }
 
-type SendOutput<O, E> = oneshot::Sender<(Result<O, E>, Option<Span>)>;
+type SendOutput<O, E> = oneshot::Sender<(BatchResult<O, E>, Option<Span>)>;
 
 /// A batch of items to process.
 #[derive(Debug)]

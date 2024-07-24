@@ -46,7 +46,7 @@ impl Display for RejectionReason {
     }
 }
 
-pub type Result<T, E> = std::result::Result<T, BatchError<E>>;
+pub type BatchResult<T, E> = std::result::Result<T, BatchError<E>>;
 
 impl<E: Display> From<RecvError> for BatchError<E> {
     fn from(rx_err: RecvError) -> Self {
@@ -65,7 +65,7 @@ where
     E: Display,
 {
     /// Get the inner error for general batch failures, otherwise self.
-    pub fn inner(self) -> Result<E, E> {
+    pub fn inner(self) -> BatchResult<E, E> {
         match self {
             BatchError::BatchFailed(e) => Ok(e),
             _ => Err(self),

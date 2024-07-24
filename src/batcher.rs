@@ -6,7 +6,7 @@ use tracing::{span, Level, Span};
 
 use crate::{
     batch::BatchItem,
-    error::Result,
+    error::BatchResult,
     policies::{BatchingPolicy, Limits},
     worker::{Worker, WorkerHandle},
 };
@@ -69,7 +69,7 @@ where
     }
 
     /// Add an item to the batch and await the result.
-    pub async fn add(&self, key: K, input: I) -> Result<O, E> {
+    pub async fn add(&self, key: K, input: I) -> BatchResult<O, E> {
         // Record the span ID so we can link the shared processing span.
         let requesting_span = Span::current().clone();
 
