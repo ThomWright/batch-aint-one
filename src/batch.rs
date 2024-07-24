@@ -178,7 +178,7 @@ where
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
         // run loop.
         tokio::spawn(async move {
-            let span = span!(Level::INFO, "process batch");
+            let span = span!(Level::INFO, "process batch", batch_size = self.items.len());
 
             // Replace with a placeholder to keep the Drop impl working. TODO: is there a better
             // way?!
