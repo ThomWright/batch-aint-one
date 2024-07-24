@@ -107,7 +107,6 @@ tokio_test::block_on(async {
 
 - [x] Tests
 - [x] Better error handling
-- [ ] Garbage collection for old generation placeholders
 - [x] Docs
   - [x] Why – motivating example
   - [x] Code examples
