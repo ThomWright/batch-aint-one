@@ -178,7 +178,9 @@ where
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
         // run loop.
         tokio::spawn(async move {
-            let span = span!(Level::INFO, "process batch", batch_size = self.items.len());
+            let batch_size = self.items.len();
+            // Convert to u64 so tracing will treat this as an integer instead of a string.
+            let span = span!(Level::INFO, "process batch", batch_size = batch_size as u64);
 
             // Replace with a placeholder to keep the Drop impl working. TODO: is there a better
             // way?!
@@ -197,8 +199,6 @@ where
                 })
                 .unzip();
 
-            let size = inputs.len();
-
             let result = processor
                 .process(self.key.clone(), inputs.into_iter())
                 .instrument(span.clone())
@@ -206,7 +206,10 @@ where
 
             let outputs: Vec<_> = match result {
                 Ok(outputs) => outputs.into_iter().map(|o| Ok(o)).collect(),
-                Err(err) => std::iter::repeat(err).take(size).map(|e| Err(e)).collect(),
+                Err(err) => std::iter::repeat(err)
+                    .take(batch_size)
+                    .map(|e| Err(e))
+                    .collect(),
             };
 
             for (tx, output) in txs.into_iter().zip(outputs) {
