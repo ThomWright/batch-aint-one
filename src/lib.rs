@@ -98,18 +98,27 @@ mod test {
 
         let storage = storage.lock();
 
-        let process_span: Vec<_> = storage
+        assert_eq!(storage.all_spans().len(), 5, "should be 5 spans in total");
+
+        let process_spans: Vec<_> = storage
             .all_spans()
             .filter(|span| span.metadata().name().contains("process batch"))
             .collect();
         assert_eq!(
-            process_span.len(),
+            process_spans.len(),
             1,
             "should be a single span for processing the batch"
         );
 
+        let process_span = process_spans.first().unwrap();
+
         assert_eq!(
-            process_span.first().unwrap().follows_from().len(),
+            process_span["batch_size"], 2u64,
+            "batch_size shouldn't be emitted as a string",
+        );
+
+        assert_eq!(
+            process_span.follows_from().len(),
             2,
             "should follow from both handler spans"
         );
