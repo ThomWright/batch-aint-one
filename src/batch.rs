@@ -1,8 +1,9 @@
 use std::{
+    cmp,
     fmt::Display,
     mem,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{self, AtomicUsize},
         Arc,
     },
     time::Duration,
@@ -99,7 +100,11 @@ impl<K, I, O, E: Display> Batch<K, I, O, E> {
             // ... and if there is a timeout deadline, it must be in the past.
             && self
                 .timeout_deadline
-                .map_or(true, |deadline| deadline.checked_duration_since(Instant::now()).is_none())
+                .map_or(true, |deadline| match deadline.cmp(&Instant::now()){
+                    cmp::Ordering::Less => true,
+                    cmp::Ordering::Equal => true,
+                    cmp::Ordering::Greater => false,
+                })
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<K, I, O, E>) {
@@ -147,7 +152,7 @@ where
     where
         F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
-        self.processing.fetch_add(1, Ordering::AcqRel);
+        self.processing.fetch_add(1, atomic::Ordering::AcqRel);
 
         self.cancel_timeout();
 
@@ -200,7 +205,7 @@ where
                 }
             }
 
-            self.processing.fetch_sub(1, Ordering::AcqRel);
+            self.processing.fetch_sub(1, atomic::Ordering::AcqRel);
 
             // We're finished with this batch
             if on_finished
@@ -297,13 +302,6 @@ mod tests {
 
         time::advance(Duration::from_millis(1)).await;
 
-        assert!(
-            !batch.is_processable(),
-            "should not be processable after 50ms"
-        );
-
-        time::advance(Duration::from_millis(1)).await;
-
-        assert!(batch.is_processable(), "should be processable after 51ms");
+        assert!(batch.is_processable(), "should be processable after 50ms");
     }
 }
