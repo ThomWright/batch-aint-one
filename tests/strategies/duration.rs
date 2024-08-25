@@ -40,7 +40,7 @@ async fn strategy_duration() {
 }
 
 /// Given we use a Duration strategy
-/// When we submit more items at once than the maximum size
+/// When we submit more items at once than the maximum batch size
 ///  And we process when full
 /// Then they should all succeed
 #[tokio::test]
@@ -71,7 +71,7 @@ async fn strategy_duration_loaded_process_on_full() {
 }
 
 /// Given we use a Duration strategy
-/// When we submit more items at once than the maximum size
+/// When we submit more items at once than the maximum batch size
 ///  And we reject when full
 /// Then only one batch should succeed, the rest should get rejected
 #[tokio::test]
@@ -82,7 +82,7 @@ async fn strategy_duration_loaded_reject_on_full() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10),
+        Limits::default().max_key_concurrency(1).max_batch_size(10),
         BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Reject),
     );
 
