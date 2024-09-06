@@ -91,10 +91,6 @@ where
                 batch_queue.push(item);
 
                 self.process_next_batch(key);
-
-                // let generation = batch.generation();
-
-                // self.process_generation(key, generation);
             }
             PreAdd::AddAndProcessAfter(duration) => {
                 batch_queue.push(item);
@@ -147,11 +143,6 @@ where
 
         match self.batching_policy.post_finish(batch_queue) {
             PostFinish::Process => {
-                // if let Some(batch) = batch.take_batch_for_processing() {
-                //     let on_finished = self.msg_tx.clone();
-
-                //     batch.process(self.processor.clone(), on_finished);
-                // }
                 self.process_next_batch(key);
             }
             PostFinish::DoNothing => {}

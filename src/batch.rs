@@ -160,6 +160,7 @@ where
         // run loop.
         tokio::spawn(async move {
             let batch_size = self.items.len();
+
             // Convert to u64 so tracing will treat this as an integer instead of a string.
             let span = span!(Level::INFO, "process batch", batch_size = batch_size as u64);
 
