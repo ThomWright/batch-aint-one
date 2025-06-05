@@ -100,7 +100,7 @@ impl<K, I, O, E: Display> Batch<K, I, O, E> {
             // ... and if there is a timeout deadline, it must be in the past.
             && self
                 .timeout_deadline
-                .map_or(true, |deadline| match deadline.cmp(&Instant::now()){
+                .is_none_or(|deadline| match deadline.cmp(&Instant::now()){
                     cmp::Ordering::Less => true,
                     cmp::Ordering::Equal => true,
                     cmp::Ordering::Greater => false,
@@ -188,8 +188,7 @@ where
 
             let outputs: Vec<_> = match result {
                 Ok(outputs) => outputs.into_iter().map(|o| Ok(o)).collect(),
-                Err(err) => std::iter::repeat(err)
-                    .take(batch_size)
+                Err(err) => std::iter::repeat_n(err, batch_size)
                     .map(|e| Err(e))
                     .collect(),
             };
