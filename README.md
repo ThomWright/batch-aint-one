@@ -13,7 +13,13 @@ Batch up multiple items for processing as a single unit.
 
 Sometimes it is more efficient to process many items at once rather than one at a time. Especially when the processing step has overheads which can be shared between many items.
 
-### Example: Inserting multiple rows into a database
+Often applications work with one item at a time, e.g. _select one row_ or _insert one row_. Many of these operations can be batched up into more efficient versions: _select many rows_ and _insert many rows_.
+
+## How
+
+A worker task is run in the background. Many client tasks (e.g. message handlers) can submit items to the worker and wait for them to be processed. The worker task batches together many items and processes them as one unit, before sending a result back to each calling task.
+
+## Use case: Inserting multiple rows into a database
 
 For example, each database operation – such as an `INSERT` – has the overhead of a round trip to the database.
 
@@ -23,7 +29,7 @@ Multi-row inserts can share this overhead between many items. This also allows u
 
 ![Batched example](./docs/images/example-insert-batched.png)
 
-### Example: With transactions and locking
+## Use case: With transactions and locking
 
 Inserts into database tables can often be done concurrently. In some cases these must be done serially, enforced using locks. This can be a significant throughput bottleneck.
 
@@ -34,10 +40,6 @@ In the example below, five round trips to the database are necessary for each it
 With batching, we can improve the throughput. Acquiring/releasing the lock and beginning/committing the transaction can be shared for the whole batch. With four items per batch, we can increase the theoretical maximum throughput to 800 items/sec. In reality, the more rows each `INSERT` processes the longer it will take, but multi-row inserts can be [very efficient](https://json.codes/posts/databases/postgres-multi-row-insert/).
 
 ![Batched example](./docs/images/example-batched.png)
-
-## How
-
-A worker task is run in the background and items are submitted to it for batching. Batches are processed in their own tasks, concurrently.
 
 ## Example
 
@@ -102,6 +104,12 @@ tokio_test::block_on(async {
     });
 });
 ```
+
+## FAQ
+
+**If the worker needs to wait to receive multiple items, won't this increase latency?**
+
+This depends on the batching policy used. `BatchingPolicy::Immediate` optimises for latency and processes items as soon as possible.
 
 ## Roadmap
 

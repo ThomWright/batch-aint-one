@@ -4,7 +4,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::debug;
 
 use crate::{
-    batch::{Batch, BatchItem, Generation},
+    batch::{BatchItem, Generation},
+    batch_queue::BatchQueue,
     batcher::Processor,
     policies::{BatchingPolicy, Limits, PostFinish, PreAdd},
     BatchError,
@@ -26,7 +27,7 @@ pub(crate) struct Worker<K, I, O, F, E: Display> {
     batching_policy: BatchingPolicy,
 
     /// Unprocessed batches, grouped by key `K`.
-    batches: HashMap<K, Batch<K, I, O, E>>,
+    batch_queues: HashMap<K, BatchQueue<K, I, O, E>>,
 }
 
 pub(crate) enum Message<K> {
@@ -66,7 +67,7 @@ where
             limits,
             batching_policy,
 
-            batches: HashMap::new(),
+            batch_queues: HashMap::new(),
         };
 
         let handle = tokio::spawn(async move {
@@ -80,26 +81,24 @@ where
     fn add(&mut self, item: BatchItem<K, I, O, E>) {
         let key = item.key.clone();
 
-        let batch = self
-            .batches
+        let batch_queue = self
+            .batch_queues
             .entry(key.clone())
-            .or_insert_with(|| Batch::new(key.clone()));
+            .or_insert_with(|| BatchQueue::new(key.clone(), self.limits));
 
-        match self.batching_policy.pre_add(&self.limits, batch) {
+        match self.batching_policy.pre_add(batch_queue) {
             PreAdd::AddAndProcess => {
-                batch.push(item);
+                batch_queue.push(item);
 
-                let generation = batch.generation();
-
-                self.process_generation(key, generation);
+                self.process_next_batch(key);
             }
             PreAdd::AddAndProcessAfter(duration) => {
-                batch.push(item);
+                batch_queue.push(item);
 
-                batch.time_out_after(duration, self.msg_tx.clone());
+                batch_queue.time_out_after(duration, self.msg_tx.clone());
             }
             PreAdd::Add => {
-                batch.push(item);
+                batch_queue.push(item);
             }
             PreAdd::Reject(reason) => {
                 if item
@@ -117,9 +116,22 @@ where
     }
 
     fn process_generation(&mut self, key: K, generation: Generation) {
-        let batch = self.batches.get_mut(&key).expect("batch should exist");
+        let batch_queue = self.batch_queues.get_mut(&key).expect("batch should exist");
 
-        if let Some(batch) = batch.take_generation_for_processing(generation) {
+        if let Some(batch) = batch_queue.take_generation(generation) {
+            let on_finished = self.msg_tx.clone();
+
+            batch.process(self.processor.clone(), on_finished);
+        }
+    }
+
+    fn process_next_batch(&mut self, key: K) {
+        let batch_queue = self
+            .batch_queues
+            .get_mut(&key)
+            .expect("Batch queue should exist for key");
+
+        if let Some(batch) = batch_queue.take_next_batch() {
             let on_finished = self.msg_tx.clone();
 
             batch.process(self.processor.clone(), on_finished);
@@ -127,15 +139,11 @@ where
     }
 
     fn on_batch_finished(&mut self, key: K) {
-        let batch = self.batches.get_mut(&key).expect("batch should exist");
+        let batch_queue = self.batch_queues.get_mut(&key).expect("batch should exist");
 
-        match self.batching_policy.post_finish(&self.limits, batch) {
+        match self.batching_policy.post_finish(batch_queue) {
             PostFinish::Process => {
-                if let Some(batch) = batch.take_batch_for_processing() {
-                    let on_finished = self.msg_tx.clone();
-
-                    batch.process(self.processor.clone(), on_finished);
-                }
+                self.process_next_batch(key);
             }
             PostFinish::DoNothing => {}
         }

@@ -1,8 +1,9 @@
 use std::{
+    cmp,
     fmt::Display,
     mem,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{self, AtomicUsize},
         Arc,
     },
     time::Duration,
@@ -55,7 +56,7 @@ impl Generation {
 }
 
 impl<K, I, O, E: Display> Batch<K, I, O, E> {
-    pub(crate) fn new(key: K) -> Self {
+    pub(crate) fn new(key: K, processing: Arc<AtomicUsize>) -> Self {
         Self {
             key,
             generation: Generation::default(),
@@ -64,7 +65,7 @@ impl<K, I, O, E: Display> Batch<K, I, O, E> {
             timeout_deadline: None,
             timeout_handle: None,
 
-            processing: Arc::<AtomicUsize>::default(),
+            processing,
         }
     }
 
@@ -85,10 +86,6 @@ impl<K, I, O, E: Display> Batch<K, I, O, E> {
         self.len() == max - 1
     }
 
-    pub(crate) fn processing(&self) -> usize {
-        self.processing.load(std::sync::atomic::Ordering::Acquire)
-    }
-
     pub(crate) fn generation(&self) -> Generation {
         self.generation
     }
@@ -98,7 +95,16 @@ impl<K, I, O, E: Display> Batch<K, I, O, E> {
     }
 
     pub(crate) fn is_processable(&self) -> bool {
+        // To be processable, we must have some items to process...
         self.len() > 0
+            // ... and if there is a timeout deadline, it must be in the past.
+            && self
+                .timeout_deadline
+                .map_or(true, |deadline| match deadline.cmp(&Instant::now()){
+                    cmp::Ordering::Less => true,
+                    cmp::Ordering::Equal => true,
+                    cmp::Ordering::Greater => false,
+                })
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<K, I, O, E>) {
@@ -129,7 +135,7 @@ where
     O: 'static + Send,
     E: 'static + Send + Clone + Display,
 {
-    fn new_generation(&self) -> Self {
+    pub(crate) fn new_generation(&self) -> Self {
         Self {
             key: self.key.clone(),
             generation: self.generation.next(),
@@ -142,36 +148,11 @@ where
         }
     }
 
-    /// If a batch exists for the given generation, returns it and replaces it with an empty
-    /// placeholder for the next generation.
-    pub fn take_generation_for_processing(
-        &mut self,
-        generation: Generation,
-    ) -> Option<Batch<K, I, O, E>> {
-        if self.is_generation(generation) && self.is_processable() {
-            let batch = std::mem::replace(self, self.new_generation());
-
-            Some(batch)
-        } else {
-            None
-        }
-    }
-
-    pub fn take_batch_for_processing(&mut self) -> Option<Batch<K, I, O, E>> {
-        if self.is_processable() {
-            let batch = std::mem::replace(self, self.new_generation());
-
-            Some(batch)
-        } else {
-            None
-        }
-    }
-
     pub(crate) fn process<F>(mut self, processor: F, on_finished: mpsc::Sender<Message<K>>)
     where
         F: 'static + Send + Clone + Processor<K, I, O, E>,
     {
-        self.processing.fetch_add(1, Ordering::AcqRel);
+        self.processing.fetch_add(1, atomic::Ordering::AcqRel);
 
         self.cancel_timeout();
 
@@ -179,6 +160,7 @@ where
         // run loop.
         tokio::spawn(async move {
             let batch_size = self.items.len();
+
             // Convert to u64 so tracing will treat this as an integer instead of a string.
             let span = span!(Level::INFO, "process batch", batch_size = batch_size as u64);
 
@@ -224,7 +206,7 @@ where
                 }
             }
 
-            self.processing.fetch_sub(1, Ordering::AcqRel);
+            self.processing.fetch_sub(1, atomic::Ordering::AcqRel);
 
             // We're finished with this batch
             if on_finished
@@ -273,5 +255,54 @@ impl<K, I, O, E: Display> Drop for Batch<K, I, O, E> {
         if let Some(handle) = self.timeout_handle.take() {
             handle.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use tokio::{
+        sync::{mpsc, oneshot},
+        time,
+    };
+    use tracing::Span;
+
+    use super::{Batch, BatchItem};
+
+    #[tokio::test]
+    async fn is_processable_timeout() {
+        time::pause();
+
+        let mut batch: Batch<String, String, String, String> =
+            Batch::new("key".to_string(), Arc::default());
+
+        let (tx, _rx) = oneshot::channel();
+
+        batch.push(BatchItem {
+            key: "key".to_string(),
+            input: "item".to_string(),
+            tx,
+            requesting_span: Span::none(),
+        });
+
+        let (tx, _rx) = mpsc::channel(1);
+        batch.time_out_after(Duration::from_millis(50), tx);
+
+        assert!(
+            !batch.is_processable(),
+            "should not be processable initially"
+        );
+
+        time::advance(Duration::from_millis(49)).await;
+
+        assert!(
+            !batch.is_processable(),
+            "should not be processable after 49ms",
+        );
+
+        time::advance(Duration::from_millis(1)).await;
+
+        assert!(batch.is_processable(), "should be processable after 50ms");
     }
 }

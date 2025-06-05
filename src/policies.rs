@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{batch::Batch, error::RejectionReason};
+use crate::{batch_queue::BatchQueue, error::RejectionReason};
 
 /// A policy controlling when batches get processed.
 #[derive(Debug)]
@@ -11,8 +11,11 @@ use crate::{batch::Batch, error::RejectionReason};
 pub enum BatchingPolicy {
     /// Immediately process the batch if possible.
     ///
-    /// Will process as many batches concurrently as the limit allows. When concurrency is
-    /// maximised, as soon as a batch finishes the next batch will start. When concurrency is
+    /// When concurrency is available, new items will be processed immediately (with a batch size of
+    /// one).
+    ///
+    /// When concurrency is maximised, new items will added to the next batch (up to the maximum
+    /// batch size). As soon as a batch finishes the next batch will start. When concurrency is
     /// limited to 1, it will run batches serially.
     ///
     /// Prioritises low latency.
@@ -32,7 +35,15 @@ pub enum BatchingPolicy {
 /// A policy controlling limits on batch sizes and concurrency.
 ///
 /// New items will be rejected when both the limits have been reached.
-#[derive(Debug)]
+///
+/// `max_key_concurrency * max_batch_size` is both:
+///
+/// - The number of items that can be processed concurrently.
+/// - The number of items that can be queued concurrently.
+///
+/// So the total number of items in the system can be up to `2 * max_key_concurrency *
+/// max_batch_size`.
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Limits {
     pub(crate) max_batch_size: usize,
@@ -94,31 +105,32 @@ impl BatchingPolicy {
     /// Should be applied _before_ adding the new item to the batch.
     pub(crate) fn pre_add<K, I, O, E: Display>(
         &self,
-        limits: &Limits,
-        batch: &Batch<K, I, O, E>,
+        batch_queue: &BatchQueue<K, I, O, E>,
     ) -> PreAdd
     where
         K: 'static + Send + Clone,
     {
-        if batch.is_full(limits.max_batch_size) {
-            if batch.processing() >= limits.max_key_concurrency {
+        // Check if we have capacity to process this item.
+        if batch_queue.is_full() {
+            if batch_queue.at_max_processing_capacity() {
                 return PreAdd::Reject(RejectionReason::MaxConcurrency);
             } else {
+                // We might still be waiting to process the next batch.
                 return PreAdd::Reject(RejectionReason::BatchFull);
             }
         }
 
         match self {
-            Self::Size if batch.has_single_space(limits.max_batch_size) => {
-                if batch.processing() >= limits.max_key_concurrency {
+            Self::Size if batch_queue.last_space_in_batch() => {
+                if batch_queue.at_max_processing_capacity() {
                     PreAdd::Add
                 } else {
                     PreAdd::AddAndProcess
                 }
             }
 
-            Self::Duration(_dur, on_full) if batch.has_single_space(limits.max_batch_size) => {
-                if batch.processing() >= limits.max_key_concurrency {
+            Self::Duration(_dur, on_full) if batch_queue.last_space_in_batch() => {
+                if batch_queue.at_max_processing_capacity() {
                     PreAdd::Add
                 } else if matches!(on_full, OnFull::Process) {
                     PreAdd::AddAndProcess
@@ -127,13 +139,11 @@ impl BatchingPolicy {
                 }
             }
 
-            Self::Duration(dur, _on_full) if batch.is_new_batch() => {
+            Self::Duration(dur, _on_full) if batch_queue.adding_to_new_batch() => {
                 PreAdd::AddAndProcessAfter(*dur)
             }
 
-            Self::Immediate if batch.processing() < limits.max_key_concurrency => {
-                PreAdd::AddAndProcess
-            }
+            Self::Immediate if !batch_queue.at_max_processing_capacity() => PreAdd::AddAndProcess,
 
             _ => PreAdd::Add,
         }
@@ -141,14 +151,14 @@ impl BatchingPolicy {
 
     pub(crate) fn post_finish<K, I, O, E: Display>(
         &self,
-        limits: &Limits,
-        next_batch: &Batch<K, I, O, E>,
+        batch_queue: &BatchQueue<K, I, O, E>,
     ) -> PostFinish {
-        if next_batch.processing() < limits.max_key_concurrency {
+        if !batch_queue.at_max_processing_capacity() {
             match self {
                 BatchingPolicy::Immediate => PostFinish::Process,
+
                 _ => {
-                    if next_batch.is_full(limits.max_batch_size) {
+                    if batch_queue.is_next_batch_full() {
                         PostFinish::Process
                     } else {
                         PostFinish::DoNothing
