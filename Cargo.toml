@@ -15,16 +15,16 @@ categories = ["concurrency"]
 license = "MIT"
 
 [dependencies]
-async-trait = "0.1.74"
-thiserror = "1.0.50"
-tokio = { version = "1.33.0", features = [
+async-trait = "0.1"
+thiserror = "2"
+tokio = { version = "1.33", features = [
   "sync",
   "time",
   "tracing",
   "rt",
   "macros",
 ] }
-tracing = "0.1.40"
+tracing = "0.1"
 
 [dev-dependencies]
 doc-comment = "0.3.3"
