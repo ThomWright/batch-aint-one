@@ -183,7 +183,6 @@ impl Drop for WorkerHandle {
 
 #[cfg(test)]
 mod test {
-    use async_trait::async_trait;
     use tokio::sync::oneshot;
     use tracing::Span;
 
@@ -192,7 +191,6 @@ mod test {
     #[derive(Debug, Clone)]
     struct SimpleBatchProcessor;
 
-    #[async_trait]
     impl Processor<String, String, String> for SimpleBatchProcessor {
         async fn process(
             &self,

@@ -1,6 +1,5 @@
-use std::{fmt::Display, hash::Hash, sync::Arc};
+use std::{fmt::Display, future::Future, hash::Hash, sync::Arc};
 
-use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{span, Level, Span};
 
@@ -32,7 +31,6 @@ where
 }
 
 /// Process a batch of inputs for a given key.
-#[async_trait]
 pub trait Processor<K, I, O = (), E = String>
 where
     E: Display,
@@ -41,11 +39,11 @@ where
     ///
     /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs
     /// in the given iterator.
-    async fn process(
+    fn process(
         &self,
         key: K,
         inputs: impl Iterator<Item = I> + Send,
-    ) -> std::result::Result<Vec<O>, E>;
+    ) -> impl Future<Output = std::result::Result<Vec<O>, E>> + Send;
 }
 
 impl<K, I, O, E> Batcher<K, I, O, E>

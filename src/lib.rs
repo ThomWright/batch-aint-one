@@ -37,7 +37,6 @@ pub use policies::{BatchingPolicy, Limits, OnFull};
 mod tests {
     use std::time::Duration;
 
-    use async_trait::async_trait;
     use tokio::join;
     use tracing::{span, Instrument};
 
@@ -46,7 +45,6 @@ mod tests {
     #[derive(Debug, Clone)]
     pub struct SimpleBatchProcessor(pub Duration);
 
-    #[async_trait]
     impl Processor<String, String, String> for SimpleBatchProcessor {
         async fn process(
             &self,

@@ -46,7 +46,6 @@ With batching, we can improve the throughput. Acquiring/releasing the lock and b
 ```rust
 use std::{time::Duration, marker::Send, sync::Arc};
 
-use async_trait::async_trait;
 use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
 
 /// A simple processor which just sleeps then returns a mapped version
@@ -54,7 +53,6 @@ use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
 #[derive(Debug, Clone)]
 struct SleepyBatchProcessor;
 
-#[async_trait]
 impl Processor<String, String, String> for SleepyBatchProcessor {
     async fn process(
         &self,
