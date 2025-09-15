@@ -1,3 +1,4 @@
+mod resources;
 mod strategies;
 mod types;
 

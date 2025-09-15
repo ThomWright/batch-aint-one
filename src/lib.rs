@@ -27,11 +27,13 @@ mod batch_queue;
 mod batcher;
 mod error;
 mod policies;
+mod processor;
 mod worker;
 
-pub use batcher::{Batcher, Processor};
+pub use batcher::Batcher;
 pub use error::BatchError;
 pub use policies::{BatchingPolicy, Limits, OnFull};
+pub use processor::Processor;
 
 #[cfg(test)]
 mod tests {
@@ -46,10 +48,15 @@ mod tests {
     pub struct SimpleBatchProcessor(pub Duration);
 
     impl Processor<String, String, String> for SimpleBatchProcessor {
+        async fn acquire_resources(&self, _key: String) -> () {
+            ()
+        }
+
         async fn process(
             &self,
             key: String,
             inputs: impl Iterator<Item = String> + Send,
+            _resources: (),
         ) -> Result<Vec<String>, String> {
             tokio::time::sleep(self.0).await;
             Ok(inputs.map(|s| s + " processed for " + &key).collect())
@@ -118,8 +125,8 @@ mod tests {
         let process_span = process_spans.first().unwrap();
 
         assert_eq!(
-            process_span["batch_size"], 2u64,
-            "batch_size shouldn't be emitted as a string",
+            process_span["batch.size"], 2u64,
+            "batch.size shouldn't be emitted as a string",
         );
 
         assert_eq!(
@@ -146,6 +153,6 @@ mod tests {
             );
         }
 
-        assert_eq!(storage.all_spans().len(), 5, "should be 5 spans in total");
+        assert_eq!(storage.all_spans().len(), 6, "should be 6 spans in total");
     }
 }

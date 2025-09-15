@@ -1,3 +1,3 @@
 mod duration;
-mod sequential;
+mod immediate;
 mod size;

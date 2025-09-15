@@ -6,12 +6,12 @@ use tracing::debug;
 use crate::{
     batch::{BatchItem, Generation},
     batch_queue::BatchQueue,
-    batcher::Processor,
     policies::{BatchingPolicy, Limits, PostFinish, PreAdd},
+    processor::Processor,
     BatchError,
 };
 
-pub(crate) struct Worker<K, I, O, F, E: Display> {
+pub(crate) struct Worker<K, I, O, F, E: Display, R = ()> {
     /// Used to receive new batch items.
     item_rx: mpsc::Receiver<BatchItem<K, I, O, E>>,
     /// The callback to process a batch of inputs.
@@ -27,7 +27,7 @@ pub(crate) struct Worker<K, I, O, F, E: Display> {
     batching_policy: BatchingPolicy,
 
     /// Unprocessed batches, grouped by key `K`.
-    batch_queues: HashMap<K, BatchQueue<K, I, O, E>>,
+    batch_queues: HashMap<K, BatchQueue<K, I, O, E, R>>,
 }
 
 pub(crate) enum Message<K> {
@@ -40,13 +40,14 @@ pub(crate) struct WorkerHandle {
     handle: JoinHandle<()>,
 }
 
-impl<K, I, O, F, E> Worker<K, I, O, F, E>
+impl<K, I, O, F, E, R> Worker<K, I, O, F, E, R>
 where
     K: 'static + Send + Eq + Hash + Clone,
     I: 'static + Send,
     O: 'static + Send,
-    F: 'static + Send + Clone + Processor<K, I, O, E>,
+    F: 'static + Send + Clone + Processor<K, I, O, E, R>,
     E: 'static + Send + Clone + Display,
+    R: 'static + Send,
 {
     pub fn spawn(
         processor: F,
@@ -90,12 +91,17 @@ where
             PreAdd::AddAndProcess => {
                 batch_queue.push(item);
 
-                self.process_next_batch(key);
+                self.process_next_batch(&key);
+            }
+            PreAdd::AddAndAcquireResources => {
+                batch_queue.push(item);
+
+                batch_queue.pre_acquire_resources(self.processor.clone(), self.msg_tx.clone());
             }
             PreAdd::AddAndProcessAfter(duration) => {
                 batch_queue.push(item);
 
-                batch_queue.time_out_after(duration, self.msg_tx.clone());
+                batch_queue.process_after(duration, self.msg_tx.clone());
             }
             PreAdd::Add => {
                 batch_queue.push(item);
@@ -125,10 +131,10 @@ where
         }
     }
 
-    fn process_next_batch(&mut self, key: K) {
+    fn process_next_batch(&mut self, key: &K) {
         let batch_queue = self
             .batch_queues
-            .get_mut(&key)
+            .get_mut(key)
             .expect("Batch queue should exist for key");
 
         if let Some(batch) = batch_queue.take_next_batch() {
@@ -138,8 +144,8 @@ where
         }
     }
 
-    fn on_batch_finished(&mut self, key: K) {
-        let batch_queue = self.batch_queues.get_mut(&key).expect("batch should exist");
+    fn on_batch_finished(&mut self, key: &K) {
+        let batch_queue = self.batch_queues.get_mut(key).expect("batch should exist");
 
         match self.batching_policy.post_finish(batch_queue) {
             PostFinish::Process => {
@@ -163,7 +169,7 @@ where
                             self.process_generation(key, generation);
                         }
                         Message::Finished(key) => {
-                            self.on_batch_finished(key);
+                            self.on_batch_finished(&key);
                         }
                     }
                 }
@@ -192,10 +198,15 @@ mod test {
     struct SimpleBatchProcessor;
 
     impl Processor<String, String, String> for SimpleBatchProcessor {
+        async fn acquire_resources(&self, _key: String) -> () {
+            ()
+        }
+
         async fn process(
             &self,
             _key: String,
             inputs: impl Iterator<Item = String> + Send,
+            _resources: (),
         ) -> Result<Vec<String>, String> {
             Ok(inputs.map(|s| s + " processed").collect())
         }

@@ -1,4 +1,4 @@
-use std::{fmt::Display, future::Future, hash::Hash, sync::Arc};
+use std::{fmt::Display, hash::Hash, marker::PhantomData, sync::Arc};
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{span, Level, Span};
@@ -7,6 +7,7 @@ use crate::{
     batch::BatchItem,
     error::BatchResult,
     policies::{BatchingPolicy, Limits},
+    processor::Processor,
     worker::{Worker, WorkerHandle},
 };
 
@@ -19,50 +20,38 @@ use crate::{
 ///
 /// Cheap to clone.
 #[derive(Debug)]
-pub struct Batcher<K, I, O = (), E = String>
+pub struct Batcher<K, I, O = (), E = String, R = ()>
 where
     K: 'static + Send + Eq + Hash + Clone,
     I: 'static + Send,
     O: 'static + Send,
     E: 'static + Send + Clone + Display,
+    R: 'static + Send,
 {
     worker: Arc<WorkerHandle>,
     item_tx: mpsc::Sender<BatchItem<K, I, O, E>>,
+    _resources: PhantomData<R>,
 }
 
-/// Process a batch of inputs for a given key.
-pub trait Processor<K, I, O = (), E = String>
-where
-    E: Display,
-{
-    /// Process the batch.
-    ///
-    /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs
-    /// in the given iterator.
-    fn process(
-        &self,
-        key: K,
-        inputs: impl Iterator<Item = I> + Send,
-    ) -> impl Future<Output = std::result::Result<Vec<O>, E>> + Send;
-}
-
-impl<K, I, O, E> Batcher<K, I, O, E>
+impl<K, I, O, E, R> Batcher<K, I, O, E, R>
 where
     K: 'static + Send + Eq + Hash + Clone,
     I: 'static + Send,
     O: 'static + Send,
     E: 'static + Send + Clone + Display,
+    R: 'static + Send,
 {
     /// Create a new batcher.
     pub fn new<F>(processor: F, limits: Limits, batching_policy: BatchingPolicy) -> Self
     where
-        F: 'static + Send + Clone + Processor<K, I, O, E>,
+        F: 'static + Send + Clone + Processor<K, I, O, E, R>,
     {
         let (handle, item_tx) = Worker::spawn(processor, limits, batching_policy);
 
         Self {
             worker: Arc::new(handle),
             item_tx,
+            _resources: PhantomData,
         }
     }
 
@@ -124,6 +113,7 @@ where
         Self {
             worker: self.worker.clone(),
             item_tx: self.item_tx.clone(),
+            _resources: PhantomData,
         }
     }
 }

@@ -6,8 +6,11 @@ use tokio::join;
 
 use crate::types::SimpleBatchProcessor;
 
+/// Given we use a Size strategy
+/// When we submit exactly one batch worth of items
+/// Then it should process them all immediately
 #[tokio::test]
-async fn strategy_size() {
+async fn process_when_full() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(Duration::ZERO),
         Limits::default().max_batch_size(3),
@@ -29,7 +32,7 @@ async fn strategy_size() {
 /// When we submit several batches worth of items at once
 /// Then they should all succeed
 #[tokio::test]
-async fn strategy_size_loaded() {
+async fn loaded() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
@@ -56,7 +59,7 @@ async fn strategy_size_loaded() {
 }
 
 #[tokio::test]
-async fn strategy_size_max_concurrency_limit() {
+async fn max_concurrency_limit() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(Duration::ZERO),
         Limits::default().max_batch_size(1).max_key_concurrency(2),

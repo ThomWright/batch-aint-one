@@ -11,8 +11,13 @@ use crate::{batch_queue::BatchQueue, error::RejectionReason};
 pub enum BatchingPolicy {
     /// Immediately process the batch if possible.
     ///
-    /// When concurrency is available, new items will be processed immediately (with a batch size of
-    /// one).
+    /// When concurrency and resources are available, new items will be processed immediately (with
+    /// a batch size of one).
+    ///
+    /// When resources are not immediately available, then the batch will remain open while
+    /// acquiring resources  to allow more items to be added, up to the maximum batch size.
+    ///
+    /// In this way, we try to prioritise larger batch sizes, while still keeping latency low.
     ///
     /// When concurrency is maximised, new items will added to the next batch (up to the maximum
     /// batch size). As soon as a batch finishes the next batch will start. When concurrency is
@@ -64,6 +69,7 @@ pub enum OnFull {
 
 pub enum PreAdd {
     AddAndProcess,
+    AddAndAcquireResources,
     AddAndProcessAfter(Duration),
     Reject(RejectionReason),
     Add,
@@ -103,9 +109,9 @@ impl Default for Limits {
 
 impl BatchingPolicy {
     /// Should be applied _before_ adding the new item to the batch.
-    pub(crate) fn pre_add<K, I, O, E: Display>(
+    pub(crate) fn pre_add<K, I, O, E: Display, R>(
         &self,
-        batch_queue: &BatchQueue<K, I, O, E>,
+        batch_queue: &BatchQueue<K, I, O, E, R>,
     ) -> PreAdd
     where
         K: 'static + Send + Clone,
@@ -143,15 +149,22 @@ impl BatchingPolicy {
                 PreAdd::AddAndProcessAfter(*dur)
             }
 
-            Self::Immediate if !batch_queue.at_max_processing_capacity() => PreAdd::AddAndProcess,
+            Self::Immediate if !batch_queue.at_max_processing_capacity() => {
+                // We want to process the batch as soon as possible, but we can't process it until
+                // we have the resources to do so. So we should acquire the resources first before
+                // starting to process.
+                //
+                // In the meantime, we should continue adding to the current batch.
+                PreAdd::AddAndAcquireResources
+            }
 
             _ => PreAdd::Add,
         }
     }
 
-    pub(crate) fn post_finish<K, I, O, E: Display>(
+    pub(crate) fn post_finish<K, I, O, E: Display, R>(
         &self,
-        batch_queue: &BatchQueue<K, I, O, E>,
+        batch_queue: &BatchQueue<K, I, O, E, R>,
     ) -> PostFinish {
         if !batch_queue.at_max_processing_capacity() {
             match self {
