@@ -239,7 +239,7 @@ where
                 let span = Span::current();
 
                 // Replace with a placeholder to keep the Drop impl working.
-                let items = mem::replace(&mut self.items, Vec::new());
+                let items = mem::take(&mut self.items);
 
                 // Acquire resources (if we don't have them already).
                 let resources = {
@@ -290,10 +290,7 @@ where
 
                 for (tx, output) in txs.into_iter().zip(outputs) {
                     if tx
-                        .send((
-                            output.map_err(BatchError::BatchFailed),
-                            Some(span.clone()),
-                        ))
+                        .send((output.map_err(BatchError::BatchFailed), Some(span.clone())))
                         .is_err()
                     {
                         // Whatever was waiting for the output must have shut down. Presumably it
