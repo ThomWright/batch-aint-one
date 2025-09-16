@@ -56,7 +56,7 @@ struct SleepyBatchProcessor;
 
 impl
     Processor<
-        /* key */ String,
+        /* keys */ String,
         /* inputs */ String,
         /* outputs */ String,
         /* errors */ String,
