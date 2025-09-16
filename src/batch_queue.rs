@@ -89,7 +89,7 @@ where
     }
 
     pub(crate) fn take_next_batch(&mut self) -> Option<Batch<K, I, O, E, R>> {
-        let batch = self.queue.front_mut().expect("Should always be non-empty");
+        let batch = self.queue.front().expect("Should always be non-empty");
         if batch.is_processable() {
             let batch = self.queue.pop_front().expect("Should always be non-empty");
             if self.queue.is_empty() {

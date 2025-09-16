@@ -121,7 +121,7 @@ impl<K, I, O, E: Display, R> Batch<K, I, O, E, R> {
     pub(crate) fn is_processable(&self) -> bool {
         // To be processable, we must have some items to process...
         self.len() > 0
-            // ... and if there is a timeout deadline, it must be in the past, ...
+            // ... and if there is a timeout deadline, it must be in the past.
             && self
                 .timeout_deadline
                 .is_none_or(|deadline| match deadline.cmp(&Instant::now()){
