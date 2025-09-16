@@ -64,8 +64,8 @@ impl
     > for SleepyBatchProcessor
 {
     // Acquire some resources
-    async fn acquire_resources(&self, key: String) -> String {
-        "Some resources for: ".to_string() + &key
+    async fn acquire_resources(&self, key: String) -> Result<String, String> {
+        Ok("Some resources for: ".to_string() + &key)
     }
 
     async fn process(
@@ -136,7 +136,11 @@ This depends on the batching policy used. `BatchingPolicy::Immediate` optimises 
   - [x] Why – motivating example
   - [x] Code examples
 - [x] Tracing/logging
-- [ ] Metrics?
+- [x] Resource acquisition
+- [x] Record keys as span attributes
+- [ ] Return batch metadata
+- [ ] Allow app to await worker task
+- [ ] Metrics
 
 ## Further reading
 

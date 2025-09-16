@@ -1,6 +1,6 @@
 use std::{
     cmp,
-    fmt::Display,
+    fmt::{Debug, Display},
     mem,
     sync::{
         atomic::{self, AtomicUsize},
@@ -154,7 +154,7 @@ where
 
 impl<K, I, O, E: Display, R> Batch<K, I, O, E, R>
 where
-    K: 'static + Send + Clone,
+    K: 'static + Send + Clone + Debug,
     I: 'static + Send,
     O: 'static + Send,
     E: 'static + Send + Clone + Display,
@@ -178,7 +178,7 @@ where
     /// Acquire resources for this batch, if we are not doing so already.
     ///
     /// Once acquired, a message will be sent to process the batch.
-    pub(crate) fn pre_acquire_resources<F>(&mut self, processor: F, tx: mpsc::Sender<Message<K>>)
+    pub(crate) fn pre_acquire_resources<F>(&mut self, processor: F, tx: mpsc::Sender<Message<K, E>>)
     where
         F: 'static + Send + Processor<K, I, O, E, R>,
     {
@@ -195,11 +195,24 @@ where
 
             let resource_state = Arc::clone(&self.resources);
             tokio::spawn(async move {
-                let span = span!(Level::INFO, "acquire resources");
+                let span = span!(Level::INFO, "acquire resources", batch.key = ?key);
+
                 let resources = processor
                     .acquire_resources(key.clone())
                     .instrument(span.clone())
                     .await;
+
+                let resources = match resources {
+                    Ok(r) => r,
+                    Err(err) => {
+                        if tx.send(Message::Fail(key, generation, err)).await.is_err() {
+                            // The worker must have shut down. In this case, we don't want to process any more
+                            // batches anyway.
+                            debug!("Tried to signal resources acquisition failed but the worker has shut down");
+                        }
+                        return;
+                    }
+                };
 
                 {
                     let mut state = resource_state
@@ -220,7 +233,7 @@ where
         }
     }
 
-    pub(crate) fn process<F>(mut self, processor: F, on_finished: mpsc::Sender<Message<K>>)
+    pub(crate) fn process<F>(mut self, processor: F, on_finished: mpsc::Sender<Message<K, E>>)
     where
         F: 'static + Send + Processor<K, I, O, E, R>,
     {
@@ -230,16 +243,27 @@ where
 
         let batch_size = self.items.len();
         // Convert to u64 so tracing will treat this as an integer instead of a string.
-        let outer_span = span!(Level::INFO, "process batch", batch.size = batch_size as u64);
+        let outer_span = span!(Level::INFO, "process batch", batch.key = ?self.key(), batch.size = batch_size as u64);
 
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
         // run loop.
         tokio::spawn(
             async move {
-                let span = Span::current();
+                let outer_span = Span::current();
 
                 // Replace with a placeholder to keep the Drop impl working.
                 let items = mem::take(&mut self.items);
+
+                let (inputs, txs): (Vec<I>, Vec<SendOutput<O, E>>) = items
+                    .into_iter()
+                    .map(|item| {
+                        // Link the shared batch processing span to the span for each batch item. We
+                        // don't use a parent relationship because that's 1:many (parent:child), and
+                        // this is many:1.
+                        outer_span.follows_from(&item.requesting_span);
+                        (item.input, item.tx)
+                    })
+                    .unzip();
 
                 // Acquire resources (if we don't have them already).
                 let resources = {
@@ -250,80 +274,100 @@ where
                     resources.take()
                 };
                 let resources = match resources {
-                    Some((r, resource_span)) => {
-                        span.follows_from(resource_span);
+                    Some((r, acquire_span)) => {
+                        outer_span.follows_from(acquire_span);
                         r
                     }
                     None => {
-                        let span = span!(Level::INFO, "acquire resources");
+                        let acquire_span =
+                            span!(Level::INFO, "acquire resources", batch.key = ?self.key());
                         let resources = processor
                             .acquire_resources(self.key.clone())
-                            .instrument(span.clone())
+                            .instrument(acquire_span.clone())
                             .await;
-                        resources
+                        match resources {
+                            Ok(r) => r,
+                            Err(err) => {
+                                let outputs: Vec<_> = std::iter::repeat_n(err, batch_size)
+                                    .map(|e| Err(BatchError::ResourceAcquisitionFailed(e)))
+                                    .collect();
+                                self.finalise(txs, outputs, Some(outer_span), on_finished).await;
+                                return;
+                            }
+                        }
                     }
                 };
 
-                let (inputs, txs): (Vec<I>, Vec<SendOutput<O, E>>) = items
-                    .into_iter()
-                    .map(|item| {
-                        // Link the shared batch processing span to the span for each batch item. We
-                        // don't use a parent relationship because that's 1:many (parent:child), and
-                        // this is many:1.
-                        span.follows_from(&item.requesting_span);
-
-                        (item.input, item.tx)
-                    })
-                    .unzip();
+                let inner_span = span!(Level::DEBUG, "process", batch.key = ?self.key(), batch.size = batch_size as u64);
 
                 let result = processor
                     .process(self.key.clone(), inputs.into_iter(), resources)
-                    .instrument(span.clone())
+                    .instrument(inner_span.clone())
                     .await;
 
                 let outputs: Vec<_> = match result {
                     Ok(outputs) => outputs.into_iter().map(|o| Ok(o)).collect(),
                     Err(err) => std::iter::repeat_n(err, batch_size)
-                        .map(|e| Err(e))
+                        .map(|e| Err(BatchError::BatchFailed(e)))
                         .collect(),
                 };
 
-                for (tx, output) in txs.into_iter().zip(outputs) {
-                    if tx
-                        .send((output.map_err(BatchError::BatchFailed), Some(span.clone())))
-                        .is_err()
-                    {
-                        // Whatever was waiting for the output must have shut down. Presumably it
-                        // doesn't care anymore, but we log here anyway. There's not much else we can do
-                        // here.
-                        debug!("Unable to send output over oneshot channel. Receiver deallocated.");
-                    }
-                }
-
-                self.processing.fetch_sub(1, atomic::Ordering::AcqRel);
-
-                // We're finished with this batch
-                if on_finished
-                    .send(Message::Finished(self.key.clone()))
-                    .await
-                    .is_err()
-                {
-                    // The worker must have shut down. In this case, we don't want to process any more
-                    // batches anyway.
-                    debug!("Tried to signal a batch had finished but the worker has shut down");
-                }
+                self.finalise(txs, outputs, Some(outer_span), on_finished).await;
             }
             .instrument(outer_span),
         );
+    }
+
+    pub fn fail(mut self, err: E, on_finished: mpsc::Sender<Message<K, E>>) {
+        let txs: Vec<_> = mem::take(&mut self.items)
+            .into_iter()
+            .map(|item| item.tx)
+            .collect();
+        let outputs = std::iter::repeat_n(err, txs.len())
+            .map(|e| Err(BatchError::ResourceAcquisitionFailed(e)))
+            .collect();
+
+        tokio::spawn(self.finalise(txs, outputs, None, on_finished));
+    }
+
+    /// Send outputs and clean up.
+    async fn finalise(
+        self,
+        txs: Vec<SendOutput<O, E>>,
+        outputs: Vec<Result<O, BatchError<E>>>,
+        span: Option<Span>,
+        on_finished: mpsc::Sender<Message<K, E>>,
+    ) {
+        for (tx, output) in txs.into_iter().zip(outputs) {
+            if tx.send((output, span.clone())).is_err() {
+                // Whatever was waiting for the output must have shut down. Presumably it
+                // doesn't care anymore, but we log here anyway. There's not much else we can do
+                // here.
+                debug!("Unable to send output over oneshot channel. Receiver deallocated.");
+            }
+        }
+
+        self.processing.fetch_sub(1, atomic::Ordering::AcqRel);
+
+        // We're finished with this batch
+        if on_finished
+            .send(Message::Finished(self.key.clone()))
+            .await
+            .is_err()
+        {
+            // The worker must have shut down. In this case, we don't want to process any more
+            // batches anyway.
+            debug!("Tried to signal a batch had finished but the worker has shut down");
+        }
     }
 }
 
 impl<K, I, O, E, R> Batch<K, I, O, E, R>
 where
-    K: 'static + Send + Clone,
-    E: Display,
+    K: 'static + Send + Clone + Debug,
+    E: 'static + Send + Display,
 {
-    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<K>>) {
+    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<K, E>>) {
         self.cancel_timeout();
 
         let new_deadline = Instant::now() + duration;

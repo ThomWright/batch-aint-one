@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Display, hash::Hash};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    hash::Hash,
+};
 
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::debug;
@@ -18,9 +22,9 @@ pub(crate) struct Worker<K, I, O, F, E: Display, R = ()> {
     processor: F,
 
     /// Used to signal that a batch for key `K` should be processed.
-    msg_tx: mpsc::Sender<Message<K>>,
+    msg_tx: mpsc::Sender<Message<K, E>>,
     /// Receives signals to process a batch for key `K`.
-    msg_rx: mpsc::Receiver<Message<K>>,
+    msg_rx: mpsc::Receiver<Message<K, E>>,
 
     limits: Limits,
     /// Controls when to start processing a batch.
@@ -30,8 +34,10 @@ pub(crate) struct Worker<K, I, O, F, E: Display, R = ()> {
     batch_queues: HashMap<K, BatchQueue<K, I, O, E, R>>,
 }
 
-pub(crate) enum Message<K> {
+#[derive(Debug)]
+pub(crate) enum Message<K, E> {
     Process(K, Generation),
+    Fail(K, Generation, E),
     Finished(K),
 }
 
@@ -42,11 +48,11 @@ pub(crate) struct WorkerHandle {
 
 impl<K, I, O, F, E, R> Worker<K, I, O, F, E, R>
 where
-    K: 'static + Send + Eq + Hash + Clone,
+    K: 'static + Send + Eq + Hash + Clone + Debug,
     I: 'static + Send,
     O: 'static + Send,
     F: 'static + Send + Clone + Processor<K, I, O, E, R>,
-    E: 'static + Send + Clone + Display,
+    E: 'static + Send + Clone + Display + Debug,
     R: 'static + Send,
 {
     pub fn spawn(
@@ -135,7 +141,7 @@ where
         let batch_queue = self
             .batch_queues
             .get_mut(key)
-            .expect("Batch queue should exist for key");
+            .expect("batch queue should exist");
 
         if let Some(batch) = batch_queue.take_next_batch() {
             let on_finished = self.msg_tx.clone();
@@ -145,13 +151,28 @@ where
     }
 
     fn on_batch_finished(&mut self, key: &K) {
-        let batch_queue = self.batch_queues.get_mut(key).expect("batch should exist");
+        let batch_queue = self
+            .batch_queues
+            .get_mut(key)
+            .expect("batch queue should exist");
 
         match self.batching_policy.post_finish(batch_queue) {
             PostFinish::Process => {
                 self.process_next_batch(key);
             }
             PostFinish::DoNothing => {}
+        }
+    }
+
+    fn fail_batch(&mut self, key: K, generation: Generation, err: E) {
+        let batch_queue = self
+            .batch_queues
+            .get_mut(&key)
+            .expect("batch queue should exist");
+
+        if let Some(batch) = batch_queue.take_generation(generation) {
+            let on_finished = self.msg_tx.clone();
+            batch.fail(err, on_finished)
         }
     }
 
@@ -167,6 +188,9 @@ where
                     match msg {
                         Message::Process(key, generation) => {
                             self.process_generation(key, generation);
+                        }
+                        Message::Fail(key, generation, err) => {
+                            self.fail_batch(key, generation, err);
                         }
                         Message::Finished(key) => {
                             self.on_batch_finished(&key);
@@ -198,8 +222,8 @@ mod test {
     struct SimpleBatchProcessor;
 
     impl Processor<String, String, String> for SimpleBatchProcessor {
-        async fn acquire_resources(&self, _key: String) -> () {
-            ()
+        async fn acquire_resources(&self, _key: String) -> Result<(), String> {
+            Ok(())
         }
 
         async fn process(

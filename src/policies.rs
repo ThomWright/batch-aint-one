@@ -67,7 +67,8 @@ pub enum OnFull {
     Reject,
 }
 
-pub enum PreAdd {
+#[derive(Debug)]
+pub(crate) enum PreAdd {
     AddAndProcess,
     AddAndAcquireResources,
     AddAndProcessAfter(Duration),
@@ -75,7 +76,7 @@ pub enum PreAdd {
     Add,
 }
 
-pub enum PostFinish {
+pub(crate) enum PostFinish {
     Process,
     DoNothing,
 }

@@ -1,4 +1,9 @@
-use std::{fmt::Display, hash::Hash, marker::PhantomData, sync::Arc};
+use std::{
+    fmt::{Debug, Display},
+    hash::Hash,
+    marker::PhantomData,
+    sync::Arc,
+};
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{span, Level, Span};
@@ -35,10 +40,10 @@ where
 
 impl<K, I, O, E, R> Batcher<K, I, O, E, R>
 where
-    K: 'static + Send + Eq + Hash + Clone,
+    K: 'static + Send + Eq + Hash + Clone + Debug,
     I: 'static + Send,
     O: 'static + Send,
-    E: 'static + Send + Clone + Display,
+    E: 'static + Send + Clone + Display + Debug,
     R: 'static + Send,
 {
     /// Create a new batcher.

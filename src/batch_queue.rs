@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    fmt::Display,
+    fmt::{Debug, Display},
     sync::{atomic::AtomicUsize, Arc},
     time::Duration,
 };
@@ -70,7 +70,7 @@ impl<K, I, O, E: Display, R> BatchQueue<K, I, O, E, R> {
 
 impl<K, I, O, E, R> BatchQueue<K, I, O, E, R>
 where
-    K: 'static + Send + Clone,
+    K: 'static + Send + Clone + Debug,
     I: 'static + Send,
     O: 'static + Send,
     E: 'static + Send + Clone + Display,
@@ -88,12 +88,8 @@ where
         }
     }
 
-    fn next_batch_mut(&mut self) -> &mut Batch<K, I, O, E, R> {
-        self.queue.front_mut().expect("Should always be non-empty")
-    }
-
     pub(crate) fn take_next_batch(&mut self) -> Option<Batch<K, I, O, E, R>> {
-        let batch = self.next_batch_mut();
+        let batch = self.queue.front_mut().expect("Should always be non-empty");
         if batch.is_processable() {
             let batch = self.queue.pop_front().expect("Should always be non-empty");
             if self.queue.is_empty() {
@@ -132,21 +128,21 @@ where
     }
 
     /// Acquire resources ahead of processing for the next batch.
-    pub(crate) fn pre_acquire_resources<F>(&mut self, processor: F, tx: mpsc::Sender<Message<K>>)
+    pub(crate) fn pre_acquire_resources<F>(&mut self, processor: F, tx: mpsc::Sender<Message<K, E>>)
     where
         F: 'static + Send + Processor<K, I, O, E, R>,
     {
-        let batch = self.next_batch_mut();
+        let batch = self.queue.back_mut().expect("Should always be non-empty");
         batch.pre_acquire_resources(processor, tx);
     }
 }
 
 impl<K, I, O, E, R> BatchQueue<K, I, O, E, R>
 where
-    K: 'static + Send + Clone,
-    E: Display,
+    K: 'static + Send + Clone + Debug,
+    E: 'static + Send + Display,
 {
-    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<K>>) {
+    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<K, E>>) {
         let back = self.queue.back_mut().expect("Should always be non-empty");
         back.process_after(duration, tx);
     }

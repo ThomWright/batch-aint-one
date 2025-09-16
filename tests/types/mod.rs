@@ -6,8 +6,8 @@ use batch_aint_one::{Batcher, Processor};
 pub struct SimpleBatchProcessor(pub Duration);
 
 impl Processor<String, String, String> for SimpleBatchProcessor {
-    async fn acquire_resources(&self, _key: String) -> () {
-        ()
+    async fn acquire_resources(&self, _key: String) -> Result<(), String> {
+        Ok(())
     }
 
     async fn process(

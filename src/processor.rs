@@ -15,7 +15,7 @@ where
     /// are acquired.
     ///
     /// Can be used to e.g. acquire a database connection from a pool.
-    fn acquire_resources(&self, key: K) -> impl Future<Output = R> + Send;
+    fn acquire_resources(&self, key: K) -> impl Future<Output = Result<R, E>> + Send;
 
     /// Process the batch.
     ///
