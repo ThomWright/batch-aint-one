@@ -141,7 +141,7 @@ async fn size_when_acquisition_fails() {
     let batcher = Batcher::new(
         processor.clone(),
         Limits::default().max_batch_size(10).max_key_concurrency(2),
-        BatchingPolicy::Size
+        BatchingPolicy::Size,
     );
 
     let handler = |i: i32| {
@@ -169,8 +169,6 @@ async fn size_when_acquisition_fails() {
         }
     );
 }
-
-
 
 /// Given we acquire resources before processing
 /// And resource acquisition fails consistently

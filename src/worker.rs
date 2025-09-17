@@ -4,8 +4,11 @@ use std::{
     hash::Hash,
 };
 
-use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::debug;
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
+use tracing::{debug, info};
 
 use crate::{
     batch::{BatchItem, Generation},
@@ -26,6 +29,14 @@ pub(crate) struct Worker<K, I, O, F, E: Display, R = ()> {
     /// Receives signals to process a batch for key `K`.
     msg_rx: mpsc::Receiver<Message<K, E>>,
 
+    /// Used to send messages to the worker related to shutdown.
+    shutdown_notifier_rx: mpsc::Receiver<ShutdownMessage>,
+
+    /// Used to signal to listeners that the worker has shut down.
+    shutdown_notifiers: Vec<oneshot::Sender<()>>,
+
+    shutting_down: bool,
+
     limits: Limits,
     /// Controls when to start processing a batch.
     batching_policy: BatchingPolicy,
@@ -41,8 +52,22 @@ pub(crate) enum Message<K, E> {
     Finished(K),
 }
 
+pub(crate) enum ShutdownMessage {
+    Register(ShutdownNotifier),
+    ShutDown,
+}
+
+pub(crate) struct ShutdownNotifier(oneshot::Sender<()>);
+
+/// A handle to the worker task.
+#[derive(Debug, Clone)]
+pub struct WorkerHandle {
+    shutdown_tx: mpsc::Sender<ShutdownMessage>,
+}
+
+/// Aborts the worker task when dropped.
 #[derive(Debug)]
-pub(crate) struct WorkerHandle {
+pub(crate) struct WorkerDropGuard {
     handle: JoinHandle<()>,
 }
 
@@ -59,10 +84,16 @@ where
         processor: F,
         limits: Limits,
         batching_policy: BatchingPolicy,
-    ) -> (WorkerHandle, mpsc::Sender<BatchItem<K, I, O, E>>) {
+    ) -> (
+        WorkerHandle,
+        WorkerDropGuard,
+        mpsc::Sender<BatchItem<K, I, O, E>>,
+    ) {
         let (item_tx, item_rx) = mpsc::channel(10);
 
         let (timeout_tx, timeout_rx) = mpsc::channel(10);
+
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
         let mut worker = Worker {
             item_rx,
@@ -70,6 +101,11 @@ where
 
             msg_tx: timeout_tx,
             msg_rx: timeout_rx,
+
+            shutdown_notifier_rx: shutdown_rx,
+            shutdown_notifiers: Vec::new(),
+
+            shutting_down: false,
 
             limits,
             batching_policy,
@@ -81,7 +117,11 @@ where
             worker.run().await;
         });
 
-        (WorkerHandle { handle }, item_tx)
+        (
+            WorkerHandle { shutdown_tx },
+            WorkerDropGuard { handle },
+            item_tx,
+        )
     }
 
     /// Add an item to the batch.
@@ -176,10 +216,27 @@ where
         }
     }
 
+    fn ready_to_shut_down(&self) -> bool {
+        self.shutting_down
+            && self.batch_queues.values().all(|q| q.is_empty())
+            && !self.batch_queues.values().any(|q| q.is_processing())
+    }
+
     /// Start running the worker event loop.
     async fn run(&mut self) {
         loop {
             tokio::select! {
+                Some(msg) = self.shutdown_notifier_rx.recv() => {
+                    match msg {
+                        ShutdownMessage::Register(notifier) => {
+                           self.shutdown_notifiers.push(notifier.0);
+                        }
+                        ShutdownMessage::ShutDown => {
+                            self.shutting_down = true;
+                        }
+                    }
+                }
+
                 Some(item) = self.item_rx.recv() => {
                     self.add(item);
                 }
@@ -198,15 +255,37 @@ where
                     }
                 }
             }
+
+            if self.ready_to_shut_down() {
+                info!("Batch worker is shutting down");
+                return;
+            }
         }
     }
 }
 
-impl Drop for WorkerHandle {
+impl WorkerHandle {
+    /// Signal the worker to shut down after processing any in-flight batches.
+    pub async fn shut_down(&self) {
+        // We ignore errors here - if the receiver has gone away, the worker is already shut down.
+        let _ = self.shutdown_tx.send(ShutdownMessage::ShutDown).await;
+    }
+
+    /// Wait for the worker to finish.
+    pub async fn wait_for_shutdown(&self) {
+        // We ignore errors here - if the receiver has gone away, the worker is already shut down.
+        let (notifier_tx, notifier_rx) = oneshot::channel();
+        let _ = self
+            .shutdown_tx
+            .send(ShutdownMessage::Register(ShutdownNotifier(notifier_tx)))
+            .await;
+        // Wait for the notifier to be dropped.
+        let _ = notifier_rx.await;
+    }
+}
+
+impl Drop for WorkerDropGuard {
     fn drop(&mut self) {
-        // TODO: this is too late really.
-        // Ideally we'd signal to the worker to stop, wait for it,
-        // then drop the Batcher with the tx side of the channel.
         self.handle.abort();
     }
 }
@@ -238,7 +317,7 @@ mod test {
 
     #[tokio::test]
     async fn simple_test_over_channel() {
-        let (_worker_handle, item_tx) = Worker::<String, _, _, _, _>::spawn(
+        let (_worker_handle, _worker_guard, item_tx) = Worker::<String, _, _, _, _>::spawn(
             SimpleBatchProcessor,
             Limits::default().max_batch_size(2),
             BatchingPolicy::Size,

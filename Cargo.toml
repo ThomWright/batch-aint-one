@@ -15,6 +15,7 @@ categories = ["concurrency"]
 license = "MIT"
 
 [dependencies]
+futures = "0.3.29"
 thiserror = "2"
 tokio = { version = "1.33", features = [
   "sync",
