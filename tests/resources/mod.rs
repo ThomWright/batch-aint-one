@@ -125,6 +125,57 @@ async fn immediate_batches_while_acquiring() {
     assert_eq!(batch_sizes[1], 10);
 }
 
+/// Given we acquire resources before processing
+/// And resource acquisition fails consistently
+/// When we use a Size batching strategy
+/// Then all items should fail with a resource acquisition error
+#[tokio::test]
+async fn size_when_acquisition_fails() {
+    tokio::time::pause();
+
+    let acquisition_dur = Duration::from_millis(100);
+    let processing_dur = Duration::from_millis(5);
+
+    let processor = ResourceAcquiringProcessor::new(acquisition_dur, processing_dur).with_failure();
+
+    let batcher = Batcher::new(
+        processor.clone(),
+        Limits::default().max_batch_size(10).max_key_concurrency(2),
+        BatchingPolicy::Size
+    );
+
+    let handler = |i: i32| {
+        let f = batcher.add("key".to_string(), i.to_string());
+        async move { f.await }
+    };
+
+    let mut tasks = vec![];
+    for i in 1..=20 {
+        tasks.push(tokio_test::task::spawn(handler(i)));
+    }
+
+    let outputs = join_all(tasks.into_iter()).await;
+
+    assert_matches!(
+        outputs.first(),
+        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
+            assert_eq!(s, "Failed to acquire resources - key_0");
+        }
+    );
+    assert_matches!(
+        outputs.last(),
+        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
+            assert_eq!(s, "Failed to acquire resources - key_1");
+        }
+    );
+}
+
+
+
+/// Given we acquire resources before processing
+/// And resource acquisition fails consistently
+/// When we use an Immediate batching strategy
+/// Then all items should fail with a resource acquisition error
 #[tokio::test]
 async fn immediate_when_acquisition_fails() {
     tokio::time::pause();
