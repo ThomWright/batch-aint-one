@@ -108,30 +108,35 @@ impl Default for Limits {
 impl BatchingPolicy {
     /// Should be applied _before_ adding the new item to the batch.
     pub(crate) fn pre_add<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> PreAdd {
-        // Check if we have capacity to process this item.
-        if batch_queue.is_full() {
-            if batch_queue.at_max_processing_capacity() {
-                return PreAdd::Reject(RejectionReason::MaxConcurrency);
-            } else {
-                // We might still be waiting to process the next batch.
-                return PreAdd::Reject(RejectionReason::BatchFull);
-            }
+        if let Some(rejection) = self.should_reject(batch_queue) {
+            return PreAdd::Reject(rejection);
         }
 
-        match self {
-            Self::Size if batch_queue.last_space_in_batch() => {
-                if batch_queue.at_max_processing_capacity() {
-                    PreAdd::Add
-                } else {
-                    PreAdd::AddAndProcess
-                }
+        self.determine_action(batch_queue)
+    }
+
+    /// Check if the item should be rejected due to capacity constraints.
+    fn should_reject<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> Option<RejectionReason> {
+        if batch_queue.is_full() {
+            if batch_queue.at_max_processing_capacity() {
+                Some(RejectionReason::MaxConcurrency)
+            } else {
+                // We might still be waiting to process the next batch.
+                Some(RejectionReason::BatchFull)
             }
+        } else {
+            None
+        }
+    }
+
+    /// Determine the appropriate action based on policy and batch state.
+    fn determine_action<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> PreAdd {
+        match self {
+            Self::Size if batch_queue.last_space_in_batch() => self.add_or_process(batch_queue),
 
             Self::Duration(_dur, on_full) if batch_queue.last_space_in_batch() => {
-                if batch_queue.at_max_processing_capacity() {
-                    PreAdd::Add
-                } else if matches!(on_full, OnFull::Process) {
-                    PreAdd::AddAndProcess
+                if matches!(on_full, OnFull::Process) {
+                    self.add_or_process(batch_queue)
                 } else {
                     PreAdd::Add
                 }
@@ -151,6 +156,16 @@ impl BatchingPolicy {
             }
 
             _ => PreAdd::Add,
+        }
+    }
+
+    /// Decide between Add and AddAndProcess based on processing capacity.
+    fn add_or_process<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> PreAdd {
+        if batch_queue.at_max_processing_capacity() {
+            // We can't process the batch yet, so just add to it.
+            PreAdd::Add
+        } else {
+            PreAdd::AddAndProcess
         }
     }
 
