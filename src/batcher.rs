@@ -1,9 +1,4 @@
-use std::{
-    fmt::{Debug, Display},
-    hash::Hash,
-    marker::PhantomData,
-    sync::Arc,
-};
+use std::{fmt::Debug, sync::Arc};
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{span, Level, Span};
@@ -25,45 +20,26 @@ use crate::{
 ///
 /// Cheap to clone.
 #[derive(Debug)]
-pub struct Batcher<K, I, O = (), E = String, R = ()>
-where
-    K: 'static + Send + Eq + Hash + Clone,
-    I: 'static + Send,
-    O: 'static + Send,
-    E: 'static + Send + Clone + Display,
-    R: 'static + Send,
-{
+pub struct Batcher<P: Processor> {
     worker: Arc<WorkerHandle>,
     worker_guard: Arc<WorkerDropGuard>,
-    item_tx: mpsc::Sender<BatchItem<K, I, O, E>>,
-    _resources: PhantomData<R>,
+    item_tx: mpsc::Sender<BatchItem<P>>,
 }
 
-impl<K, I, O, E, R> Batcher<K, I, O, E, R>
-where
-    K: 'static + Send + Eq + Hash + Clone + Debug,
-    I: 'static + Send,
-    O: 'static + Send,
-    E: 'static + Send + Clone + Display + Debug,
-    R: 'static + Send,
-{
+impl<P: Processor> Batcher<P> {
     /// Create a new batcher.
-    pub fn new<F>(processor: F, limits: Limits, batching_policy: BatchingPolicy) -> Self
-    where
-        F: 'static + Send + Clone + Processor<K, I, O, E, R>,
-    {
+    pub fn new(processor: P, limits: Limits, batching_policy: BatchingPolicy) -> Self {
         let (handle, worker_guard, item_tx) = Worker::spawn(processor, limits, batching_policy);
 
         Self {
             worker: Arc::new(handle),
             worker_guard: Arc::new(worker_guard),
             item_tx,
-            _resources: PhantomData,
         }
     }
 
     /// Add an item to the batch and await the result.
-    pub async fn add(&self, key: K, input: I) -> BatchResult<O, E> {
+    pub async fn add(&self, key: P::Key, input: P::Input) -> BatchResult<P::Output, P::Error> {
         // Record the span ID so we can link the shared processing span.
         let requesting_span = Span::current().clone();
 
@@ -114,19 +90,12 @@ where
     }
 }
 
-impl<K, I, O, E> Clone for Batcher<K, I, O, E>
-where
-    K: 'static + Send + Eq + Hash + Clone,
-    I: 'static + Send,
-    O: 'static + Send,
-    E: 'static + Send + Clone + Display,
-{
+impl<P: Processor> Clone for Batcher<P> {
     fn clone(&self) -> Self {
         Self {
             worker: self.worker.clone(),
             worker_guard: self.worker_guard.clone(),
             item_tx: self.item_tx.clone(),
-            _resources: PhantomData,
         }
     }
 }

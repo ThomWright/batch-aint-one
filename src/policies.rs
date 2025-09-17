@@ -1,9 +1,6 @@
-use std::{
-    fmt::{Debug, Display},
-    time::Duration,
-};
+use std::{fmt::Debug, time::Duration};
 
-use crate::{batch_queue::BatchQueue, error::RejectionReason};
+use crate::{batch_queue::BatchQueue, error::RejectionReason, Processor};
 
 /// A policy controlling when batches get processed.
 #[derive(Debug)]
@@ -110,13 +107,7 @@ impl Default for Limits {
 
 impl BatchingPolicy {
     /// Should be applied _before_ adding the new item to the batch.
-    pub(crate) fn pre_add<K, I, O, E: Display, R>(
-        &self,
-        batch_queue: &BatchQueue<K, I, O, E, R>,
-    ) -> PreAdd
-    where
-        K: 'static + Send + Clone,
-    {
+    pub(crate) fn pre_add<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> PreAdd {
         // Check if we have capacity to process this item.
         if batch_queue.is_full() {
             if batch_queue.at_max_processing_capacity() {
@@ -163,10 +154,7 @@ impl BatchingPolicy {
         }
     }
 
-    pub(crate) fn post_finish<K, I, O, E: Display, R>(
-        &self,
-        batch_queue: &BatchQueue<K, I, O, E, R>,
-    ) -> PostFinish {
+    pub(crate) fn post_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> PostFinish {
         if !batch_queue.at_max_processing_capacity() {
             match self {
                 BatchingPolicy::Immediate => PostFinish::Process,

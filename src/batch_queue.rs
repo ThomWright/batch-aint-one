@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    fmt::{Debug, Display},
+    fmt::Debug,
     sync::{atomic::AtomicUsize, Arc},
     time::Duration,
 };
@@ -15,8 +15,8 @@ use crate::{
 };
 
 /// A double-ended queue for queueing up multiple batches for later processing.
-pub(crate) struct BatchQueue<K, I, O, E: Display, R = ()> {
-    queue: VecDeque<Batch<K, I, O, E, R>>,
+pub(crate) struct BatchQueue<P: Processor> {
+    queue: VecDeque<Batch<P>>,
 
     limits: Limits,
 
@@ -24,8 +24,8 @@ pub(crate) struct BatchQueue<K, I, O, E: Display, R = ()> {
     processing: Arc<AtomicUsize>,
 }
 
-impl<K, I, O, E: Display, R> BatchQueue<K, I, O, E, R> {
-    pub(crate) fn new(key: K, limits: Limits) -> Self {
+impl<P: Processor> BatchQueue<P> {
+    pub(crate) fn new(key: P::Key, limits: Limits) -> Self {
         // The queue size is the same as the max processing capacity.
         let mut queue = VecDeque::with_capacity(limits.max_key_concurrency);
 
@@ -83,15 +83,8 @@ impl<K, I, O, E: Display, R> BatchQueue<K, I, O, E, R> {
     }
 }
 
-impl<K, I, O, E, R> BatchQueue<K, I, O, E, R>
-where
-    K: 'static + Send + Clone + Debug,
-    I: 'static + Send,
-    O: 'static + Send,
-    E: 'static + Send + Clone + Display,
-    R: 'static + Send,
-{
-    pub(crate) fn push(&mut self, item: BatchItem<K, I, O, E>) {
+impl<P: Processor> BatchQueue<P> {
+    pub(crate) fn push(&mut self, item: BatchItem<P>) {
         let back = self.queue.back_mut().expect("Should always be non-empty");
 
         if back.is_full(self.limits.max_batch_size) {
@@ -103,7 +96,7 @@ where
         }
     }
 
-    pub(crate) fn take_next_batch(&mut self) -> Option<Batch<K, I, O, E, R>> {
+    pub(crate) fn take_next_batch(&mut self) -> Option<Batch<P>> {
         let batch = self.queue.front().expect("Should always be non-empty");
         if batch.is_processable() {
             let batch = self.queue.pop_front().expect("Should always be non-empty");
@@ -116,10 +109,7 @@ where
         None
     }
 
-    pub(crate) fn take_generation(
-        &mut self,
-        generation: Generation,
-    ) -> Option<Batch<K, I, O, E, R>> {
+    pub(crate) fn take_generation(&mut self, generation: Generation) -> Option<Batch<P>> {
         for (index, batch) in self.queue.iter().enumerate() {
             if batch.is_generation(generation) {
                 if batch.is_processable() {
@@ -143,30 +133,26 @@ where
     }
 
     /// Acquire resources ahead of processing for the next batch.
-    pub(crate) fn pre_acquire_resources<F>(&mut self, processor: F, tx: mpsc::Sender<Message<K, E>>)
-    where
-        F: 'static + Send + Processor<K, I, O, E, R>,
-    {
+    pub(crate) fn pre_acquire_resources(
+        &mut self,
+        processor: P,
+        tx: mpsc::Sender<Message<P::Key, P::Error>>,
+    ) {
         let batch = self.queue.back_mut().expect("Should always be non-empty");
         batch.pre_acquire_resources(processor, tx);
     }
-}
 
-impl<K, I, O, E, R> BatchQueue<K, I, O, E, R>
-where
-    K: 'static + Send + Clone + Debug,
-    E: 'static + Send + Display,
-{
-    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<K, E>>) {
+    pub(crate) fn process_after(
+        &mut self,
+        duration: Duration,
+        tx: mpsc::Sender<Message<P::Key, P::Error>>,
+    ) {
         let back = self.queue.back_mut().expect("Should always be non-empty");
         back.process_after(duration, tx);
     }
 }
 
-impl<K, I, O, E, R> Debug for BatchQueue<K, I, O, E, R>
-where
-    E: Display,
-{
+impl<P: Processor> Debug for BatchQueue<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
             queue,

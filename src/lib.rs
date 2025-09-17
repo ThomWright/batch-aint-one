@@ -47,7 +47,13 @@ mod tests {
     #[derive(Debug, Clone)]
     pub struct SimpleBatchProcessor(pub Duration);
 
-    impl Processor<String, String, String> for SimpleBatchProcessor {
+    impl Processor for SimpleBatchProcessor {
+        type Key = String;
+        type Input = String;
+        type Output = String;
+        type Error = String;
+        type Resources = ();
+
         async fn acquire_resources(&self, _key: String) -> Result<(), String> {
             Ok(())
         }
