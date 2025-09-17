@@ -89,7 +89,7 @@ mod tests {
 
         let batcher = Batcher::new(
             SimpleBatchProcessor(Duration::ZERO),
-            Limits::default().max_batch_size(2),
+            Limits::default().with_max_batch_size(2),
             BatchingPolicy::Size,
         );
 

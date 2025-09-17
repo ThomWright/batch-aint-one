@@ -22,16 +22,25 @@ pub enum BatchError<E: Display> {
     /// The current batch is full so the item was rejected.
     ///
     /// Recoverable.
-    #[error("Batch item rejected: {0}")]
-    Rejected(RejectionReason),
+    #[error("Batch item rejected: {reason}")]
+    Rejected {
+        /// The reason why the item was rejected.
+        reason: RejectionReason,
+    },
 
     /// Something went wrong while processing a batch.
-    #[error("The entire batch failed: {}", .0)]
-    BatchFailed(E),
+    #[error("The entire batch failed: {source}")]
+    BatchFailed {
+        /// The underlying error that caused the batch to fail.
+        source: E,
+    },
 
     /// Something went wrong while acquiring resources for processing.
-    #[error("Resource acquisition failed: {}", .0)]
-    ResourceAcquisitionFailed(E),
+    #[error("Resource acquisition failed: {source}")]
+    ResourceAcquisitionFailed {
+        /// The underlying error from resource acquisition.
+        source: E,
+    },
 
     /// The batch was cancelled before completion.
     #[error("The batch was cancelled")]
@@ -81,7 +90,7 @@ where
     /// Get the inner error for general batch failures, otherwise self.
     pub fn inner(self) -> BatchResult<E, E> {
         match self {
-            BatchError::BatchFailed(e) => Ok(e),
+            BatchError::BatchFailed { source } => Ok(source),
             _ => Err(self),
         }
     }

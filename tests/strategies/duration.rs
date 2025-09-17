@@ -18,7 +18,7 @@ async fn total_duration() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10),
+        Limits::default().with_max_batch_size(10),
         BatchingPolicy::Duration(batching_dur, OnFull::Process),
     );
 
@@ -51,7 +51,7 @@ async fn loaded_process_on_full() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10),
+        Limits::default().with_max_batch_size(10),
         BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Process),
     );
 
@@ -82,7 +82,7 @@ async fn loaded_reject_on_full() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_key_concurrency(1).max_batch_size(10),
+        Limits::default().with_max_key_concurrency(1).with_max_batch_size(10),
         BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Reject),
     );
 

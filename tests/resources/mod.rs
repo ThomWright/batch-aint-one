@@ -99,7 +99,7 @@ async fn immediate_batches_while_acquiring() {
 
     let batcher = Batcher::new(
         processor.clone(),
-        Limits::default().max_batch_size(10).max_key_concurrency(2),
+        Limits::default().with_max_batch_size(10).with_max_key_concurrency(2),
         BatchingPolicy::Immediate,
     );
 
@@ -146,7 +146,7 @@ async fn size_when_acquisition_fails() {
 
     let batcher = Batcher::new(
         processor.clone(),
-        Limits::default().max_batch_size(10).max_key_concurrency(2),
+        Limits::default().with_max_batch_size(10).with_max_key_concurrency(2),
         BatchingPolicy::Size,
     );
 
@@ -164,13 +164,13 @@ async fn size_when_acquisition_fails() {
 
     assert_matches!(
         outputs.first(),
-        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
+        Some(Err(BatchError::ResourceAcquisitionFailed { source: s })) => {
             assert_eq!(s, "Failed to acquire resources - key_0");
         }
     );
     assert_matches!(
         outputs.last(),
-        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
+        Some(Err(BatchError::ResourceAcquisitionFailed { source: s })) => {
             assert_eq!(s, "Failed to acquire resources - key_1");
         }
     );
@@ -191,7 +191,7 @@ async fn immediate_when_acquisition_fails() {
 
     let batcher = Batcher::new(
         processor.clone(),
-        Limits::default().max_batch_size(10).max_key_concurrency(2),
+        Limits::default().with_max_batch_size(10).with_max_key_concurrency(2),
         BatchingPolicy::Immediate,
     );
 
@@ -209,13 +209,13 @@ async fn immediate_when_acquisition_fails() {
 
     assert_matches!(
         outputs.first(),
-        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
+        Some(Err(BatchError::ResourceAcquisitionFailed { source: s })) => {
             assert_eq!(s, "Failed to acquire resources - key_0");
         }
     );
     assert_matches!(
         outputs.last(),
-        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
+        Some(Err(BatchError::ResourceAcquisitionFailed { source: s })) => {
             assert_eq!(s, "Failed to acquire resources - key_1");
         }
     );

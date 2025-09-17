@@ -71,7 +71,6 @@ pub(crate) struct WorkerDropGuard {
 }
 
 impl<P: Processor> Worker<P> {
-    #[expect(clippy::type_complexity)]
     pub fn spawn(
         processor: P,
         limits: Limits,
@@ -143,7 +142,7 @@ impl<P: Processor> Worker<P> {
             PreAdd::Reject(reason) => {
                 if item
                     .tx
-                    .send((Err(BatchError::Rejected(reason)), None))
+                    .send((Err(BatchError::Rejected { reason }), None))
                     .is_err()
                 {
                     // Whatever was waiting for the output must have shut down. Presumably it
@@ -313,7 +312,7 @@ mod test {
     async fn simple_test_over_channel() {
         let (_worker_handle, _worker_guard, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
             SimpleBatchProcessor,
-            Limits::default().max_batch_size(2),
+            Limits::default().with_max_batch_size(2),
             BatchingPolicy::Size,
         );
 

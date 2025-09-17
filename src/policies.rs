@@ -80,7 +80,7 @@ pub(crate) enum PostFinish {
 
 impl Limits {
     /// Limits the maximum size of a batch.
-    pub fn max_batch_size(self, max: usize) -> Self {
+    pub fn with_max_batch_size(self, max: usize) -> Self {
         Self {
             max_batch_size: max,
             ..self
@@ -88,7 +88,7 @@ impl Limits {
     }
 
     /// Limits the maximum number of batches that can be processed concurrently for a key.
-    pub fn max_key_concurrency(self, max: usize) -> Self {
+    pub fn with_max_key_concurrency(self, max: usize) -> Self {
         Self {
             max_key_concurrency: max,
             ..self

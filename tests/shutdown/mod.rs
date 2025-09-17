@@ -10,7 +10,7 @@ async fn shut_down_when_last_batcher_dropped() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(Duration::ZERO),
-        Limits::default().max_batch_size(3),
+        Limits::default().with_max_batch_size(3),
         BatchingPolicy::Size,
     );
 
@@ -32,7 +32,7 @@ async fn shut_down_when_shut_down_called() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(Duration::ZERO),
-        Limits::default().max_batch_size(3),
+        Limits::default().with_max_batch_size(3),
         BatchingPolicy::Size,
     );
 

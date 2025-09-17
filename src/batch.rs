@@ -206,7 +206,7 @@ impl<P: Processor> Batch<P> {
 
                 let resources = match acquisition_result {
                     Ok(Ok(r)) => Ok(r),
-                    Ok(Err(err)) => Err(BatchError::ResourceAcquisitionFailed(err)),
+                    Ok(Err(err)) => Err(BatchError::ResourceAcquisitionFailed { source: err }),
                     Err(join_err) => {
                         let batch_error = if join_err.is_cancelled() {
                             BatchError::Cancelled
@@ -282,7 +282,7 @@ impl<P: Processor> Batch<P> {
 
         // Replace with a placeholder to keep the Drop impl working.
         let items = mem::take(&mut self.items);
-        let (inputs, txs): (Vec<P::Input>, Vec<SendOutput<P::Output, P::Error>>) = items
+        let (inputs, txs): (Vec<_>, Vec<_>) = items
             .into_iter()
             .map(|item| {
                 // Link the shared batch processing span to the span for each batch item. We
@@ -307,7 +307,7 @@ impl<P: Processor> Batch<P> {
             {
                 Ok(resources) => resources,
                 Err(err) => {
-                    return Err(BatchError::ResourceAcquisitionFailed(err));
+                    return Err(BatchError::ResourceAcquisitionFailed { source: err });
                 }
             };
 
@@ -315,7 +315,7 @@ impl<P: Processor> Batch<P> {
                 span!(Level::DEBUG, "process", batch.key = ?key, batch.size = batch_size as u64);
             processor
                 .process(key, inputs.into_iter(), resources)
-                .map(|r| r.map_err(BatchError::BatchFailed))
+                .map(|r| r.map_err(|source| BatchError::BatchFailed { source }))
                 .instrument(inner_span.clone())
                 .await
         })
@@ -333,7 +333,7 @@ impl<P: Processor> Batch<P> {
 
         // Collect the outputs and send them back.
         let outputs: Vec<Result<P::Output, BatchError<P::Error>>> = match result {
-            Ok(outputs) => outputs.into_iter().map(|o| Ok(o)).collect(),
+            Ok(outputs) => outputs.into_iter().map(Ok).collect(),
             Err(err) => std::iter::repeat_n(err, batch_size).map(Err).collect(),
         };
         self.send_results(txs, outputs, Some(outer_span)).await;

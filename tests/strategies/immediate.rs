@@ -17,7 +17,7 @@ async fn single_concurrency() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10).max_key_concurrency(1),
+        Limits::default().with_max_batch_size(10).with_max_key_concurrency(1),
         BatchingPolicy::Immediate,
     );
 
@@ -56,7 +56,7 @@ async fn dual() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(1).max_key_concurrency(2),
+        Limits::default().with_max_batch_size(1).with_max_key_concurrency(2),
         BatchingPolicy::Immediate,
     );
 
@@ -97,7 +97,7 @@ async fn single_concurrency_with_wait() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10).max_key_concurrency(1),
+        Limits::default().with_max_batch_size(10).with_max_key_concurrency(1),
         BatchingPolicy::Immediate,
     );
 
@@ -127,7 +127,7 @@ async fn single_concurrency_full() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(100).max_key_concurrency(1),
+        Limits::default().with_max_batch_size(100).with_max_key_concurrency(1),
         BatchingPolicy::Immediate,
     );
 
@@ -157,7 +157,7 @@ async fn single_concurrency_reject() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(100).max_key_concurrency(1),
+        Limits::default().with_max_batch_size(100).with_max_key_concurrency(1),
         BatchingPolicy::Immediate,
     );
 
@@ -192,7 +192,7 @@ async fn double_concurrency_full() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10).max_key_concurrency(2),
+        Limits::default().with_max_batch_size(10).with_max_key_concurrency(2),
         BatchingPolicy::Immediate,
     );
 

@@ -13,7 +13,7 @@ use crate::types::SimpleBatchProcessor;
 async fn process_when_full() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(Duration::ZERO),
-        Limits::default().max_batch_size(3),
+        Limits::default().with_max_batch_size(3),
         BatchingPolicy::Size,
     );
 
@@ -39,7 +39,7 @@ async fn loaded() {
 
     let batcher = Batcher::new(
         SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10),
+        Limits::default().with_max_batch_size(10),
         BatchingPolicy::Size,
     );
 
@@ -62,7 +62,7 @@ async fn loaded() {
 async fn max_concurrency_limit() {
     let batcher = Batcher::new(
         SimpleBatchProcessor(Duration::ZERO),
-        Limits::default().max_batch_size(1).max_key_concurrency(2),
+        Limits::default().with_max_batch_size(1).with_max_key_concurrency(2),
         BatchingPolicy::Size,
     );
 

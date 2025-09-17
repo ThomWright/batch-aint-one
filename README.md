@@ -89,7 +89,9 @@ fn example() {
             // This will process items in a background worker task.
             SleepyBatchProcessor,
             // Set some limits.
-            Limits::default().max_batch_size(2).max_key_concurrency(1),
+            Limits::default()
+                .with_max_batch_size(2)
+                .with_max_key_concurrency(1),
             // Process a batch when it reaches the max_batch_size.
             BatchingPolicy::Size,
         ));
