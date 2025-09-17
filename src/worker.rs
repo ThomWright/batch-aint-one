@@ -80,6 +80,7 @@ where
     E: 'static + Send + Clone + Display + Debug,
     R: 'static + Send,
 {
+    #[expect(clippy::type_complexity)]
     pub fn spawn(
         processor: F,
         limits: Limits,

@@ -100,7 +100,7 @@ impl<K, I, O, E: Display, R> Batch<K, I, O, E, R> {
     }
 
     pub(crate) fn is_new_batch(&self) -> bool {
-        self.len() == 0
+        self.is_empty()
     }
 
     pub(crate) fn is_full(&self, max: usize) -> bool {
@@ -125,7 +125,7 @@ impl<K, I, O, E: Display, R> Batch<K, I, O, E, R> {
 
     pub(crate) fn is_processable(&self) -> bool {
         // To be processable, we must have some items to process...
-        self.len() > 0
+        !self.is_empty()
             // ... and if there is a timeout deadline, it must be in the past.
             && self
                 .timeout_deadline

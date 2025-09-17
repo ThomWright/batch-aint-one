@@ -160,10 +160,6 @@ mod tests {
             );
         }
 
-        assert_eq!(
-            storage.all_spans().len(),
-            6,
-            "should be 6 spans in total"
-        );
+        assert_eq!(storage.all_spans().len(), 6, "should be 6 spans in total");
     }
 }
