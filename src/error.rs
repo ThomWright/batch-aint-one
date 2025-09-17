@@ -4,7 +4,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 
 /// An error that occurred while trying to batch.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 #[non_exhaustive]
 pub enum BatchError<E: Display> {
     /// Something went wrong while submitting an input for processing.
@@ -32,9 +32,17 @@ pub enum BatchError<E: Display> {
     /// Something went wrong while acquiring resources for processing.
     #[error("Resource acquisition failed: {}", .0)]
     ResourceAcquisitionFailed(E),
+
+    /// The batch was cancelled before completion.
+    #[error("The batch was cancelled")]
+    Cancelled,
+
+    /// The batch processing panicked.
+    #[error("The batch processing panicked")]
+    Panic,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum RejectionReason {
     /// The batch is full and still waiting to be processed.

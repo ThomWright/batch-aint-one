@@ -50,6 +50,16 @@ impl<K, I, O, E: Display, R> BatchQueue<K, I, O, E, R> {
             && back.len() == self.limits.max_batch_size
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        // We always have at least one (possibly empty) batch in the queue.
+        self.queue.len() == 1
+            && self
+                .queue
+                .front()
+                .expect("Should always be non-empty")
+                .is_empty()
+    }
+
     pub(crate) fn last_space_in_batch(&self) -> bool {
         let back = self.queue.back().expect("Should always be non-empty");
         back.has_single_space(self.limits.max_batch_size)
@@ -65,6 +75,11 @@ impl<K, I, O, E: Display, R> BatchQueue<K, I, O, E, R> {
     pub(crate) fn at_max_processing_capacity(&self) -> bool {
         self.processing.load(std::sync::atomic::Ordering::Acquire)
             >= self.limits.max_key_concurrency
+    }
+
+    /// Are we currently processing any batches for this key?
+    pub(crate) fn is_processing(&self) -> bool {
+        self.processing.load(std::sync::atomic::Ordering::Acquire) > 0
     }
 }
 
@@ -145,5 +160,26 @@ where
     pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<K, E>>) {
         let back = self.queue.back_mut().expect("Should always be non-empty");
         back.process_after(duration, tx);
+    }
+}
+
+impl<K, I, O, E, R> Debug for BatchQueue<K, I, O, E, R>
+where
+    E: Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            queue,
+            limits,
+            processing,
+        } = self;
+        f.debug_struct("BatchQueue")
+            .field("queue_len", &queue.len())
+            .field(
+                "processing",
+                &processing.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .field("limits", limits)
+            .finish()
     }
 }
