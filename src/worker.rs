@@ -1,4 +1,7 @@
-use std::{collections::HashMap, fmt::Debug};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -42,9 +45,9 @@ pub(crate) struct Worker<P: Processor> {
 }
 
 #[derive(Debug)]
-pub(crate) enum Message<K, E> {
+pub(crate) enum Message<K, E: Display> {
     Process(K, Generation),
-    Fail(K, Generation, E),
+    Fail(K, Generation, BatchError<E>),
     Finished(K),
 }
 
@@ -189,7 +192,7 @@ impl<P: Processor> Worker<P> {
         }
     }
 
-    fn fail_batch(&mut self, key: P::Key, generation: Generation, err: P::Error) {
+    fn fail_batch(&mut self, key: P::Key, generation: Generation, err: BatchError<P::Error>) {
         let batch_queue = self
             .batch_queues
             .get_mut(&key)

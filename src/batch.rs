@@ -43,13 +43,13 @@ pub(crate) struct Batch<P: Processor> {
     /// The number of batches with this key that are currently processing.
     processing: Arc<AtomicUsize>,
 
-    resources: Arc<Mutex<Resources<P::Resources>>>,
+    resources_state: Arc<Mutex<ResourcesState<P::Resources>>>,
 }
 
 #[derive(Debug)]
-enum Resources<R> {
+enum ResourcesState<R> {
     NotAcquired,
-    Acquiring,
+    Acquiring(JoinHandle<()>),
     Acquired {
         resources: R,
         /// The span in which the resources were acquired.
@@ -57,11 +57,17 @@ enum Resources<R> {
     },
 }
 
-impl<R> Resources<R> {
+impl<R> ResourcesState<R> {
     fn take(&mut self) -> Option<(R, Span)> {
-        match mem::replace(self, Resources::NotAcquired) {
-            Resources::Acquired { resources, span } => Some((resources, span)),
-            Resources::NotAcquired | Resources::Acquiring => None,
+        match mem::replace(self, ResourcesState::NotAcquired) {
+            ResourcesState::Acquired { resources, span } => Some((resources, span)),
+            ResourcesState::NotAcquired | ResourcesState::Acquiring(_) => None,
+        }
+    }
+
+    fn cancel_acquisition(&mut self) {
+        if let ResourcesState::Acquiring(handle) = mem::replace(self, ResourcesState::NotAcquired) {
+            handle.abort();
         }
     }
 }
@@ -89,7 +95,7 @@ impl<P: Processor> Batch<P> {
 
             processing,
 
-            resources: Arc::new(Mutex::new(Resources::NotAcquired)),
+            resources_state: Arc::new(Mutex::new(ResourcesState::NotAcquired)),
         }
     }
 
@@ -161,7 +167,7 @@ impl<P: Processor> Batch<P> {
 
             processing: self.processing.clone(),
 
-            resources: Arc::new(Mutex::new(Resources::NotAcquired)),
+            resources_state: Arc::new(Mutex::new(ResourcesState::NotAcquired)),
         }
     }
 
@@ -174,32 +180,48 @@ impl<P: Processor> Batch<P> {
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
         let mut resources = self
-            .resources
+            .resources_state
             .lock()
             .expect("Resources mutex should not be poisoned");
-        if matches!(*resources, Resources::NotAcquired) {
-            *resources = Resources::Acquiring;
-            drop(resources);
-
+        if matches!(*resources, ResourcesState::NotAcquired) {
             let key = self.key();
             let generation = self.generation();
 
-            let resource_state = Arc::clone(&self.resources);
-            tokio::spawn(async move {
+            let resource_state = Arc::clone(&self.resources_state);
+            let handle = tokio::spawn(async move {
                 let span = span!(Level::INFO, "acquire resources", batch.key = ?key);
 
-                let resources = processor
-                    .acquire_resources(key.clone())
-                    .instrument(span.clone())
-                    .await;
+                // Wrap resource acquisition in a spawn to catch panics
+                let acquisition_result = {
+                    let key = key.clone();
+                    let span = span.clone();
+                    tokio::spawn(async move {
+                        processor
+                            .acquire_resources(key.clone())
+                            .instrument(span.clone())
+                            .await
+                    })
+                    .await
+                };
 
+                let resources = match acquisition_result {
+                    Ok(Ok(r)) => Ok(r),
+                    Ok(Err(err)) => Err(BatchError::ResourceAcquisitionFailed(err)),
+                    Err(join_err) => {
+                        let batch_error = if join_err.is_cancelled() {
+                            BatchError::Cancelled
+                        } else {
+                            BatchError::Panic
+                        };
+                        Err(batch_error)
+                    }
+                };
                 let resources = match resources {
                     Ok(r) => r,
                     Err(err) => {
+                        // Failed to acquire resources. Fail the batch.
                         if tx.send(Message::Fail(key, generation, err)).await.is_err() {
-                            // The worker must have shut down. In this case, we don't want to process any more
-                            // batches anyway.
-                            debug!("Tried to signal resources acquisition failed but the worker has shut down");
+                            debug!("Tried to signal resources acquisition failure but the worker has shut down");
                         }
                         return;
                     }
@@ -209,18 +231,17 @@ impl<P: Processor> Batch<P> {
                     let mut state = resource_state
                         .lock()
                         .expect("Resources mutex should not be poisoned");
-                    *state = Resources::Acquired { resources, span };
-                    drop(state);
+                    *state = ResourcesState::Acquired { resources, span };
                 }
 
                 if tx.send(Message::Process(key, generation)).await.is_err() {
-                    // The worker must have shut down. In this case, we don't want to process any more
-                    // batches anyway.
                     debug!(
                         "Tried to signal resources had been acquired but the worker has shut down"
                     );
                 }
             });
+
+            *resources = ResourcesState::Acquiring(handle);
         }
     }
 
@@ -272,48 +293,32 @@ impl<P: Processor> Batch<P> {
             })
             .unzip();
 
-        // Acquire resources (if we don't have them already).
-        let resources = {
-            let mut resources = self
-                .resources
-                .lock()
-                .expect("Resources mutex should not be poisoned");
-            resources.take()
-        };
-        let resources = match resources {
-            Some((r, acquire_span)) => {
-                outer_span.follows_from(acquire_span);
-                r
-            }
-            None => {
-                let acquire_span = span!(Level::INFO, "acquire resources", batch.key = ?key);
-                let resources = processor
-                    .acquire_resources(key.clone())
-                    .instrument(acquire_span.clone())
-                    .await;
-                match resources {
-                    Ok(r) => r,
-                    Err(err) => {
-                        let outputs: Vec<_> = std::iter::repeat_n(err, batch_size)
-                            .map(|e| Err(BatchError::ResourceAcquisitionFailed(e)))
-                            .collect();
-                        self.send_results(txs, outputs, Some(outer_span)).await;
-                        return;
-                    }
-                }
-            }
-        };
+        let resources_state = Arc::clone(&self.resources_state);
 
         // Process the batch.
-        let inner_span =
-            span!(Level::DEBUG, "process", batch.key = ?key, batch.size = batch_size as u64);
         let result = match tokio::spawn(async move {
+            // Acquire resources (if we don't have them already).
+            let resources = match Self::acquire_resources_for_processing(
+                resources_state,
+                processor.clone(),
+                key.clone(),
+            )
+            .await
+            {
+                Ok(resources) => resources,
+                Err(err) => {
+                    return Err(BatchError::ResourceAcquisitionFailed(err));
+                }
+            };
+
+            let inner_span =
+                span!(Level::DEBUG, "process", batch.key = ?key, batch.size = batch_size as u64);
             processor
                 .process(key, inputs.into_iter(), resources)
                 .map(|r| r.map_err(BatchError::BatchFailed))
+                .instrument(inner_span.clone())
                 .await
         })
-        .instrument(inner_span.clone())
         .await
         {
             Ok(r) => r,
@@ -334,14 +339,46 @@ impl<P: Processor> Batch<P> {
         self.send_results(txs, outputs, Some(outer_span)).await;
     }
 
-    pub fn fail(mut self, err: P::Error, on_finished: mpsc::Sender<Message<P::Key, P::Error>>) {
+    /// Acquire resources for processing, either from pre-acquisition or on-demand.
+    async fn acquire_resources_for_processing(
+        resources_state: Arc<Mutex<ResourcesState<P::Resources>>>,
+        processor: P,
+        key: P::Key,
+    ) -> Result<P::Resources, P::Error> {
+        // Try to take pre-acquired resources first
+        let pre_acquired = {
+            let mut resources = resources_state
+                .lock()
+                .expect("Resources mutex should not be poisoned");
+            resources.take()
+        };
+
+        match pre_acquired {
+            Some((resources, acquire_span)) => {
+                Span::current().follows_from(acquire_span);
+                Ok(resources)
+            }
+            None => {
+                // Need to acquire resources now
+                let acquire_span = span!(Level::INFO, "acquire resources", batch.key = ?key);
+                processor
+                    .acquire_resources(key.clone())
+                    .instrument(acquire_span.clone())
+                    .await
+            }
+        }
+    }
+
+    pub fn fail(
+        mut self,
+        err: BatchError<P::Error>,
+        on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
+    ) {
         let txs: Vec<_> = mem::take(&mut self.items)
             .into_iter()
             .map(|item| item.tx)
             .collect();
-        let outputs = std::iter::repeat_n(err, txs.len())
-            .map(|e| Err(BatchError::ResourceAcquisitionFailed(e)))
-            .collect();
+        let outputs = std::iter::repeat_n(err, txs.len()).map(Err).collect();
 
         tokio::spawn(async move {
             let key = self.key.clone();
@@ -406,6 +443,11 @@ impl<P: Processor> Drop for Batch<P> {
     fn drop(&mut self) {
         if let Some(handle) = self.timeout_handle.take() {
             handle.abort();
+        }
+
+        // Cancel any ongoing resource acquisition
+        if let Ok(mut resources) = self.resources_state.try_lock() {
+            resources.cancel_acquisition();
         }
     }
 }
