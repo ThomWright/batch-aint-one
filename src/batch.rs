@@ -33,6 +33,8 @@ type SendOutput<O, E> = oneshot::Sender<(BatchResult<O, E>, Option<Span>)>;
 
 /// A batch of items to process.
 pub(crate) struct Batch<P: Processor> {
+    batcher_name: String,
+
     key: P::Key,
     generation: Generation,
     items: Vec<BatchItem<P>>,
@@ -84,8 +86,10 @@ impl Generation {
 }
 
 impl<P: Processor> Batch<P> {
-    pub(crate) fn new(key: P::Key, processing: Arc<AtomicUsize>) -> Self {
+    pub(crate) fn new(batcher_name: String, key: P::Key, processing: Arc<AtomicUsize>) -> Self {
         Self {
+            batcher_name,
+
             key,
             generation: Generation::default(),
             items: Vec::default(),
@@ -158,6 +162,8 @@ impl<P: Processor> Batch<P> {
 
     pub(crate) fn new_generation(&self) -> Self {
         Self {
+            batcher_name: self.batcher_name.clone(),
+
             key: self.key.clone(),
             generation: self.generation.next(),
             items: Vec::default(),
@@ -185,11 +191,13 @@ impl<P: Processor> Batch<P> {
             .expect("Resources mutex should not be poisoned");
         if matches!(*resources, ResourcesState::NotAcquired) {
             let key = self.key();
+            let name = self.batcher_name.clone();
             let generation = self.generation();
 
             let resource_state = Arc::clone(&self.resources_state);
             let handle = tokio::spawn(async move {
-                let span = span!(Level::INFO, "acquire resources", batch.key = ?key);
+                let span =
+                    span!(Level::INFO, "acquire resources", batch.name = &name, batch.key = ?key);
 
                 // Wrap resource acquisition in a spawn to catch panics
                 let acquisition_result = {
@@ -256,7 +264,7 @@ impl<P: Processor> Batch<P> {
 
         let batch_size = self.items.len();
         // Convert to u64 so tracing will treat this as an integer instead of a string.
-        let outer_span = span!(Level::INFO, "process batch", batch.key = ?self.key(), batch.size = batch_size as u64);
+        let outer_span = span!(Level::INFO, "process batch", batch.name = &self.batcher_name, batch.key = ?self.key(), batch.size = batch_size as u64);
 
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
         // run loop.
@@ -278,6 +286,7 @@ impl<P: Processor> Batch<P> {
     async fn process_inner(mut self, processor: P, batch_size: usize) {
         let outer_span = Span::current();
 
+        let name = self.batcher_name.clone();
         let key = self.key.clone();
 
         // Replace with a placeholder to keep the Drop impl working.
@@ -301,6 +310,7 @@ impl<P: Processor> Batch<P> {
             let resources = match Self::acquire_resources_for_processing(
                 resources_state,
                 processor.clone(),
+                &name,
                 key.clone(),
             )
             .await
@@ -312,7 +322,7 @@ impl<P: Processor> Batch<P> {
             };
 
             let inner_span =
-                span!(Level::DEBUG, "process", batch.key = ?key, batch.size = batch_size as u64);
+                span!(Level::DEBUG, "process", batch.name = &name, batch.key = ?key, batch.size = batch_size as u64);
             processor
                 .process(key, inputs.into_iter(), resources)
                 .map(|r| r.map_err(|source| BatchError::BatchFailed { source }))
@@ -343,6 +353,7 @@ impl<P: Processor> Batch<P> {
     async fn acquire_resources_for_processing(
         resources_state: Arc<Mutex<ResourcesState<P::Resources>>>,
         processor: P,
+        name: &str,
         key: P::Key,
     ) -> Result<P::Resources, P::Error> {
         // Try to take pre-acquired resources first
@@ -360,7 +371,8 @@ impl<P: Processor> Batch<P> {
             }
             None => {
                 // Need to acquire resources now
-                let acquire_span = span!(Level::INFO, "acquire resources", batch.key = ?key);
+                let acquire_span =
+                    span!(Level::INFO, "acquire resources", batch.name = name, batch.key = ?key);
                 processor
                     .acquire_resources(key.clone())
                     .instrument(acquire_span.clone())
@@ -489,7 +501,11 @@ mod tests {
             }
         }
 
-        let mut batch: Batch<DummyProcessor> = Batch::new("key".to_string(), Arc::default());
+        let mut batch: Batch<DummyProcessor> = Batch::new(
+            "test batcher".to_string(),
+            "key".to_string(),
+            Arc::default(),
+        );
 
         let (tx, _rx) = oneshot::channel();
 

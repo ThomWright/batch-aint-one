@@ -87,11 +87,12 @@ mod tests {
         // Capture tracing information.
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        let batcher = Batcher::new(
-            SimpleBatchProcessor(Duration::ZERO),
-            Limits::default().with_max_batch_size(2),
-            BatchingPolicy::Size,
-        );
+        let batcher = Batcher::builder()
+            .name("test_tracing")
+            .processor(SimpleBatchProcessor(Duration::ZERO))
+            .limits(Limits::default().with_max_batch_size(2))
+            .batching_policy(BatchingPolicy::Size)
+            .build();
 
         let h1 = {
             tokio_test::task::spawn({

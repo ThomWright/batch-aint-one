@@ -139,8 +139,8 @@ This depends on the batching policy used. `BatchingPolicy::Immediate` optimises 
 - [x] Tracing/logging
 - [x] Resource acquisition
 - [x] Record keys as span attributes
+- [x] Wait for shutdown
 - [ ] Return batch metadata
-- [ ] Allow app to await worker task
 - [ ] Metrics
 
 ## Further reading

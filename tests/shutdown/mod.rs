@@ -8,11 +8,12 @@ use crate::types::SimpleBatchProcessor;
 async fn shut_down_when_last_batcher_dropped() {
     tokio::time::pause();
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(Duration::ZERO),
-        Limits::default().with_max_batch_size(3),
-        BatchingPolicy::Size,
-    );
+    let batcher = Batcher::builder()
+        .name("test_immediate_batches_while_acquiring")
+        .processor(SimpleBatchProcessor(Duration::ZERO))
+        .limits(Limits::default().with_max_batch_size(3))
+        .batching_policy(BatchingPolicy::Size)
+        .build();
 
     let worker = batcher.worker_handle();
     let shut_down = tokio_test::task::spawn(async move {
@@ -30,11 +31,12 @@ async fn shut_down_when_last_batcher_dropped() {
 async fn shut_down_when_shut_down_called() {
     tokio::time::pause();
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(Duration::ZERO),
-        Limits::default().with_max_batch_size(3),
-        BatchingPolicy::Size,
-    );
+    let batcher = Batcher::builder()
+        .name("test_immediate_batches_while_acquiring")
+        .processor(SimpleBatchProcessor(Duration::ZERO))
+        .limits(Limits::default().with_max_batch_size(3))
+        .batching_policy(BatchingPolicy::Size)
+        .build();
 
     let worker = batcher.worker_handle();
 

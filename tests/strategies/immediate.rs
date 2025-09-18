@@ -15,11 +15,16 @@ async fn single_concurrency() {
 
     let processing_dur = Duration::from_millis(50);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().with_max_batch_size(10).with_max_key_concurrency(1),
-        BatchingPolicy::Immediate,
-    );
+    let batcher = Batcher::builder()
+        .name("test_single_concurrency")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(
+            Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(1),
+        )
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
 
     let handler = || async {
         let now = Instant::now();
@@ -54,11 +59,16 @@ async fn dual() {
 
     let processing_dur = Duration::from_millis(50);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().with_max_batch_size(1).with_max_key_concurrency(2),
-        BatchingPolicy::Immediate,
-    );
+    let batcher = Batcher::builder()
+        .name("test_dual")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(
+            Limits::default()
+                .with_max_batch_size(1)
+                .with_max_key_concurrency(2),
+        )
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
 
     let handler = || async {
         let now = Instant::now();
@@ -95,11 +105,16 @@ async fn single_concurrency_with_wait() {
 
     let processing_dur = Duration::from_millis(50);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().with_max_batch_size(10).with_max_key_concurrency(1),
-        BatchingPolicy::Immediate,
-    );
+    let batcher = Batcher::builder()
+        .name("test_single_concurrency_with_wait")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(
+            Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(1),
+        )
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
 
     let handler = || async {
         let now = Instant::now();
@@ -125,11 +140,16 @@ async fn single_concurrency_full() {
 
     let processing_dur = Duration::from_millis(50);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().with_max_batch_size(100).with_max_key_concurrency(1),
-        BatchingPolicy::Immediate,
-    );
+    let batcher = Batcher::builder()
+        .name("test_single_concurrency_full")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(
+            Limits::default()
+                .with_max_batch_size(100)
+                .with_max_key_concurrency(1),
+        )
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
 
     let handler = |i: i32| {
         let f = batcher.add("key".to_string(), i.to_string());
@@ -155,11 +175,16 @@ async fn single_concurrency_reject() {
 
     let processing_dur = Duration::from_millis(500);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().with_max_batch_size(100).with_max_key_concurrency(1),
-        BatchingPolicy::Immediate,
-    );
+    let batcher = Batcher::builder()
+        .name("test_single_concurrency_reject")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(
+            Limits::default()
+                .with_max_batch_size(100)
+                .with_max_key_concurrency(1),
+        )
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
 
     let handler = |i: u64| {
         let f = batcher.add("key".to_string(), i.to_string());
@@ -190,11 +215,16 @@ async fn double_concurrency_full() {
 
     let processing_dur = Duration::from_millis(50);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().with_max_batch_size(10).with_max_key_concurrency(2),
-        BatchingPolicy::Immediate,
-    );
+    let batcher = Batcher::builder()
+        .name("test_double_concurrency_full")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(
+            Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(2),
+        )
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
 
     let handler = |i: i32| {
         let f = batcher.add("key".to_string(), i.to_string());

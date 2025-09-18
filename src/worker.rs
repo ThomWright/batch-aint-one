@@ -18,6 +18,8 @@ use crate::{
 };
 
 pub(crate) struct Worker<P: Processor> {
+    batcher_name: String,
+
     /// Used to receive new batch items.
     item_rx: mpsc::Receiver<BatchItem<P>>,
     /// The callback to process a batch of inputs.
@@ -72,6 +74,7 @@ pub(crate) struct WorkerDropGuard {
 
 impl<P: Processor> Worker<P> {
     pub fn spawn(
+        batcher_name: String,
         processor: P,
         limits: Limits,
         batching_policy: BatchingPolicy,
@@ -83,6 +86,8 @@ impl<P: Processor> Worker<P> {
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
         let mut worker = Worker {
+            batcher_name,
+
             item_rx,
             processor,
 
@@ -115,10 +120,9 @@ impl<P: Processor> Worker<P> {
     fn add(&mut self, item: BatchItem<P>) {
         let key = item.key.clone();
 
-        let batch_queue = self
-            .batch_queues
-            .entry(key.clone())
-            .or_insert_with(|| BatchQueue::new(key.clone(), self.limits));
+        let batch_queue = self.batch_queues.entry(key.clone()).or_insert_with(|| {
+            BatchQueue::new(self.batcher_name.clone(), key.clone(), self.limits)
+        });
 
         match self.batching_policy.pre_add(batch_queue) {
             PreAdd::AddAndProcess => {
@@ -311,6 +315,7 @@ mod test {
     #[tokio::test]
     async fn simple_test_over_channel() {
         let (_worker_handle, _worker_guard, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
+            "test".to_string(),
             SimpleBatchProcessor,
             Limits::default().with_max_batch_size(2),
             BatchingPolicy::Size,
