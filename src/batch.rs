@@ -3,8 +3,8 @@ use std::{
     fmt::Debug,
     mem,
     sync::{
-        atomic::{self, AtomicUsize},
         Arc, Mutex,
+        atomic::{self, AtomicUsize},
     },
     time::Duration,
 };
@@ -15,9 +15,9 @@ use tokio::{
     task::JoinHandle,
     time::Instant,
 };
-use tracing::{debug, span, Instrument, Level, Span};
+use tracing::{Instrument, Level, Span, debug, span};
 
-use crate::{error::BatchResult, processor::Processor, worker::Message, BatchError};
+use crate::{BatchError, error::BatchResult, processor::Processor, worker::Message};
 
 #[derive(Debug)]
 pub(crate) struct BatchItem<P: Processor> {
@@ -229,7 +229,9 @@ impl<P: Processor> Batch<P> {
                     Err(err) => {
                         // Failed to acquire resources. Fail the batch.
                         if tx.send(Message::Fail(key, generation, err)).await.is_err() {
-                            debug!("Tried to signal resources acquisition failure but the worker has shut down");
+                            debug!(
+                                "Tried to signal resources acquisition failure but the worker has shut down"
+                            );
                         }
                         return;
                     }

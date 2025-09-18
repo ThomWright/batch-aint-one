@@ -54,7 +54,10 @@ async fn loaded_process_on_full() {
         .name("test_loaded_process_on_full")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(Limits::default().with_max_batch_size(10))
-        .batching_policy(BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Process))
+        .batching_policy(BatchingPolicy::Duration(
+            Duration::from_millis(10),
+            OnFull::Process,
+        ))
         .build();
 
     let handler = |i: i32| {
@@ -90,7 +93,10 @@ async fn loaded_reject_on_full() {
                 .with_max_key_concurrency(1)
                 .with_max_batch_size(10),
         )
-        .batching_policy(BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Reject))
+        .batching_policy(BatchingPolicy::Duration(
+            Duration::from_millis(10),
+            OnFull::Reject,
+        ))
         .build();
 
     let handler = |i: i32| {

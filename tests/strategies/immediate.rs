@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use batch_aint_one::{Batcher, BatchingPolicy, Limits};
-use futures::{future::join_all, FutureExt};
+use futures::{FutureExt, future::join_all};
 use tokio::{join, time::Instant};
 
 use crate::{assert_duration, types::SimpleBatchProcessor};

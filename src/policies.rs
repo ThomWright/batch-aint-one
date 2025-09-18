@@ -1,6 +1,6 @@
 use std::{fmt::Debug, time::Duration};
 
-use crate::{batch_queue::BatchQueue, error::RejectionReason, Processor};
+use crate::{Processor, batch_queue::BatchQueue, error::RejectionReason};
 
 /// A policy controlling when batches get processed.
 #[derive(Debug)]

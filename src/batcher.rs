@@ -2,7 +2,7 @@ use std::{fmt::Debug, sync::Arc};
 
 use bon::bon;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{span, Level, Span};
+use tracing::{Level, Span, span};
 
 use crate::{
     batch::BatchItem,

@@ -1,17 +1,17 @@
 use std::{
     collections::VecDeque,
     fmt::Debug,
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{Arc, atomic::AtomicUsize},
     time::Duration,
 };
 
 use tokio::sync::mpsc;
 
 use crate::{
+    Limits,
     batch::{Batch, BatchItem, Generation},
     processor::Processor,
     worker::Message,
-    Limits,
 };
 
 /// A double-ended queue for queueing up multiple batches for later processing.

@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -159,7 +159,6 @@ async fn size_when_acquisition_fails() {
         )
         .batching_policy(BatchingPolicy::Size)
         .build();
-
 
     let handler = |i: i32| {
         let f = batcher.add("key".to_string(), i.to_string());

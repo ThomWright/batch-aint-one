@@ -40,7 +40,7 @@ mod tests {
     use std::time::Duration;
 
     use tokio::join;
-    use tracing::{span, Instrument};
+    use tracing::{Instrument, span};
 
     use crate::{Batcher, BatchingPolicy, Limits, Processor};
 

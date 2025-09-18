@@ -1,7 +1,7 @@
 [package]
 name = "batch-aint-one"
 version = "0.8.0"
-edition = "2021"
+edition = "2024"
 authors = ["Thom Wright <dev@thomwright.co.uk>"]
 description = """
 I got 99 problems, but a batch ain't one
