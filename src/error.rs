@@ -28,6 +28,10 @@ pub enum BatchError<E: Display> {
     /// Something went wrong while processing a batch.
     #[error("The entire batch failed: {}", .0)]
     BatchFailed(E),
+
+    /// Something went wrong while acquiring resources for processing.
+    #[error("Resource acquisition failed: {}", .0)]
+    ResourceAcquisitionFailed(E),
 }
 
 #[derive(Debug)]

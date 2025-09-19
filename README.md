@@ -44,7 +44,8 @@ With batching, we can improve the throughput. Acquiring/releasing the lock and b
 ## Example
 
 ```rust
-use std::{time::Duration, marker::Send, sync::Arc};
+
+use std::{marker::Send, sync::Arc, time::Duration};
 
 use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
 
@@ -53,11 +54,25 @@ use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
 #[derive(Debug, Clone)]
 struct SleepyBatchProcessor;
 
-impl Processor<String, String, String> for SleepyBatchProcessor {
+impl
+    Processor<
+        /* keys */ String,
+        /* inputs */ String,
+        /* outputs */ String,
+        /* errors */ String,
+        /* resources */ String,
+    > for SleepyBatchProcessor
+{
+    // Acquire some resources
+    async fn acquire_resources(&self, key: String) -> Result<String, String> {
+        Ok("Some resources for: ".to_string() + &key)
+    }
+
     async fn process(
         &self,
         key: String,
         inputs: impl Iterator<Item = String> + Send,
+        _resources: String,
     ) -> Result<Vec<String>, String> {
         tokio::time::sleep(Duration::from_millis(10)).await;
         // In this example:
@@ -67,40 +82,44 @@ impl Processor<String, String, String> for SleepyBatchProcessor {
     }
 }
 
-tokio_test::block_on(async {
-    // Create a new batcher.
-    // Put it in an Arc so we can share it between handlers.
-    let batcher = Arc::new(Batcher::new(
-        // This will process items in a background worker task.
-        SleepyBatchProcessor,
+fn example() {
+    tokio_test::block_on(async {
+        // Create a new batcher.
+        // Put it in an Arc so we can share it between handlers.
+        let batcher = Arc::new(Batcher::new(
+            // This will process items in a background worker task.
+            SleepyBatchProcessor,
+            // Set some limits.
+            Limits::default().max_batch_size(2).max_key_concurrency(1),
+            // Process a batch when it reaches the max_batch_size.
+            BatchingPolicy::Size,
+        ));
 
-        // Set some limits.
-        Limits::default()
-          .max_batch_size(2)
-          .max_key_concurrency(1),
+        // Request handler 1
+        let batcher1 = batcher.clone();
+        tokio::spawn(async move {
+            // Add an item to be processed and wait for the result.
+            let output = batcher1
+                .add("Key A".to_string(), "Item 1".to_string())
+                .await
+                .unwrap();
 
-        // Process a batch when it reaches the max_batch_size.
-        BatchingPolicy::Size,
-    ));
+            assert_eq!("Item 1 processed for Key A".to_string(), output);
+        });
 
-    // Request handler 1
-    let batcher1 = batcher.clone();
-    tokio::spawn(async move {
-        // Add an item to be processed and wait for the result.
-        let output = batcher1.add("Key A".to_string(), "Item 1".to_string()).await.unwrap();
+        // Request handler 2
+        let batcher2 = batcher.clone();
+        tokio::spawn(async move {
+            // Add an item to be processed and wait for the result.
+            let output = batcher2
+                .add("Key A".to_string(), "Item 2".to_string())
+                .await
+                .unwrap();
 
-        assert_eq!("Item 1 processed for Key A".to_string(), output);
+            assert_eq!("Item 2 processed for Key A".to_string(), output);
+        });
     });
-
-    // Request handler 2
-    let batcher2 = batcher.clone();
-    tokio::spawn(async move {
-        // Add an item to be processed and wait for the result.
-        let output = batcher2.add("Key A".to_string(), "Item 2".to_string()).await.unwrap();
-
-        assert_eq!("Item 2 processed for Key A".to_string(), output);
-    });
-});
+}
 ```
 
 ## FAQ
@@ -117,7 +136,11 @@ This depends on the batching policy used. `BatchingPolicy::Immediate` optimises 
   - [x] Why – motivating example
   - [x] Code examples
 - [x] Tracing/logging
-- [ ] Metrics?
+- [x] Resource acquisition
+- [x] Record keys as span attributes
+- [ ] Return batch metadata
+- [ ] Allow app to await worker task
+- [ ] Metrics
 
 ## Further reading
 

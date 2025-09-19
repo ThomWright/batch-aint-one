@@ -6,10 +6,15 @@ use batch_aint_one::{Batcher, Processor};
 pub struct SimpleBatchProcessor(pub Duration);
 
 impl Processor<String, String, String> for SimpleBatchProcessor {
+    async fn acquire_resources(&self, _key: String) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn process(
         &self,
         key: String,
         inputs: impl Iterator<Item = String> + Send,
+        _resources: (),
     ) -> Result<Vec<String>, String> {
         tokio::time::sleep(self.0).await;
         Ok(inputs.map(|s| s + " processed for " + &key).collect())

@@ -10,7 +10,7 @@ use crate::{assert_elapsed, types::SimpleBatchProcessor};
 /// When we process one item
 /// Then it should take as long as the batching duration + the processing duration
 #[tokio::test]
-async fn strategy_duration() {
+async fn total_duration() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(30);
@@ -44,7 +44,7 @@ async fn strategy_duration() {
 ///  And we process when full
 /// Then they should all succeed
 #[tokio::test]
-async fn strategy_duration_loaded_process_on_full() {
+async fn loaded_process_on_full() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
@@ -75,7 +75,7 @@ async fn strategy_duration_loaded_process_on_full() {
 ///  And we reject when full
 /// Then only one batch should succeed, the rest should get rejected
 #[tokio::test]
-async fn strategy_duration_loaded_reject_on_full() {
+async fn loaded_reject_on_full() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
