@@ -10,14 +10,16 @@ use tokio::{
 use tracing::{debug, info};
 
 use crate::{
+    BatchError,
     batch::{BatchItem, Generation},
     batch_queue::BatchQueue,
     policies::{BatchingPolicy, Limits, PostFinish, PreAdd},
     processor::Processor,
-    BatchError,
 };
 
 pub(crate) struct Worker<P: Processor> {
+    batcher_name: String,
+
     /// Used to receive new batch items.
     item_rx: mpsc::Receiver<BatchItem<P>>,
     /// The callback to process a batch of inputs.
@@ -71,8 +73,8 @@ pub(crate) struct WorkerDropGuard {
 }
 
 impl<P: Processor> Worker<P> {
-    #[expect(clippy::type_complexity)]
     pub fn spawn(
+        batcher_name: String,
         processor: P,
         limits: Limits,
         batching_policy: BatchingPolicy,
@@ -84,6 +86,8 @@ impl<P: Processor> Worker<P> {
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
         let mut worker = Worker {
+            batcher_name,
+
             item_rx,
             processor,
 
@@ -116,10 +120,9 @@ impl<P: Processor> Worker<P> {
     fn add(&mut self, item: BatchItem<P>) {
         let key = item.key.clone();
 
-        let batch_queue = self
-            .batch_queues
-            .entry(key.clone())
-            .or_insert_with(|| BatchQueue::new(key.clone(), self.limits));
+        let batch_queue = self.batch_queues.entry(key.clone()).or_insert_with(|| {
+            BatchQueue::new(self.batcher_name.clone(), key.clone(), self.limits)
+        });
 
         match self.batching_policy.pre_add(batch_queue) {
             PreAdd::AddAndProcess => {
@@ -147,9 +150,11 @@ impl<P: Processor> Worker<P> {
                     .is_err()
                 {
                     // Whatever was waiting for the output must have shut down. Presumably it
-                    // doesn't care anymore, but we log here anyway. There's not much else we can do
-                    // here.
-                    debug!("Unable to send output over oneshot channel. Receiver deallocated.");
+                    // doesn't care anymore, but we log here anyway. There's not much else we can do.
+                    debug!(
+                        "Unable to send output over oneshot channel. Receiver deallocated. Batcher: {}",
+                        self.batcher_name
+                    );
                 }
             }
         }
@@ -245,7 +250,7 @@ impl<P: Processor> Worker<P> {
             }
 
             if self.ready_to_shut_down() {
-                info!("Batch worker is shutting down");
+                info!("Batch worker '{}' is shutting down", &self.batcher_name);
                 return;
             }
         }
@@ -254,6 +259,8 @@ impl<P: Processor> Worker<P> {
 
 impl WorkerHandle {
     /// Signal the worker to shut down after processing any in-flight batches.
+    ///
+    /// Note that when using the Size policy this may wait indefinitely if no new items are added.
     pub async fn shut_down(&self) {
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.
         let _ = self.shutdown_tx.send(ShutdownMessage::ShutDown).await;
@@ -312,8 +319,9 @@ mod test {
     #[tokio::test]
     async fn simple_test_over_channel() {
         let (_worker_handle, _worker_guard, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
+            "test".to_string(),
             SimpleBatchProcessor,
-            Limits::default().max_batch_size(2),
+            Limits::default().with_max_batch_size(2),
             BatchingPolicy::Size,
         );
 

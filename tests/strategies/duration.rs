@@ -16,11 +16,12 @@ async fn total_duration() {
     let processing_dur = Duration::from_millis(30);
     let batching_dur = Duration::from_millis(50);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10),
-        BatchingPolicy::Duration(batching_dur, OnFull::Process),
-    );
+    let batcher = Batcher::builder()
+        .name("test_total_duration")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(Limits::default().with_max_batch_size(10))
+        .batching_policy(BatchingPolicy::Duration(batching_dur, OnFull::Process))
+        .build();
 
     let now = Instant::now();
 
@@ -49,11 +50,15 @@ async fn loaded_process_on_full() {
 
     let processing_dur = Duration::from_millis(50);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10),
-        BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Process),
-    );
+    let batcher = Batcher::builder()
+        .name("test_loaded_process_on_full")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(Limits::default().with_max_batch_size(10))
+        .batching_policy(BatchingPolicy::Duration(
+            Duration::from_millis(10),
+            OnFull::Process,
+        ))
+        .build();
 
     let handler = |i: i32| {
         let f = batcher.add("key".to_string(), i.to_string());
@@ -80,11 +85,19 @@ async fn loaded_reject_on_full() {
 
     let processing_dur = Duration::from_millis(50);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().max_key_concurrency(1).max_batch_size(10),
-        BatchingPolicy::Duration(Duration::from_millis(10), OnFull::Reject),
-    );
+    let batcher = Batcher::builder()
+        .name("test_loaded_reject_on_full")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(
+            Limits::default()
+                .with_max_key_concurrency(1)
+                .with_max_batch_size(10),
+        )
+        .batching_policy(BatchingPolicy::Duration(
+            Duration::from_millis(10),
+            OnFull::Reject,
+        ))
+        .build();
 
     let handler = |i: i32| {
         let f = batcher.add("key".to_string(), i.to_string());

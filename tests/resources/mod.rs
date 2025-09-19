@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -97,11 +97,16 @@ async fn immediate_batches_while_acquiring() {
 
     let processor = ResourceAcquiringProcessor::new(acquisition_dur, processing_dur);
 
-    let batcher = Batcher::new(
-        processor.clone(),
-        Limits::default().max_batch_size(10).max_key_concurrency(2),
-        BatchingPolicy::Immediate,
-    );
+    let batcher = Batcher::builder()
+        .name("test_immediate_batches_while_acquiring")
+        .processor(processor.clone())
+        .limits(
+            Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(2),
+        )
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
 
     let handler = |i: i32| {
         let f = batcher.add("key".to_string(), i.to_string());
@@ -144,11 +149,16 @@ async fn size_when_acquisition_fails() {
 
     let processor = ResourceAcquiringProcessor::new(acquisition_dur, processing_dur).with_failure();
 
-    let batcher = Batcher::new(
-        processor.clone(),
-        Limits::default().max_batch_size(10).max_key_concurrency(2),
-        BatchingPolicy::Size,
-    );
+    let batcher = Batcher::builder()
+        .name("test_size_when_acquisition_fails")
+        .processor(processor.clone())
+        .limits(
+            Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(2),
+        )
+        .batching_policy(BatchingPolicy::Size)
+        .build();
 
     let handler = |i: i32| {
         let f = batcher.add("key".to_string(), i.to_string());
@@ -189,11 +199,16 @@ async fn immediate_when_acquisition_fails() {
 
     let processor = ResourceAcquiringProcessor::new(acquisition_dur, processing_dur).with_failure();
 
-    let batcher = Batcher::new(
-        processor.clone(),
-        Limits::default().max_batch_size(10).max_key_concurrency(2),
-        BatchingPolicy::Immediate,
-    );
+    let batcher = Batcher::builder()
+        .name("test_immediate_batches_while_acquiring")
+        .processor(processor.clone())
+        .limits(
+            Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(2),
+        )
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
 
     let handler = |i: i32| {
         let f = batcher.add("key".to_string(), i.to_string());

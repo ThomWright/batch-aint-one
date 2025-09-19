@@ -16,7 +16,7 @@ pub enum BatchError<E: Display> {
     /// Something went wrong while waiting for the output of a batch.
     ///
     /// Unrecoverable.
-    #[error("Error while waiting for batch results: channel closed. {}", .0)]
+    #[error("Error while waiting for batch results: channel closed. {0}")]
     Rx(RecvError),
 
     /// The current batch is full so the item was rejected.
@@ -26,18 +26,18 @@ pub enum BatchError<E: Display> {
     Rejected(RejectionReason),
 
     /// Something went wrong while processing a batch.
-    #[error("The entire batch failed: {}", .0)]
+    #[error("The entire batch failed: {0}")]
     BatchFailed(E),
 
     /// Something went wrong while acquiring resources for processing.
-    #[error("Resource acquisition failed: {}", .0)]
+    #[error("Resource acquisition failed: {0}")]
     ResourceAcquisitionFailed(E),
 
     /// The batch was cancelled before completion.
     #[error("The batch was cancelled")]
     Cancelled,
 
-    /// The batch processing panicked.
+    /// The batch processing (or resource acquisition) panicked.
     #[error("The batch processing panicked")]
     Panic,
 }
@@ -81,7 +81,7 @@ where
     /// Get the inner error for general batch failures, otherwise self.
     pub fn inner(self) -> BatchResult<E, E> {
         match self {
-            BatchError::BatchFailed(e) => Ok(e),
+            BatchError::BatchFailed(source) => Ok(source),
             _ => Err(self),
         }
     }

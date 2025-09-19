@@ -1,7 +1,8 @@
 use std::{fmt::Debug, sync::Arc};
 
+use bon::bon;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{span, Level, Span};
+use tracing::{Level, Span, span};
 
 use crate::{
     batch::BatchItem,
@@ -21,17 +22,29 @@ use crate::{
 /// Cheap to clone.
 #[derive(Debug)]
 pub struct Batcher<P: Processor> {
+    name: String,
     worker: Arc<WorkerHandle>,
     worker_guard: Arc<WorkerDropGuard>,
     item_tx: mpsc::Sender<BatchItem<P>>,
 }
 
+#[bon]
 impl<P: Processor> Batcher<P> {
     /// Create a new batcher.
-    pub fn new(processor: P, limits: Limits, batching_policy: BatchingPolicy) -> Self {
-        let (handle, worker_guard, item_tx) = Worker::spawn(processor, limits, batching_policy);
+    #[builder]
+    pub fn new(
+        name: impl Into<String>,
+        processor: P,
+        limits: Limits,
+        batching_policy: BatchingPolicy,
+    ) -> Self {
+        let name = name.into();
+
+        let (handle, worker_guard, item_tx) =
+            Worker::spawn(name.clone(), processor, limits, batching_policy);
 
         Self {
+            name,
             worker: Arc::new(handle),
             worker_guard: Arc::new(worker_guard),
             item_tx,
@@ -93,6 +106,7 @@ impl<P: Processor> Batcher<P> {
 impl<P: Processor> Clone for Batcher<P> {
     fn clone(&self) -> Self {
         Self {
+            name: self.name.clone(),
             worker: self.worker.clone(),
             worker_guard: self.worker_guard.clone(),
             item_tx: self.item_tx.clone(),

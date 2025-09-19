@@ -1,21 +1,23 @@
 use std::{
     collections::VecDeque,
     fmt::Debug,
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{Arc, atomic::AtomicUsize},
     time::Duration,
 };
 
 use tokio::sync::mpsc;
 
 use crate::{
+    Limits,
     batch::{Batch, BatchItem, Generation},
     processor::Processor,
     worker::Message,
-    Limits,
 };
 
 /// A double-ended queue for queueing up multiple batches for later processing.
 pub(crate) struct BatchQueue<P: Processor> {
+    batcher_name: String,
+
     queue: VecDeque<Batch<P>>,
 
     limits: Limits,
@@ -25,14 +27,15 @@ pub(crate) struct BatchQueue<P: Processor> {
 }
 
 impl<P: Processor> BatchQueue<P> {
-    pub(crate) fn new(key: P::Key, limits: Limits) -> Self {
+    pub(crate) fn new(batcher_name: String, key: P::Key, limits: Limits) -> Self {
         // The queue size is the same as the max processing capacity.
         let mut queue = VecDeque::with_capacity(limits.max_key_concurrency);
 
         let processing = Arc::<AtomicUsize>::default();
-        queue.push_back(Batch::new(key, processing.clone()));
+        queue.push_back(Batch::new(batcher_name.clone(), key, processing.clone()));
 
         Self {
+            batcher_name,
             queue,
             limits,
             processing,
@@ -155,11 +158,13 @@ impl<P: Processor> BatchQueue<P> {
 impl<P: Processor> Debug for BatchQueue<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
+            batcher_name,
             queue,
             limits,
             processing,
         } = self;
         f.debug_struct("BatchQueue")
+            .field("batcher_name", &batcher_name)
             .field("queue_len", &queue.len())
             .field(
                 "processing",

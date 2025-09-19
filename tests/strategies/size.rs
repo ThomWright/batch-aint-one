@@ -11,11 +11,12 @@ use crate::types::SimpleBatchProcessor;
 /// Then it should process them all immediately
 #[tokio::test]
 async fn process_when_full() {
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(Duration::ZERO),
-        Limits::default().max_batch_size(3),
-        BatchingPolicy::Size,
-    );
+    let batcher = Batcher::builder()
+        .name("test_process_when_full")
+        .processor(SimpleBatchProcessor(Duration::ZERO))
+        .limits(Limits::default().with_max_batch_size(3))
+        .batching_policy(BatchingPolicy::Size)
+        .build();
 
     let h1 = tokio_test::task::spawn(batcher.add("A".to_string(), "1".to_string()));
     let h2 = tokio_test::task::spawn(batcher.add("A".to_string(), "2".to_string()));
@@ -37,11 +38,12 @@ async fn loaded() {
 
     let processing_dur = Duration::from_millis(50);
 
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(processing_dur),
-        Limits::default().max_batch_size(10),
-        BatchingPolicy::Size,
-    );
+    let batcher = Batcher::builder()
+        .name("test_loaded")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(Limits::default().with_max_batch_size(10))
+        .batching_policy(BatchingPolicy::Size)
+        .build();
 
     let handler = |i: i32| {
         let f = batcher.add("key".to_string(), i.to_string());
@@ -60,11 +62,16 @@ async fn loaded() {
 
 #[tokio::test]
 async fn max_concurrency_limit() {
-    let batcher = Batcher::new(
-        SimpleBatchProcessor(Duration::ZERO),
-        Limits::default().max_batch_size(1).max_key_concurrency(2),
-        BatchingPolicy::Size,
-    );
+    let batcher = Batcher::builder()
+        .name("test_max_concurrency_limit")
+        .processor(SimpleBatchProcessor(Duration::ZERO))
+        .limits(
+            Limits::default()
+                .with_max_batch_size(1)
+                .with_max_key_concurrency(2),
+        )
+        .batching_policy(BatchingPolicy::Size)
+        .build();
 
     // Two processed for A immediately
     let h1 = tokio_test::task::spawn(batcher.add("A".to_string(), "1".to_string()));

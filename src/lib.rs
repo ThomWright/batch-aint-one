@@ -28,6 +28,7 @@ mod batcher;
 mod error;
 mod policies;
 mod processor;
+mod timeout;
 mod worker;
 
 pub use batcher::Batcher;
@@ -40,7 +41,7 @@ mod tests {
     use std::time::Duration;
 
     use tokio::join;
-    use tracing::{span, Instrument};
+    use tracing::{Instrument, span};
 
     use crate::{Batcher, BatchingPolicy, Limits, Processor};
 
@@ -87,11 +88,12 @@ mod tests {
         // Capture tracing information.
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        let batcher = Batcher::new(
-            SimpleBatchProcessor(Duration::ZERO),
-            Limits::default().max_batch_size(2),
-            BatchingPolicy::Size,
-        );
+        let batcher = Batcher::builder()
+            .name("test_tracing")
+            .processor(SimpleBatchProcessor(Duration::ZERO))
+            .limits(Limits::default().with_max_batch_size(2))
+            .batching_policy(BatchingPolicy::Size)
+            .build();
 
         let h1 = {
             tokio_test::task::spawn({
