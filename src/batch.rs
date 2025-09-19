@@ -12,11 +12,12 @@ use futures::FutureExt;
 use tokio::{
     sync::{mpsc, oneshot},
     task::{JoinError, JoinHandle},
-    time::Instant,
 };
 use tracing::{Instrument, Level, Span, debug, span};
 
-use crate::{BatchError, error::BatchResult, processor::Processor, worker::Message};
+use crate::{
+    BatchError, error::BatchResult, processor::Processor, timeout::TimeoutHandle, worker::Message,
+};
 
 #[derive(Debug)]
 pub(crate) struct BatchItem<P: Processor> {
@@ -38,8 +39,7 @@ pub(crate) struct Batch<P: Processor> {
     generation: Generation,
     items: Vec<BatchItem<P>>,
 
-    timeout_deadline: Option<Instant>,
-    timeout_handle: Option<JoinHandle<()>>,
+    timeout: TimeoutHandle<P>,
 
     /// The number of batches with this key that are currently processing.
     processing: Arc<AtomicUsize>,
@@ -93,8 +93,7 @@ impl<P: Processor> Batch<P> {
             generation: Generation::default(),
             items: Vec::new(),
 
-            timeout_deadline: None,
-            timeout_handle: None,
+            timeout: TimeoutHandle::new(),
 
             processing,
 
@@ -135,9 +134,7 @@ impl<P: Processor> Batch<P> {
         // To be processable, we must have some items to process...
         !self.is_empty()
             // ... and if there is a timeout deadline, it must be in the past.
-            && self
-                .timeout_deadline
-                .is_none_or(|deadline| deadline <= Instant::now())
+            && self.timeout.is_ready_for_processing()
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<P>) {
@@ -145,9 +142,7 @@ impl<P: Processor> Batch<P> {
     }
 
     pub(crate) fn cancel_timeout(&mut self) {
-        if let Some(handle) = self.timeout_handle.take() {
-            handle.abort();
-        }
+        self.timeout.cancel();
     }
 
     /// Get the key for this batch.
@@ -163,8 +158,7 @@ impl<P: Processor> Batch<P> {
             generation: self.generation.next(),
             items: Vec::new(),
 
-            timeout_deadline: None,
-            timeout_handle: None,
+            timeout: TimeoutHandle::new(),
 
             processing: Arc::clone(&self.processing),
 
@@ -390,7 +384,9 @@ impl<P: Processor> Batch<P> {
             .into_iter()
             .map(|item| item.tx)
             .collect();
-        let outputs = std::iter::repeat_n(err, response_channels.len()).map(Err).collect();
+        let outputs = std::iter::repeat_n(err, response_channels.len())
+            .map(Err)
+            .collect();
 
         tokio::spawn(async move {
             Self::send_outputs(response_channels, outputs, None).await;
@@ -426,34 +422,13 @@ impl<P: Processor> Batch<P> {
         duration: Duration,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        self.cancel_timeout();
-
-        let new_deadline = Instant::now() + duration;
-        self.timeout_deadline = Some(new_deadline);
-
-        let key = self.key();
-        let generation = self.generation();
-
-        let new_handle = tokio::spawn(async move {
-            tokio::time::sleep_until(new_deadline).await;
-
-            if tx.send(Message::Process(key, generation)).await.is_err() {
-                // The worker must have shut down. In this case, we don't want to process any more
-                // batches anyway.
-                debug!("A batch reached a timeout but the worker has shut down");
-            }
-        });
-
-        self.timeout_handle = Some(new_handle);
+        self.timeout
+            .set_timeout(duration, self.key(), self.generation(), tx);
     }
 }
 
 impl<P: Processor> Drop for Batch<P> {
     fn drop(&mut self) {
-        if let Some(handle) = self.timeout_handle.take() {
-            handle.abort();
-        }
-
         // Cancel any ongoing resource acquisition
         if let Ok(mut resources) = self.resources_state.try_lock() {
             resources.cancel_acquisition();
@@ -472,7 +447,6 @@ fn join_error_to_batch_error<E: Display>(join_err: JoinError) -> BatchError<E> {
 fn acquire_resources_span(name: &str, key: &impl Debug) -> Span {
     span!(Level::INFO, "acquire resources", batch.name = name, batch.key = ?key)
 }
-
 
 #[cfg(test)]
 mod tests {

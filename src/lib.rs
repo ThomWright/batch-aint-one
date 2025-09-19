@@ -28,6 +28,7 @@ mod batcher;
 mod error;
 mod policies;
 mod processor;
+mod timeout;
 mod worker;
 
 pub use batcher::Batcher;
