@@ -55,15 +55,14 @@ use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
 struct SleepyBatchProcessor;
 
 impl
-    Processor<
-        /* keys */ String,
-        /* inputs */ String,
-        /* outputs */ String,
-        /* errors */ String,
-        /* resources */ String,
-    > for SleepyBatchProcessor
+    Processor for SleepyBatchProcessor
 {
-    // Acquire some resources
+    type Key = String;
+    type Input = String;
+    type Output = String;
+    type Error = String;
+    type Resources = String;
+
     async fn acquire_resources(&self, key: String) -> Result<String, String> {
         Ok("Some resources for: ".to_string() + &key)
     }

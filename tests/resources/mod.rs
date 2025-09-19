@@ -40,7 +40,13 @@ impl ResourceAcquiringProcessor {
     }
 }
 
-impl Processor<String, String, String, String, String> for ResourceAcquiringProcessor {
+impl Processor for ResourceAcquiringProcessor {
+    type Key = String;
+    type Input = String;
+    type Output = String;
+    type Error = String;
+    type Resources = String;
+
     async fn acquire_resources(&self, key: String) -> Result<String, String> {
         tokio::time::sleep(self.acquisition_dur).await;
         let count = self.resource_count.fetch_add(1, Ordering::SeqCst);

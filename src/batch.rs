@@ -1,6 +1,6 @@
 use std::{
     cmp,
-    fmt::{Debug, Display},
+    fmt::Debug,
     mem,
     sync::{
         atomic::{self, AtomicUsize},
@@ -20,11 +20,11 @@ use tracing::{debug, span, Instrument, Level, Span};
 use crate::{error::BatchResult, processor::Processor, worker::Message, BatchError};
 
 #[derive(Debug)]
-pub(crate) struct BatchItem<K, I, O, E: Display> {
-    pub key: K,
-    pub input: I,
+pub(crate) struct BatchItem<P: Processor> {
+    pub key: P::Key,
+    pub input: P::Input,
     /// Used to send the output back.
-    pub tx: SendOutput<O, E>,
+    pub tx: SendOutput<P::Output, P::Error>,
     /// This item was added to the batch as part of this span.
     pub requesting_span: Span,
 }
@@ -32,11 +32,10 @@ pub(crate) struct BatchItem<K, I, O, E: Display> {
 type SendOutput<O, E> = oneshot::Sender<(BatchResult<O, E>, Option<Span>)>;
 
 /// A batch of items to process.
-#[derive(Debug)]
-pub(crate) struct Batch<K, I, O, E: Display, R = ()> {
-    key: K,
+pub(crate) struct Batch<P: Processor> {
+    key: P::Key,
     generation: Generation,
-    items: Vec<BatchItem<K, I, O, E>>,
+    items: Vec<BatchItem<P>>,
 
     timeout_deadline: Option<Instant>,
     timeout_handle: Option<JoinHandle<()>>,
@@ -44,7 +43,7 @@ pub(crate) struct Batch<K, I, O, E: Display, R = ()> {
     /// The number of batches with this key that are currently processing.
     processing: Arc<AtomicUsize>,
 
-    resources: Arc<Mutex<Resources<R>>>,
+    resources: Arc<Mutex<Resources<P::Resources>>>,
 }
 
 #[derive(Debug)]
@@ -78,8 +77,8 @@ impl Generation {
     }
 }
 
-impl<K, I, O, E: Display, R> Batch<K, I, O, E, R> {
-    pub(crate) fn new(key: K, processing: Arc<AtomicUsize>) -> Self {
+impl<P: Processor> Batch<P> {
+    pub(crate) fn new(key: P::Key, processing: Arc<AtomicUsize>) -> Self {
         Self {
             key,
             generation: Generation::default(),
@@ -136,7 +135,7 @@ impl<K, I, O, E: Display, R> Batch<K, I, O, E, R> {
                 })
     }
 
-    pub(crate) fn push(&mut self, item: BatchItem<K, I, O, E>) {
+    pub(crate) fn push(&mut self, item: BatchItem<P>) {
         self.items.push(item);
     }
 
@@ -145,26 +144,12 @@ impl<K, I, O, E: Display, R> Batch<K, I, O, E, R> {
             handle.abort();
         }
     }
-}
 
-impl<K, I, O, E: Display, R> Batch<K, I, O, E, R>
-where
-    K: Clone,
-{
     /// Get the key for this batch.
-    pub fn key(&self) -> K {
+    pub fn key(&self) -> P::Key {
         self.key.clone()
     }
-}
 
-impl<K, I, O, E: Display, R> Batch<K, I, O, E, R>
-where
-    K: 'static + Send + Clone + Debug,
-    I: 'static + Send,
-    O: 'static + Send,
-    E: 'static + Send + Clone + Display,
-    R: 'static + Send,
-{
     pub(crate) fn new_generation(&self) -> Self {
         Self {
             key: self.key.clone(),
@@ -183,10 +168,11 @@ where
     /// Acquire resources for this batch, if we are not doing so already.
     ///
     /// Once acquired, a message will be sent to process the batch.
-    pub(crate) fn pre_acquire_resources<F>(&mut self, processor: F, tx: mpsc::Sender<Message<K, E>>)
-    where
-        F: 'static + Send + Processor<K, I, O, E, R>,
-    {
+    pub(crate) fn pre_acquire_resources(
+        &mut self,
+        processor: P,
+        tx: mpsc::Sender<Message<P::Key, P::Error>>,
+    ) {
         let mut resources = self
             .resources
             .lock()
@@ -238,10 +224,11 @@ where
         }
     }
 
-    pub(crate) fn process<F>(mut self, processor: F, on_finished: mpsc::Sender<Message<K, E>>)
-    where
-        F: 'static + Send + Processor<K, I, O, E, R>,
-    {
+    pub(crate) fn process(
+        mut self,
+        processor: P,
+        on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
+    ) {
         self.processing.fetch_add(1, atomic::Ordering::AcqRel);
 
         self.cancel_timeout();
@@ -267,17 +254,14 @@ where
         });
     }
 
-    async fn process_inner<F>(mut self, processor: F, batch_size: usize)
-    where
-        F: 'static + Send + Processor<K, I, O, E, R>,
-    {
+    async fn process_inner(mut self, processor: P, batch_size: usize) {
         let outer_span = Span::current();
 
         let key = self.key.clone();
 
         // Replace with a placeholder to keep the Drop impl working.
         let items = mem::take(&mut self.items);
-        let (inputs, txs): (Vec<I>, Vec<SendOutput<O, E>>) = items
+        let (inputs, txs): (Vec<P::Input>, Vec<SendOutput<P::Output, P::Error>>) = items
             .into_iter()
             .map(|item| {
                 // Link the shared batch processing span to the span for each batch item. We
@@ -343,14 +327,14 @@ where
         };
 
         // Collect the outputs and send them back.
-        let outputs: Vec<Result<O, BatchError<E>>> = match result {
+        let outputs: Vec<Result<P::Output, BatchError<P::Error>>> = match result {
             Ok(outputs) => outputs.into_iter().map(|o| Ok(o)).collect(),
             Err(err) => std::iter::repeat_n(err, batch_size).map(Err).collect(),
         };
         self.send_results(txs, outputs, Some(outer_span)).await;
     }
 
-    pub fn fail(mut self, err: E, on_finished: mpsc::Sender<Message<K, E>>) {
+    pub fn fail(mut self, err: P::Error, on_finished: mpsc::Sender<Message<P::Key, P::Error>>) {
         let txs: Vec<_> = mem::take(&mut self.items)
             .into_iter()
             .map(|item| item.tx)
@@ -368,8 +352,8 @@ where
 
     async fn send_results(
         self,
-        txs: Vec<SendOutput<O, E>>,
-        outputs: Vec<Result<O, BatchError<E>>>,
+        txs: Vec<SendOutput<P::Output, P::Error>>,
+        outputs: Vec<Result<P::Output, BatchError<P::Error>>>,
         span: Option<Span>,
     ) {
         for (tx, output) in txs.into_iter().zip(outputs) {
@@ -382,7 +366,7 @@ where
         }
     }
 
-    async fn finalise(key: K, on_finished: mpsc::Sender<Message<K, E>>) {
+    async fn finalise(key: P::Key, on_finished: mpsc::Sender<Message<P::Key, P::Error>>) {
         // We're finished with this batch
         if on_finished.send(Message::Finished(key)).await.is_err() {
             // The worker must have shut down. In this case, we don't want to process any more
@@ -390,14 +374,12 @@ where
             debug!("Tried to signal a batch had finished but the worker has shut down");
         }
     }
-}
 
-impl<K, I, O, E, R> Batch<K, I, O, E, R>
-where
-    K: 'static + Send + Clone + Debug,
-    E: 'static + Send + Display,
-{
-    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<K, E>>) {
+    pub(crate) fn process_after(
+        &mut self,
+        duration: Duration,
+        tx: mpsc::Sender<Message<P::Key, P::Error>>,
+    ) {
         self.cancel_timeout();
 
         let new_deadline = Instant::now() + duration;
@@ -420,7 +402,7 @@ where
     }
 }
 
-impl<K, I, O, E: Display, R> Drop for Batch<K, I, O, E, R> {
+impl<P: Processor> Drop for Batch<P> {
     fn drop(&mut self) {
         if let Some(handle) = self.timeout_handle.take() {
             handle.abort();
@@ -444,8 +426,28 @@ mod tests {
     async fn is_processable_timeout() {
         time::pause();
 
-        let mut batch: Batch<String, String, String, String> =
-            Batch::new("key".to_string(), Arc::default());
+        #[derive(Clone)]
+        struct DummyProcessor;
+        impl crate::Processor for DummyProcessor {
+            type Key = String;
+            type Input = String;
+            type Output = String;
+            type Error = String;
+            type Resources = ();
+            async fn acquire_resources(&self, _key: String) -> Result<(), String> {
+                Ok(())
+            }
+            async fn process(
+                &self,
+                _key: String,
+                _inputs: impl Iterator<Item = String> + Send,
+                _resources: (),
+            ) -> Result<Vec<String>, String> {
+                Ok(vec![])
+            }
+        }
+
+        let mut batch: Batch<DummyProcessor> = Batch::new("key".to_string(), Arc::default());
 
         let (tx, _rx) = oneshot::channel();
 

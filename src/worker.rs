@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    fmt::{Debug, Display},
-    hash::Hash,
-};
+use std::{collections::HashMap, fmt::Debug};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -18,16 +14,16 @@ use crate::{
     BatchError,
 };
 
-pub(crate) struct Worker<K, I, O, F, E: Display, R = ()> {
+pub(crate) struct Worker<P: Processor> {
     /// Used to receive new batch items.
-    item_rx: mpsc::Receiver<BatchItem<K, I, O, E>>,
+    item_rx: mpsc::Receiver<BatchItem<P>>,
     /// The callback to process a batch of inputs.
-    processor: F,
+    processor: P,
 
     /// Used to signal that a batch for key `K` should be processed.
-    msg_tx: mpsc::Sender<Message<K, E>>,
+    msg_tx: mpsc::Sender<Message<P::Key, P::Error>>,
     /// Receives signals to process a batch for key `K`.
-    msg_rx: mpsc::Receiver<Message<K, E>>,
+    msg_rx: mpsc::Receiver<Message<P::Key, P::Error>>,
 
     /// Used to send messages to the worker related to shutdown.
     shutdown_notifier_rx: mpsc::Receiver<ShutdownMessage>,
@@ -42,7 +38,7 @@ pub(crate) struct Worker<K, I, O, F, E: Display, R = ()> {
     batching_policy: BatchingPolicy,
 
     /// Unprocessed batches, grouped by key `K`.
-    batch_queues: HashMap<K, BatchQueue<K, I, O, E, R>>,
+    batch_queues: HashMap<P::Key, BatchQueue<P>>,
 }
 
 #[derive(Debug)]
@@ -71,25 +67,13 @@ pub(crate) struct WorkerDropGuard {
     handle: JoinHandle<()>,
 }
 
-impl<K, I, O, F, E, R> Worker<K, I, O, F, E, R>
-where
-    K: 'static + Send + Eq + Hash + Clone + Debug,
-    I: 'static + Send,
-    O: 'static + Send,
-    F: 'static + Send + Clone + Processor<K, I, O, E, R>,
-    E: 'static + Send + Clone + Display + Debug,
-    R: 'static + Send,
-{
+impl<P: Processor> Worker<P> {
     #[expect(clippy::type_complexity)]
     pub fn spawn(
-        processor: F,
+        processor: P,
         limits: Limits,
         batching_policy: BatchingPolicy,
-    ) -> (
-        WorkerHandle,
-        WorkerDropGuard,
-        mpsc::Sender<BatchItem<K, I, O, E>>,
-    ) {
+    ) -> (WorkerHandle, WorkerDropGuard, mpsc::Sender<BatchItem<P>>) {
         let (item_tx, item_rx) = mpsc::channel(10);
 
         let (timeout_tx, timeout_rx) = mpsc::channel(10);
@@ -126,7 +110,7 @@ where
     }
 
     /// Add an item to the batch.
-    fn add(&mut self, item: BatchItem<K, I, O, E>) {
+    fn add(&mut self, item: BatchItem<P>) {
         let key = item.key.clone();
 
         let batch_queue = self
@@ -168,7 +152,7 @@ where
         }
     }
 
-    fn process_generation(&mut self, key: K, generation: Generation) {
+    fn process_generation(&mut self, key: P::Key, generation: Generation) {
         let batch_queue = self.batch_queues.get_mut(&key).expect("batch should exist");
 
         if let Some(batch) = batch_queue.take_generation(generation) {
@@ -178,7 +162,7 @@ where
         }
     }
 
-    fn process_next_batch(&mut self, key: &K) {
+    fn process_next_batch(&mut self, key: &P::Key) {
         let batch_queue = self
             .batch_queues
             .get_mut(key)
@@ -191,7 +175,7 @@ where
         }
     }
 
-    fn on_batch_finished(&mut self, key: &K) {
+    fn on_batch_finished(&mut self, key: &P::Key) {
         let batch_queue = self
             .batch_queues
             .get_mut(key)
@@ -205,7 +189,7 @@ where
         }
     }
 
-    fn fail_batch(&mut self, key: K, generation: Generation, err: E) {
+    fn fail_batch(&mut self, key: P::Key, generation: Generation, err: P::Error) {
         let batch_queue = self
             .batch_queues
             .get_mut(&key)
@@ -301,7 +285,13 @@ mod test {
     #[derive(Debug, Clone)]
     struct SimpleBatchProcessor;
 
-    impl Processor<String, String, String> for SimpleBatchProcessor {
+    impl Processor for SimpleBatchProcessor {
+        type Key = String;
+        type Input = String;
+        type Output = String;
+        type Error = String;
+        type Resources = ();
+
         async fn acquire_resources(&self, _key: String) -> Result<(), String> {
             Ok(())
         }
@@ -318,7 +308,7 @@ mod test {
 
     #[tokio::test]
     async fn simple_test_over_channel() {
-        let (_worker_handle, _worker_guard, item_tx) = Worker::<String, _, _, _, _>::spawn(
+        let (_worker_handle, _worker_guard, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
             SimpleBatchProcessor,
             Limits::default().max_batch_size(2),
             BatchingPolicy::Size,

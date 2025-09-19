@@ -5,7 +5,13 @@ use batch_aint_one::{Batcher, Processor};
 #[derive(Debug, Clone)]
 pub struct SimpleBatchProcessor(pub Duration);
 
-impl Processor<String, String, String> for SimpleBatchProcessor {
+impl Processor for SimpleBatchProcessor {
+    type Key = String;
+    type Input = String;
+    type Output = String;
+    type Error = String;
+    type Resources = ();
+
     async fn acquire_resources(&self, _key: String) -> Result<(), String> {
         Ok(())
     }
@@ -21,8 +27,31 @@ impl Processor<String, String, String> for SimpleBatchProcessor {
     }
 }
 
+#[derive(Clone)]
+struct ProcessorWithNonCloneableIO;
+impl Processor for ProcessorWithNonCloneableIO {
+    type Key = String;
+    type Input = NotCloneable;
+    type Output = NotCloneable;
+    type Error = String;
+    type Resources = ();
+
+    async fn acquire_resources(&self, _key: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process(
+        &self,
+        _key: String,
+        inputs: impl Iterator<Item = NotCloneable> + Send,
+        _resources: (),
+    ) -> Result<Vec<NotCloneable>, String> {
+        Ok(inputs.collect())
+    }
+}
+
 struct NotCloneable {}
-type Cloneable = Batcher<String, NotCloneable, NotCloneable>;
+type Cloneable = Batcher<ProcessorWithNonCloneableIO>;
 
 /// A [Batcher] should be cloneable, even when the `I`s and `O`s are not.
 #[derive(Clone)]

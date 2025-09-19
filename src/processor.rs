@@ -1,12 +1,25 @@
-use std::{fmt::Display, future::Future};
+use std::{
+    fmt::{Debug, Display},
+    future::Future,
+    hash::Hash,
+};
 
 /// Process a batch of inputs for a given key.
 ///
 /// Should be cheap to clone.
-pub trait Processor<K, I, O = (), E = String, R = ()>
-where
-    E: Display,
-{
+pub trait Processor: 'static + Send + Clone {
+    /// The key used to group inputs.
+    type Key: 'static + Debug + Eq + Hash + Clone + Send;
+    /// The input type for each item.
+    type Input: Send;
+    /// The output type for each item.
+    type Output: Send;
+    /// The error type that can be returned when processing a batch.
+    type Error: Send + Clone + Display;
+    /// The resources that will be acquired before processing each batch, and can be used during
+    /// processing.
+    type Resources: Send;
+
     /// Acquire resources to be used for processing the next batch with the given key.
     ///
     /// This method is called before processing each batch.
@@ -15,7 +28,10 @@ where
     /// are acquired.
     ///
     /// Can be used to e.g. acquire a database connection from a pool.
-    fn acquire_resources(&self, key: K) -> impl Future<Output = Result<R, E>> + Send;
+    fn acquire_resources(
+        &self,
+        key: Self::Key,
+    ) -> impl Future<Output = Result<Self::Resources, Self::Error>> + Send;
 
     /// Process the batch.
     ///
@@ -23,24 +39,8 @@ where
     /// in the given iterator.
     fn process(
         &self,
-        key: K,
-        inputs: impl Iterator<Item = I> + Send,
-        resources: R,
-    ) -> impl Future<Output = Result<Vec<O>, E>> + Send;
+        key: Self::Key,
+        inputs: impl Iterator<Item = Self::Input> + Send,
+        resources: Self::Resources,
+    ) -> impl Future<Output = Result<Vec<Self::Output>, Self::Error>> + Send;
 }
-
-// pub trait ResourceAcquirer<K, E = String, R = ()>
-// where
-//     E: Display,
-// {
-//     /// Acquire resources to be used for processing a batch.
-//     ///
-//     /// This method is called before processing each batch. It should return the resources to be
-//     /// used for processing the batch.
-//     ///
-//     /// For `BatchingPolicy::Immediate`, the batch will keep accumulating items until the resources
-//     /// are acquired.
-//     ///
-//     /// Useful for e.g. acquiring a database connection from a pool.
-//     fn acquire_resources(&self, key: K) -> impl Future<Output = Result<R, E>> + Send;
-// }
