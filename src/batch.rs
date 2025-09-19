@@ -1,5 +1,4 @@
 use std::{
-    cmp,
     fmt::{Debug, Display},
     mem,
     sync::{
@@ -92,7 +91,7 @@ impl<P: Processor> Batch<P> {
 
             key,
             generation: Generation::default(),
-            items: Vec::default(),
+            items: Vec::new(),
 
             timeout_deadline: None,
             timeout_handle: None,
@@ -138,11 +137,7 @@ impl<P: Processor> Batch<P> {
             // ... and if there is a timeout deadline, it must be in the past.
             && self
                 .timeout_deadline
-                .is_none_or(|deadline| match deadline.cmp(&Instant::now()){
-                    cmp::Ordering::Less => true,
-                    cmp::Ordering::Equal => true,
-                    cmp::Ordering::Greater => false,
-                })
+                .is_none_or(|deadline| deadline <= Instant::now())
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<P>) {
@@ -166,12 +161,12 @@ impl<P: Processor> Batch<P> {
 
             key: self.key.clone(),
             generation: self.generation.next(),
-            items: Vec::default(),
+            items: Vec::new(),
 
             timeout_deadline: None,
             timeout_handle: None,
 
-            processing: self.processing.clone(),
+            processing: Arc::clone(&self.processing),
 
             resources_state: Arc::new(Mutex::new(ResourcesState::NotAcquired)),
         }
@@ -196,8 +191,7 @@ impl<P: Processor> Batch<P> {
 
             let resource_state = Arc::clone(&self.resources_state);
             let handle = tokio::spawn(async move {
-                let span =
-                    span!(Level::INFO, "acquire resources", batch.name = &name, batch.key = ?key);
+                let span = acquire_resources_span(&name, &key);
 
                 // Wrap resource acquisition in a spawn to catch panics
                 let acquisition_result = {
@@ -210,9 +204,8 @@ impl<P: Processor> Batch<P> {
                             .await
                     })
                     .await
-                    .to_batch_error()
-                    .map(|r| r.map_err(BatchError::ResourceAcquisitionFailed))
-                    .flatten_err()
+                    .map_err(join_error_to_batch_error)
+                    .and_then(|r| r.map_err(BatchError::ResourceAcquisitionFailed))
                 };
 
                 let resources = match acquisition_result {
@@ -270,8 +263,8 @@ impl<P: Processor> Batch<P> {
         tokio::spawn(async move {
             let key = self.key.clone();
 
-            // Extract the inputs and output channels from the batch items.
-            let (inputs, txs): (Vec<_>, Vec<_>) = mem::take(&mut self.items)
+            // Extract the inputs and response channels from the batch items.
+            let (inputs, response_channels): (Vec<_>, Vec<_>) = mem::take(&mut self.items)
                 .into_iter()
                 .map(|item| {
                     // Link the shared batch processing span to the span for each batch item. We
@@ -294,7 +287,7 @@ impl<P: Processor> Batch<P> {
             .await;
 
             // Send the outputs back to the requesters.
-            Self::send_outputs(txs, outputs, Some(outer_span)).await;
+            Self::send_outputs(response_channels, outputs, Some(outer_span)).await;
 
             let prev = self.processing.fetch_sub(1, atomic::Ordering::AcqRel);
             debug_assert!(prev > 0, "processing count should not go negative");
@@ -342,8 +335,8 @@ impl<P: Processor> Batch<P> {
                 .await
         })
         .await
-        .to_batch_error()
-        .flatten_err();
+        .map_err(join_error_to_batch_error)
+        .and_then(|r| r);
 
         // Collect the outputs
         let outputs: Vec<Result<P::Output, BatchError<P::Error>>> = match result {
@@ -379,8 +372,7 @@ impl<P: Processor> Batch<P> {
             }
             None => {
                 // Not pre-acquired, so acquire now
-                let acquire_span =
-                    span!(Level::INFO, "acquire resources", batch.name = name, batch.key = ?key);
+                let acquire_span = acquire_resources_span(name, &key);
                 processor
                     .acquire_resources(key.clone())
                     .instrument(acquire_span.clone())
@@ -394,24 +386,24 @@ impl<P: Processor> Batch<P> {
         err: BatchError<P::Error>,
         on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        let txs: Vec<_> = mem::take(&mut self.items)
+        let response_channels: Vec<_> = mem::take(&mut self.items)
             .into_iter()
             .map(|item| item.tx)
             .collect();
-        let outputs = std::iter::repeat_n(err, txs.len()).map(Err).collect();
+        let outputs = std::iter::repeat_n(err, response_channels.len()).map(Err).collect();
 
         tokio::spawn(async move {
-            Self::send_outputs(txs, outputs, None).await;
+            Self::send_outputs(response_channels, outputs, None).await;
             Self::finalise(self.key.clone(), on_finished).await;
         });
     }
 
     async fn send_outputs(
-        txs: Vec<SendOutput<P::Output, P::Error>>,
+        response_channels: Vec<SendOutput<P::Output, P::Error>>,
         outputs: Vec<Result<P::Output, BatchError<P::Error>>>,
         process_span: Option<Span>,
     ) {
-        for (tx, output) in txs.into_iter().zip(outputs) {
+        for (tx, output) in response_channels.into_iter().zip(outputs) {
             if tx.send((output, process_span.clone())).is_err() {
                 // Whatever was waiting for the output must have shut down. Presumably it
                 // doesn't care anymore, but we log here anyway. There's not much else we can do
@@ -469,39 +461,18 @@ impl<P: Processor> Drop for Batch<P> {
     }
 }
 
-trait ToBatchError<T, E: Display> {
-    fn to_batch_error(self) -> Result<T, BatchError<E>>
-    where
-        Self: Sized;
-}
-
-impl<T, E: Display> ToBatchError<T, E> for Result<T, JoinError> {
-    fn to_batch_error(self) -> Result<T, BatchError<E>> {
-        self.map_err(|join_err| {
-            if join_err.is_cancelled() {
-                BatchError::Cancelled
-            } else {
-                BatchError::Panic
-            }
-        })
+fn join_error_to_batch_error<E: Display>(join_err: JoinError) -> BatchError<E> {
+    if join_err.is_cancelled() {
+        BatchError::Cancelled
+    } else {
+        BatchError::Panic
     }
 }
 
-trait FlattenError<T, E: Display> {
-    fn flatten_err(self) -> Result<T, E>
-    where
-        Self: Sized;
+fn acquire_resources_span(name: &str, key: &impl Debug) -> Span {
+    span!(Level::INFO, "acquire resources", batch.name = name, batch.key = ?key)
 }
 
-impl<T, E: Display> FlattenError<T, E> for Result<Result<T, E>, E> {
-    fn flatten_err(self) -> Result<T, E> {
-        match self {
-            Ok(Ok(t)) => Ok(t),
-            Ok(Err(e)) => Err(e),
-            Err(e) => Err(e),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
