@@ -44,7 +44,6 @@ With batching, we can improve the throughput. Acquiring/releasing the lock and b
 ## Example
 
 ```rust
-
 use std::{marker::Send, sync::Arc, time::Duration};
 
 use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
@@ -85,16 +84,18 @@ fn example() {
     tokio_test::block_on(async {
         // Create a new batcher.
         // Put it in an Arc so we can share it between handlers.
-        let batcher = Arc::new(Batcher::new(
+        let batcher = Arc::new(Batcher::builder()
+            .name("my-batcher")
             // This will process items in a background worker task.
-            SleepyBatchProcessor,
+            .processor(SleepyBatchProcessor)
             // Set some limits.
-            Limits::default()
+            .limits(Limits::default()
                 .with_max_batch_size(2)
-                .with_max_key_concurrency(1),
+                .with_max_key_concurrency(1))
             // Process a batch when it reaches the max_batch_size.
-            BatchingPolicy::Size,
-        ));
+            .batching_policy(BatchingPolicy::Size)
+            .build()
+        );
 
         // Request handler 1
         let batcher1 = batcher.clone();

@@ -146,13 +146,15 @@ impl<P: Processor> Worker<P> {
             PreAdd::Reject(reason) => {
                 if item
                     .tx
-                    .send((Err(BatchError::Rejected { reason }), None))
+                    .send((Err(BatchError::Rejected(reason)), None))
                     .is_err()
                 {
                     // Whatever was waiting for the output must have shut down. Presumably it
-                    // doesn't care anymore, but we log here anyway. There's not much else we can do
-                    // here.
-                    debug!("Unable to send output over oneshot channel. Receiver deallocated.");
+                    // doesn't care anymore, but we log here anyway. There's not much else we can do.
+                    debug!(
+                        "Unable to send output over oneshot channel. Receiver deallocated. Batcher: {}",
+                        self.batcher_name
+                    );
                 }
             }
         }
@@ -248,7 +250,7 @@ impl<P: Processor> Worker<P> {
             }
 
             if self.ready_to_shut_down() {
-                info!("Batch worker is shutting down");
+                info!("Batch worker '{}' is shutting down", &self.batcher_name);
                 return;
             }
         }

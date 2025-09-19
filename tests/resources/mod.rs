@@ -174,13 +174,13 @@ async fn size_when_acquisition_fails() {
 
     assert_matches!(
         outputs.first(),
-        Some(Err(BatchError::ResourceAcquisitionFailed { source: s })) => {
+        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
             assert_eq!(s, "Failed to acquire resources - key_0");
         }
     );
     assert_matches!(
         outputs.last(),
-        Some(Err(BatchError::ResourceAcquisitionFailed { source: s })) => {
+        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
             assert_eq!(s, "Failed to acquire resources - key_1");
         }
     );
@@ -224,13 +224,13 @@ async fn immediate_when_acquisition_fails() {
 
     assert_matches!(
         outputs.first(),
-        Some(Err(BatchError::ResourceAcquisitionFailed { source: s })) => {
+        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
             assert_eq!(s, "Failed to acquire resources - key_0");
         }
     );
     assert_matches!(
         outputs.last(),
-        Some(Err(BatchError::ResourceAcquisitionFailed { source: s })) => {
+        Some(Err(BatchError::ResourceAcquisitionFailed(s))) => {
             assert_eq!(s, "Failed to acquire resources - key_1");
         }
     );
