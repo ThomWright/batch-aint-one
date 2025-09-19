@@ -1,3 +1,4 @@
+mod panic;
 mod resources;
 mod shutdown;
 mod strategies;
