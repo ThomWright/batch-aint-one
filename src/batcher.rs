@@ -13,7 +13,7 @@ use crate::{
     error::BatchResult,
     policies::{BatchingPolicy, Limits},
     processor::Processor,
-    worker::{Worker, WorkerHandle},
+    worker::{Worker, WorkerDropGuard, WorkerHandle},
 };
 
 /// Groups items to be processed in batches.
@@ -34,6 +34,7 @@ where
     R: 'static + Send,
 {
     worker: Arc<WorkerHandle>,
+    worker_guard: Arc<WorkerDropGuard>,
     item_tx: mpsc::Sender<BatchItem<K, I, O, E>>,
     _resources: PhantomData<R>,
 }
@@ -51,10 +52,11 @@ where
     where
         F: 'static + Send + Clone + Processor<K, I, O, E, R>,
     {
-        let (handle, item_tx) = Worker::spawn(processor, limits, batching_policy);
+        let (handle, worker_guard, item_tx) = Worker::spawn(processor, limits, batching_policy);
 
         Self {
             worker: Arc::new(handle),
+            worker_guard: Arc::new(worker_guard),
             item_tx,
             _resources: PhantomData,
         }
@@ -105,6 +107,11 @@ where
         }
         output
     }
+
+    /// Get a handle to the worker.
+    pub fn worker_handle(&self) -> Arc<WorkerHandle> {
+        Arc::clone(&self.worker)
+    }
 }
 
 impl<K, I, O, E> Clone for Batcher<K, I, O, E>
@@ -117,6 +124,7 @@ where
     fn clone(&self) -> Self {
         Self {
             worker: self.worker.clone(),
+            worker_guard: self.worker_guard.clone(),
             item_tx: self.item_tx.clone(),
             _resources: PhantomData,
         }
