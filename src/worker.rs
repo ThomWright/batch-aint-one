@@ -259,6 +259,8 @@ impl<P: Processor> Worker<P> {
 
 impl WorkerHandle {
     /// Signal the worker to shut down after processing any in-flight batches.
+    ///
+    /// Note that when using the Size policy this may wait indefinitely if no new items are added.
     pub async fn shut_down(&self) {
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.
         let _ = self.shutdown_tx.send(ShutdownMessage::ShutDown).await;

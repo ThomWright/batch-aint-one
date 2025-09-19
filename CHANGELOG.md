@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - [Breaking] Replaced `Batcher::new` with `Batcher::builder`
+- [Breaking] Prefixed `Limits` builder functions with `with_`
 - [Breaking] Require a name for a `Batcher` for tracing/logs
 - [Breaking] Replaced generics with associated types on `Processor`
 - [Breaking] Added `acquire_resources()` to the `Processor` trait
