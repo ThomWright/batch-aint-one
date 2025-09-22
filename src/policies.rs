@@ -30,6 +30,9 @@ pub enum BatchingPolicy {
 
     /// Process the batch a given duration after it was created.
     ///
+    /// If using `OnFull::Process`, then process the batch when either the duration elapses or the
+    /// batch becomes full, whichever happens first.
+    ///
     /// Prioritises regularity.
     Duration(Duration, OnFull),
 }

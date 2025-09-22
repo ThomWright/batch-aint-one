@@ -141,7 +141,7 @@ impl<P: Processor> BatchQueue<P> {
         processor: P,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        let batch = self.queue.back_mut().expect("Should always be non-empty");
+        let batch = self.queue.front_mut().expect("Should always be non-empty");
         batch.pre_acquire_resources(processor, tx);
     }
 
