@@ -67,10 +67,8 @@ async fn variable_timing(
         BatchingPolicy::Duration(Duration::from_millis(100), OnFull::Process)
     )]
     policy: BatchingPolicy,
-    #[values(5, 50)]
-    batch_size: usize,
-    #[values(1, 2)]
-    key_concurrency: usize,
+    #[values(5, 50)] batch_size: usize,
+    #[values(1, 2)] key_concurrency: usize,
 ) {
     let resource_delay_ms = 50;
     let processing_delay_ms = 50;
