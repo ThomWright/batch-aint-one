@@ -1,6 +1,9 @@
+use std::time::Duration;
+
 use assert_matches::assert_matches;
 use batch_aint_one::{BatchError, Batcher, BatchingPolicy, Limits, Processor};
 use futures::future::join_all;
+use rstest::rstest;
 
 #[derive(Debug, Clone)]
 pub struct PanickingProcessor {
@@ -60,6 +63,8 @@ impl Processor for PanickingProcessor {
 /// When we submit items for processing
 /// Then all items should fail with a Panic error
 #[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
 async fn immediate_resource_acquisition_panic_handling() {
     tokio::time::pause();
 
@@ -86,6 +91,8 @@ async fn immediate_resource_acquisition_panic_handling() {
 /// When we submit items for processing
 /// Then all items should fail with a Panic error
 #[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
 async fn process_panic_handling() {
     tokio::time::pause();
 

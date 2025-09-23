@@ -1,7 +1,10 @@
 use std::{
     collections::VecDeque,
     fmt::Debug,
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -20,6 +23,8 @@ pub(crate) struct BatchQueue<P: Processor> {
 
     queue: VecDeque<Batch<P>>,
 
+    // /// Generations we've been asked to process but haven't yet started processing.
+    // queued_generations: VecDeque<Generation>,
     limits: Limits,
 
     /// The number of batches with this key that are currently processing.
@@ -47,6 +52,11 @@ impl<P: Processor> BatchQueue<P> {
         next.is_full(self.limits.max_batch_size)
     }
 
+    pub(crate) fn has_next_batch_timeout_expired(&self) -> bool {
+        let next = self.queue.front().expect("Should always be non-empty");
+        next.has_timeout_expired()
+    }
+
     pub(crate) fn is_full(&self) -> bool {
         let back = self.queue.back().expect("Should always be non-empty");
         self.queue.len() == self.limits.max_key_concurrency
@@ -70,7 +80,7 @@ impl<P: Processor> BatchQueue<P> {
 
     pub(crate) fn adding_to_new_batch(&self) -> bool {
         let back = self.queue.back().expect("Should always be non-empty");
-        back.is_new_batch()
+        back.is_new_batch() || back.is_full(self.limits.max_batch_size)
     }
 
     /// Are we currently processing the maximum number of batches for this key (according to
@@ -84,9 +94,7 @@ impl<P: Processor> BatchQueue<P> {
     pub(crate) fn is_processing(&self) -> bool {
         self.processing.load(std::sync::atomic::Ordering::Acquire) > 0
     }
-}
 
-impl<P: Processor> BatchQueue<P> {
     pub(crate) fn push(&mut self, item: BatchItem<P>) {
         let back = self.queue.back_mut().expect("Should always be non-empty");
 
@@ -99,20 +107,34 @@ impl<P: Processor> BatchQueue<P> {
         }
     }
 
-    pub(crate) fn take_next_batch(&mut self) -> Option<Batch<P>> {
-        let batch = self.queue.front().expect("Should always be non-empty");
-        if batch.is_processable() {
-            let batch = self.queue.pop_front().expect("Should always be non-empty");
-            if self.queue.is_empty() {
-                self.queue.push_back(batch.new_generation())
+    pub(crate) fn take_next_processable_batch(&mut self) -> Option<Batch<P>> {
+        if self.processing.load(Ordering::Acquire) >= self.limits.max_key_concurrency {
+            return None;
+        }
+
+        for (index, batch) in self.queue.iter().enumerate() {
+            if batch.is_processable() {
+                let batch = self
+                    .queue
+                    .remove(index)
+                    .expect("Should exist, we just found it");
+
+                if self.queue.is_empty() {
+                    self.queue.push_back(batch.new_generation())
+                }
+
+                return Some(batch);
             }
-            return Some(batch);
         }
 
         None
     }
 
     pub(crate) fn take_generation(&mut self, generation: Generation) -> Option<Batch<P>> {
+        if self.processing.load(Ordering::Acquire) >= self.limits.max_key_concurrency {
+            return None;
+        }
+
         for (index, batch) in self.queue.iter().enumerate() {
             if batch.is_generation(generation) {
                 if batch.is_processable() {
@@ -135,16 +157,17 @@ impl<P: Processor> BatchQueue<P> {
         None
     }
 
-    /// Acquire resources ahead of processing for the next batch.
+    /// Acquire resources for the last batch, ahead of processing.
     pub(crate) fn pre_acquire_resources(
         &mut self,
         processor: P,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        let batch = self.queue.front_mut().expect("Should always be non-empty");
+        let batch = self.queue.back_mut().expect("Should always be non-empty");
         batch.pre_acquire_resources(processor, tx);
     }
 
+    /// Process the last batch after a delay.
     pub(crate) fn process_after(
         &mut self,
         duration: Duration,

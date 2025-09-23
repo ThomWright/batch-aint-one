@@ -45,9 +45,9 @@ pub enum BatchError<E: Display> {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum RejectionReason {
-    /// The batch is full and still waiting to be processed.
+    /// The batch queue is full and queued batches are waiting to be processed.
     BatchFull,
-    /// The batch is full and no more batches can be processed concurrently.
+    /// The batch queue is full and no more batches can be processed concurrently.
     MaxConcurrency,
 }
 

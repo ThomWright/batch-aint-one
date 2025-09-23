@@ -15,7 +15,7 @@ pub trait Processor: 'static + Send + Clone {
     /// The output type for each item.
     type Output: Send;
     /// The error type that can be returned when processing a batch.
-    type Error: Send + Clone + Display;
+    type Error: Send + Clone + Display + Debug;
     /// The resources that will be acquired before processing each batch, and can be used during
     /// processing.
     type Resources: Send;

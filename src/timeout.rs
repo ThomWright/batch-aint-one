@@ -7,14 +7,18 @@ use crate::{batch::Generation, processor::Processor, worker::Message};
 
 #[derive(Debug)]
 pub(crate) struct TimeoutHandle<P: Processor> {
+    key: P::Key,
+    generation: Generation,
     deadline: Option<Instant>,
     handle: Option<JoinHandle<()>>,
     _phantom: std::marker::PhantomData<P>,
 }
 
 impl<P: Processor> TimeoutHandle<P> {
-    pub fn new() -> Self {
+    pub fn new(key: P::Key, generation: Generation) -> Self {
         Self {
+            key,
+            generation,
             deadline: None,
             handle: None,
             _phantom: std::marker::PhantomData,
@@ -26,18 +30,19 @@ impl<P: Processor> TimeoutHandle<P> {
             .is_none_or(|deadline| deadline <= Instant::now())
     }
 
-    pub fn set_timeout(
-        &mut self,
-        duration: Duration,
-        key: P::Key,
-        generation: Generation,
-        tx: mpsc::Sender<Message<P::Key, P::Error>>,
-    ) {
+    pub fn is_expired(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| deadline <= Instant::now())
+    }
+
+    pub fn set_timeout(&mut self, duration: Duration, tx: mpsc::Sender<Message<P::Key, P::Error>>) {
         self.cancel();
 
         let new_deadline = Instant::now() + duration;
         self.deadline = Some(new_deadline);
 
+        let key = self.key.clone();
+        let generation = self.generation.clone();
         let new_handle = tokio::spawn(async move {
             tokio::time::sleep_until(new_deadline).await;
 

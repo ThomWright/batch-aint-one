@@ -47,7 +47,7 @@ pub(crate) struct Worker<P: Processor> {
 }
 
 #[derive(Debug)]
-pub(crate) enum Message<K, E: Display> {
+pub(crate) enum Message<K, E: Display + Debug> {
     Process(K, Generation),
     Fail(K, Generation, BatchError<E>),
     Finished(K),
@@ -176,7 +176,7 @@ impl<P: Processor> Worker<P> {
             .get_mut(key)
             .expect("batch queue should exist");
 
-        if let Some(batch) = batch_queue.take_next_batch() {
+        if let Some(batch) = batch_queue.take_next_processable_batch() {
             let on_finished = self.msg_tx.clone();
 
             batch.process(self.processor.clone(), on_finished);

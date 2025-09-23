@@ -148,13 +148,17 @@ impl BatchingPolicy {
                 PreAdd::AddAndProcessAfter(*dur)
             }
 
-            Self::Immediate if !batch_queue.at_max_processing_capacity() => {
-                // We want to process the batch as soon as possible, but we can't process it until
-                // we have the resources to do so. So we should acquire the resources first before
-                // starting to process.
-                //
-                // In the meantime, we should continue adding to the current batch.
-                PreAdd::AddAndAcquireResources
+            Self::Immediate => {
+                if batch_queue.at_max_processing_capacity() {
+                    PreAdd::Add
+                } else {
+                    // Start acquiring resources immediately for a new batch
+                    if batch_queue.adding_to_new_batch() {
+                        PreAdd::AddAndAcquireResources
+                    } else {
+                        PreAdd::Add
+                    }
+                }
             }
 
             _ => PreAdd::Add,
@@ -175,6 +179,10 @@ impl BatchingPolicy {
         if !batch_queue.at_max_processing_capacity() {
             match self {
                 BatchingPolicy::Immediate => PostFinish::Process,
+
+                BatchingPolicy::Duration(_, _) if batch_queue.has_next_batch_timeout_expired() => {
+                    PostFinish::Process
+                }
 
                 _ => {
                     if batch_queue.is_next_batch_full() {
@@ -306,15 +314,14 @@ mod tests {
 
         queue.push(new_item());
 
-        let batch = queue.take_next_batch().unwrap();
+        let batch = queue.take_next_processable_batch().unwrap();
 
         let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
         batch.process(TestProcessor, on_finished);
 
         let policy = BatchingPolicy::Immediate;
-        let result = policy.pre_add(&queue);
 
-        // Should just add since can't process more
+        let result = policy.pre_add(&queue);
         assert!(matches!(result, PreAdd::Add));
     }
 
@@ -330,7 +337,7 @@ mod tests {
         queue.push(new_item());
 
         // Start processing to reach max processing capacity
-        let batch = queue.take_next_batch().unwrap();
+        let batch = queue.take_next_processable_batch().unwrap();
         let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
         batch.process(TestProcessor, on_finished);
 

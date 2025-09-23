@@ -11,9 +11,11 @@ use std::{
 use assert_matches::assert_matches;
 use batch_aint_one::{BatchError, Batcher, BatchingPolicy, Limits, Processor};
 use futures::future::join_all;
+use rstest::rstest;
 use tokio::sync::Mutex;
 
 mod locking;
+mod variable_timing;
 
 #[derive(Debug, Clone)]
 pub struct ResourceAcquiringProcessor {
@@ -93,6 +95,8 @@ impl Processor for ResourceAcquiringProcessor {
 /// When we use an Immediate batching strategy
 /// Then items should continue to be added to the batch while resources are being acquired
 #[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
 async fn immediate_batches_while_acquiring() {
     tokio::time::pause();
 
@@ -102,7 +106,7 @@ async fn immediate_batches_while_acquiring() {
     let processor = ResourceAcquiringProcessor::new(acquisition_dur, processing_dur);
 
     let batcher = Batcher::builder()
-        .name("test_immediate_batches_while_acquiring")
+        .name("immediate_batches_while_acquiring")
         .processor(processor.clone())
         .limits(
             Limits::default()
@@ -145,6 +149,8 @@ async fn immediate_batches_while_acquiring() {
 /// When we use a Size batching strategy
 /// Then all items should fail with a resource acquisition error
 #[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
 async fn size_when_acquisition_fails() {
     tokio::time::pause();
 
@@ -195,6 +201,8 @@ async fn size_when_acquisition_fails() {
 /// When we use an Immediate batching strategy
 /// Then all items should fail with a resource acquisition error
 #[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
 async fn immediate_when_acquisition_fails() {
     tokio::time::pause();
 
@@ -204,7 +212,7 @@ async fn immediate_when_acquisition_fails() {
     let processor = ResourceAcquiringProcessor::new(acquisition_dur, processing_dur).with_failure();
 
     let batcher = Batcher::builder()
-        .name("test_immediate_batches_while_acquiring")
+        .name("immediate_when_acquisition_fails")
         .processor(processor.clone())
         .limits(
             Limits::default()

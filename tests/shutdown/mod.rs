@@ -2,16 +2,19 @@ use std::time::Duration;
 
 use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
 use futures::future::join_all;
+use rstest::rstest;
 use tokio::sync::mpsc;
 
 use crate::{assert_elapsed, types::SimpleBatchProcessor};
 
 #[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
 async fn shut_down_when_last_batcher_dropped() {
     tokio::time::pause();
 
     let batcher = Batcher::builder()
-        .name("test_immediate_batches_while_acquiring")
+        .name("shut_down_when_last_batcher_dropped")
         .processor(SimpleBatchProcessor(Duration::ZERO))
         .limits(Limits::default().with_max_batch_size(3))
         .batching_policy(BatchingPolicy::Size)
@@ -30,11 +33,13 @@ async fn shut_down_when_last_batcher_dropped() {
 }
 
 #[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
 async fn shut_down_when_shut_down_called() {
     tokio::time::pause();
 
     let batcher = Batcher::builder()
-        .name("test_immediate_batches_while_acquiring")
+        .name("shut_down_when_shut_down_called")
         .processor(SimpleBatchProcessor(Duration::ZERO))
         .limits(Limits::default().with_max_batch_size(3))
         .batching_policy(BatchingPolicy::Size)
@@ -100,6 +105,8 @@ impl Processor for SignalingProcessor {
 }
 
 #[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
 async fn shut_down_during_batch_processing() {
     tokio::time::pause();
 
@@ -152,6 +159,8 @@ async fn shut_down_during_batch_processing() {
 }
 
 #[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
 async fn idempotent_shutdown() {
     tokio::time::pause();
 

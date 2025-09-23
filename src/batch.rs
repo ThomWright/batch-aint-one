@@ -2,7 +2,7 @@ use std::{
     fmt::{Debug, Display},
     mem,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{self, AtomicUsize},
     },
     time::Duration,
@@ -58,6 +58,7 @@ enum ResourcesState<R> {
         span: Span,
     },
     AcquiredAndTaken,
+    Failed,
 }
 
 impl<R> ResourcesState<R> {
@@ -70,6 +71,13 @@ impl<R> ResourcesState<R> {
         } else {
             None
         }
+    }
+
+    fn is_acquiring(&self) -> bool {
+        matches!(
+            *self,
+            ResourcesState::StartedAcquiring | ResourcesState::Acquiring(_)
+        )
     }
 
     fn cancel_acquisition(&mut self) {
@@ -92,16 +100,35 @@ impl Generation {
 
 impl<P: Processor> Batch<P> {
     pub(crate) fn new(batcher_name: String, key: P::Key, processing: Arc<AtomicUsize>) -> Self {
+        let generation = Generation::default();
+        let timeout = TimeoutHandle::new(key.clone(), generation);
         Self {
             batcher_name,
 
             key,
-            generation: Generation::default(),
+            generation,
             items: Vec::new(),
 
-            timeout: TimeoutHandle::new(),
+            timeout,
 
             processing,
+
+            resources_state: Arc::new(Mutex::new(ResourcesState::NotAcquired)),
+        }
+    }
+
+    pub(crate) fn new_generation(&self) -> Self {
+        let generation = self.generation.next();
+        Self {
+            batcher_name: self.batcher_name.clone(),
+
+            key: self.key.clone(),
+            generation,
+            items: Vec::new(),
+
+            timeout: TimeoutHandle::new(self.key.clone(), generation),
+
+            processing: Arc::clone(&self.processing),
 
             resources_state: Arc::new(Mutex::new(ResourcesState::NotAcquired)),
         }
@@ -141,35 +168,24 @@ impl<P: Processor> Batch<P> {
         !self.is_empty()
             // ... and if there is a timeout deadline, it must be in the past.
             && self.timeout.is_ready_for_processing()
+            && !self.is_acquiring_resources()
+    }
+
+    pub(crate) fn has_timeout_expired(&self) -> bool {
+        self.timeout.is_expired()
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<P>) {
         self.items.push(item);
     }
 
-    pub(crate) fn cancel_timeout(&mut self) {
+    fn cancel_timeout(&mut self) {
         self.timeout.cancel();
     }
 
     /// Get the key for this batch.
     pub fn key(&self) -> P::Key {
         self.key.clone()
-    }
-
-    pub(crate) fn new_generation(&self) -> Self {
-        Self {
-            batcher_name: self.batcher_name.clone(),
-
-            key: self.key.clone(),
-            generation: self.generation.next(),
-            items: Vec::new(),
-
-            timeout: TimeoutHandle::new(),
-
-            processing: Arc::clone(&self.processing),
-
-            resources_state: Arc::new(Mutex::new(ResourcesState::NotAcquired)),
-        }
     }
 
     /// Acquire resources for this batch, if we are not doing so already.
@@ -180,10 +196,7 @@ impl<P: Processor> Batch<P> {
         processor: P,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        let mut resources = self
-            .resources_state
-            .lock()
-            .expect("Resources mutex should not be poisoned");
+        let mut resources = self.resources_state();
         if matches!(*resources, ResourcesState::NotAcquired) {
             let key = self.key();
             let name = self.batcher_name.clone();
@@ -213,6 +226,13 @@ impl<P: Processor> Batch<P> {
                 let resources = match acquisition_result {
                     Ok(r) => r,
                     Err(err) => {
+                        {
+                            let mut state = resource_state
+                                .lock()
+                                .expect("Resources mutex should not be poisoned");
+                            *state = ResourcesState::Failed;
+                        }
+
                         // Failed to acquire resources. Fail the batch.
                         if tx.send(Message::Fail(key, generation, err)).await.is_err() {
                             debug!(
@@ -241,6 +261,10 @@ impl<P: Processor> Batch<P> {
 
             *resources = ResourcesState::Acquiring(handle);
         }
+    }
+
+    pub(crate) fn is_acquiring_resources(&self) -> bool {
+        self.resources_state().is_acquiring()
     }
 
     pub(crate) fn process(
@@ -430,8 +454,13 @@ impl<P: Processor> Batch<P> {
         duration: Duration,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        self.timeout
-            .set_timeout(duration, self.key(), self.generation(), tx);
+        self.timeout.set_timeout(duration, tx);
+    }
+
+    fn resources_state(&'_ self) -> MutexGuard<'_, ResourcesState<P::Resources>> {
+        self.resources_state
+            .lock()
+            .expect("Resources mutex should not be poisoned")
     }
 }
 

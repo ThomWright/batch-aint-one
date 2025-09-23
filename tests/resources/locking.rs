@@ -1,8 +1,9 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
 
 use assert_matches::assert_matches;
-use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
+use batch_aint_one::{Batcher, BatchingPolicy, Limits, OnFull, Processor};
 use futures::future::join_all;
+use rstest::rstest;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 #[derive(Debug, Clone)]
@@ -70,7 +71,17 @@ impl Processor for LockingResourceProcessor {
 /// When the resource acquisition acquires a lock on the key
 /// Then items should continue to be added to the batch while resources are being acquired
 #[tokio::test]
-async fn immediate_resource_locking() {
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+async fn immediate_resource_locking(
+    #[values(
+        BatchingPolicy::Immediate,
+        BatchingPolicy::Duration(Duration::from_millis(100), OnFull::Process)
+    )]
+    policy: BatchingPolicy,
+    #[values(10, 50)] batch_size: usize,
+    #[values(1, 2)] key_concurrency: usize,
+) {
     tokio::time::pause();
 
     let acquisition_dur = Duration::from_millis(1000);
@@ -79,14 +90,14 @@ async fn immediate_resource_locking() {
     let processor = LockingResourceProcessor::new(acquisition_dur, processing_dur);
 
     let batcher = Batcher::builder()
-        .name("test_immediate_batches_while_acquiring")
+        .name("immediate_resource_locking")
         .processor(processor.clone())
         .limits(
             Limits::default()
-                .with_max_batch_size(5)
-                .with_max_key_concurrency(2),
+                .with_max_batch_size(batch_size)
+                .with_max_key_concurrency(key_concurrency),
         )
-        .batching_policy(BatchingPolicy::Immediate)
+        .batching_policy(policy)
         .build();
 
     let handler = |i: i32| {
