@@ -50,19 +50,25 @@ pub(crate) struct Batch<P: Processor> {
 #[derive(Debug)]
 enum ResourcesState<R> {
     NotAcquired,
+    StartedAcquiring,
     Acquiring(JoinHandle<()>),
     Acquired {
         resources: R,
         /// The span in which the resources were acquired.
         span: Span,
     },
+    AcquiredAndTaken,
 }
 
 impl<R> ResourcesState<R> {
     fn take(&mut self) -> Option<(R, Span)> {
-        match mem::replace(self, ResourcesState::NotAcquired) {
-            ResourcesState::Acquired { resources, span } => Some((resources, span)),
-            ResourcesState::NotAcquired | ResourcesState::Acquiring(_) => None,
+        if matches!(*self, ResourcesState::Acquired { .. }) {
+            match mem::replace(self, ResourcesState::AcquiredAndTaken) {
+                ResourcesState::Acquired { resources, span } => Some((resources, span)),
+                _ => None,
+            }
+        } else {
+            None
         }
     }
 
@@ -182,6 +188,8 @@ impl<P: Processor> Batch<P> {
             let key = self.key();
             let name = self.batcher_name.clone();
             let generation = self.generation();
+
+            *resources = ResourcesState::StartedAcquiring;
 
             let resource_state = Arc::clone(&self.resources_state);
             let handle = tokio::spawn(async move {
