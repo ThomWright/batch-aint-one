@@ -44,7 +44,24 @@ pub(crate) struct Batch<P: Processor> {
     /// The number of batches with this key that are currently processing.
     processing: Arc<AtomicUsize>,
 
+    /// The number of batches with this key that are currently pre-acquiring resources.
+    pre_acquiring: Arc<AtomicUsize>,
+
     resources_state: Arc<Mutex<ResourcesState<P::Resources>>>,
+}
+
+struct ConcurrencyCountGuard(Arc<AtomicUsize>);
+impl ConcurrencyCountGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, atomic::Ordering::AcqRel);
+        Self(counter)
+    }
+}
+impl Drop for ConcurrencyCountGuard {
+    fn drop(&mut self) {
+        let prev = self.0.fetch_sub(1, atomic::Ordering::AcqRel);
+        debug_assert!(prev > 0, "counter should not wrap below zero");
+    }
 }
 
 #[derive(Debug)]
@@ -99,7 +116,12 @@ impl Generation {
 }
 
 impl<P: Processor> Batch<P> {
-    pub(crate) fn new(batcher_name: String, key: P::Key, processing: Arc<AtomicUsize>) -> Self {
+    pub(crate) fn new(
+        batcher_name: String,
+        key: P::Key,
+        processing: Arc<AtomicUsize>,
+        pre_acquiring: Arc<AtomicUsize>,
+    ) -> Self {
         let generation = Generation::default();
         let timeout = TimeoutHandle::new(key.clone(), generation);
         Self {
@@ -112,6 +134,7 @@ impl<P: Processor> Batch<P> {
             timeout,
 
             processing,
+            pre_acquiring,
 
             resources_state: Arc::new(Mutex::new(ResourcesState::NotAcquired)),
         }
@@ -129,6 +152,7 @@ impl<P: Processor> Batch<P> {
             timeout: TimeoutHandle::new(self.key.clone(), generation),
 
             processing: Arc::clone(&self.processing),
+            pre_acquiring: Arc::clone(&self.pre_acquiring),
 
             resources_state: Arc::new(Mutex::new(ResourcesState::NotAcquired)),
         }
@@ -198,6 +222,8 @@ impl<P: Processor> Batch<P> {
     ) {
         let mut resources = self.resources_state();
         if matches!(*resources, ResourcesState::NotAcquired) {
+            let acquiring_count_guard = ConcurrencyCountGuard::new(Arc::clone(&self.pre_acquiring));
+
             let key = self.key();
             let name = self.batcher_name.clone();
             let generation = self.generation();
@@ -206,25 +232,30 @@ impl<P: Processor> Batch<P> {
 
             let resource_state = Arc::clone(&self.resources_state);
             let handle = tokio::spawn(async move {
+                let acquiring_count_guard = acquiring_count_guard;
+
                 let span = acquire_resources_span(&name, &key);
 
-                // Wrap resource acquisition in a spawn to catch panics
-                let acquisition_result = {
-                    let key = key.clone();
-                    let span = span.clone();
-                    tokio::spawn(async move {
-                        processor
-                            .acquire_resources(key.clone())
-                            .instrument(span.clone())
-                            .await
-                    })
-                    .await
-                    .map_err(join_error_to_batch_error)
-                    .and_then(|r| r.map_err(BatchError::ResourceAcquisitionFailed))
-                };
+                let result = Self::pre_acquire_inner(key.clone(), processor, span.clone()).await;
 
-                let resources = match acquisition_result {
-                    Ok(r) => r,
+                match result {
+                    Ok(resources) => {
+                        {
+                            let mut state = resource_state
+                                .lock()
+                                .expect("Resources mutex should not be poisoned");
+                            *state = ResourcesState::Acquired { resources, span };
+                        }
+
+                        drop(acquiring_count_guard);
+
+                        if tx.send(Message::Process(key, generation)).await.is_err() {
+                            debug!(
+                                "Tried to signal resources had been acquired but the worker has shut down. Batcher: {}",
+                                name
+                            );
+                        }
+                    }
                     Err(err) => {
                         {
                             let mut state = resource_state
@@ -233,6 +264,8 @@ impl<P: Processor> Batch<P> {
                             *state = ResourcesState::Failed;
                         }
 
+                        drop(acquiring_count_guard);
+
                         // Failed to acquire resources. Fail the batch.
                         if tx.send(Message::Fail(key, generation, err)).await.is_err() {
                             debug!(
@@ -240,27 +273,29 @@ impl<P: Processor> Batch<P> {
                                 name
                             );
                         }
-                        return;
                     }
-                };
-
-                {
-                    let mut state = resource_state
-                        .lock()
-                        .expect("Resources mutex should not be poisoned");
-                    *state = ResourcesState::Acquired { resources, span };
-                }
-
-                if tx.send(Message::Process(key, generation)).await.is_err() {
-                    debug!(
-                        "Tried to signal resources had been acquired but the worker has shut down. Batcher: {}",
-                        name
-                    );
                 }
             });
 
             *resources = ResourcesState::Acquiring(handle);
         }
+    }
+
+    async fn pre_acquire_inner(
+        key: P::Key,
+        processor: P,
+        span: Span,
+    ) -> Result<P::Resources, BatchError<P::Error>> {
+        // Wrap resource acquisition in a spawn to catch panics
+        tokio::spawn(async move {
+            processor
+                .acquire_resources(key.clone())
+                .instrument(span.clone())
+                .await
+        })
+        .await
+        .map_err(join_error_to_batch_error)
+        .and_then(|r| r.map_err(BatchError::ResourceAcquisitionFailed))
     }
 
     pub(crate) fn is_acquiring_resources(&self) -> bool {
@@ -272,7 +307,7 @@ impl<P: Processor> Batch<P> {
         processor: P,
         on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        self.processing.fetch_add(1, atomic::Ordering::AcqRel);
+        let processing_count_guard = ConcurrencyCountGuard::new(Arc::clone(&self.processing));
 
         self.cancel_timeout();
 
@@ -287,6 +322,8 @@ impl<P: Processor> Batch<P> {
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
         // run loop.
         tokio::spawn(async move {
+            let processing_count_guard = processing_count_guard;
+
             let key = self.key.clone();
 
             // Extract the inputs and response channels from the batch items.
@@ -315,8 +352,7 @@ impl<P: Processor> Batch<P> {
             // Send the outputs back to the requesters.
             Self::send_outputs(response_channels, outputs, Some(outer_span)).await;
 
-            let prev = self.processing.fetch_sub(1, atomic::Ordering::AcqRel);
-            debug_assert!(prev > 0, "processing count should not go negative");
+            drop(processing_count_guard);
 
             // Signal that we're finished with this batch.
             Self::finalise(key, on_finished).await;
@@ -525,6 +561,7 @@ mod tests {
         let mut batch: Batch<DummyProcessor> = Batch::new(
             "test batcher".to_string(),
             "key".to_string(),
+            Arc::default(),
             Arc::default(),
         );
 

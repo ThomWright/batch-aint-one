@@ -29,6 +29,9 @@ pub(crate) struct BatchQueue<P: Processor> {
 
     /// The number of batches with this key that are currently processing.
     processing: Arc<AtomicUsize>,
+
+    /// The number of batches with this key that are currently pre-acquiring resources.
+    pre_acquiring: Arc<AtomicUsize>,
 }
 
 impl<P: Processor> BatchQueue<P> {
@@ -37,13 +40,20 @@ impl<P: Processor> BatchQueue<P> {
         let mut queue = VecDeque::with_capacity(limits.max_key_concurrency);
 
         let processing = Arc::<AtomicUsize>::default();
-        queue.push_back(Batch::new(batcher_name.clone(), key, processing.clone()));
+        let pre_acquiring = Arc::<AtomicUsize>::default();
+        queue.push_back(Batch::new(
+            batcher_name.clone(),
+            key,
+            processing.clone(),
+            pre_acquiring.clone(),
+        ));
 
         Self {
             batcher_name,
             queue,
             limits,
             processing,
+            pre_acquiring,
         }
     }
 
@@ -93,6 +103,13 @@ impl<P: Processor> BatchQueue<P> {
     /// Are we currently processing any batches for this key?
     pub(crate) fn is_processing(&self) -> bool {
         self.processing.load(std::sync::atomic::Ordering::Acquire) > 0
+    }
+
+    pub(crate) fn at_max_acquiring_capacity(&self) -> bool {
+        self.pre_acquiring
+            .load(std::sync::atomic::Ordering::Acquire)
+            + self.processing.load(std::sync::atomic::Ordering::Acquire)
+            >= self.limits.max_key_concurrency
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<P>) {
@@ -185,6 +202,7 @@ impl<P: Processor> Debug for BatchQueue<P> {
             queue,
             limits,
             processing,
+            pre_acquiring,
         } = self;
         f.debug_struct("BatchQueue")
             .field("batcher_name", &batcher_name)
@@ -192,6 +210,10 @@ impl<P: Processor> Debug for BatchQueue<P> {
             .field(
                 "processing",
                 &processing.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .field(
+                "pre_acquiring",
+                &pre_acquiring.load(std::sync::atomic::Ordering::Relaxed),
             )
             .field("limits", limits)
             .finish()

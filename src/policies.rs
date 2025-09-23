@@ -153,7 +153,8 @@ impl BatchingPolicy {
                     PreAdd::Add
                 } else {
                     // Start acquiring resources immediately for a new batch
-                    if batch_queue.adding_to_new_batch() {
+                    if batch_queue.adding_to_new_batch() && !batch_queue.at_max_acquiring_capacity()
+                    {
                         PreAdd::AddAndAcquireResources
                     } else {
                         PreAdd::Add
