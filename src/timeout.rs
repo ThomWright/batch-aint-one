@@ -42,7 +42,7 @@ impl<P: Processor> TimeoutHandle<P> {
         self.deadline = Some(new_deadline);
 
         let key = self.key.clone();
-        let generation = self.generation.clone();
+        let generation = self.generation;
         let new_handle = tokio::spawn(async move {
             tokio::time::sleep_until(new_deadline).await;
 
