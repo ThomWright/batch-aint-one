@@ -80,6 +80,7 @@ mod tests {
         let subscriber = tracing_subscriber::fmt()
             .pretty()
             .with_max_level(Level::INFO)
+            .with_test_writer()
             .finish();
         // Add the capturing layer.
         let storage = SharedStorage::default();
@@ -127,17 +128,37 @@ mod tests {
 
         let storage = storage.lock();
 
-        let process_spans: Vec<_> = storage
+        let outer_process_spans: Vec<_> = storage
             .all_spans()
             .filter(|span| span.metadata().name().contains("process batch"))
             .collect();
         assert_eq!(
-            process_spans.len(),
+            outer_process_spans.len(),
             1,
-            "should be a single span for processing the batch"
+            "should be a single outer span for processing the batch"
         );
 
-        let process_span = process_spans.first().unwrap();
+        let resource_spans: Vec<_> = storage
+            .all_spans()
+            .filter(|span| span.metadata().name().contains("acquire resources"))
+            .collect();
+        assert_eq!(
+            resource_spans.len(),
+            1,
+            "should be a single span for acquiring resources"
+        );
+
+        let inner_process_spans: Vec<_> = storage
+            .all_spans()
+            .filter(|span| span.metadata().name().contains("process()"))
+            .collect();
+        assert_eq!(
+            inner_process_spans.len(),
+            1,
+            "should be a single inner span for processing the batch"
+        );
+
+        let process_span = outer_process_spans.first().unwrap();
 
         assert_eq!(
             process_span["batch.size"], 2u64,
@@ -168,6 +189,10 @@ mod tests {
             );
         }
 
-        assert_eq!(storage.all_spans().len(), 6, "should be 6 spans in total");
+        assert_eq!(
+            dbg!(storage.all_spans()).len(),
+            7,
+            "should be 7 spans in total"
+        );
     }
 }

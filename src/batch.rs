@@ -311,18 +311,18 @@ impl<P: Processor> Batch<P> {
 
         self.cancel_timeout();
 
-        let batch_size = self.items.len();
-        // Convert to u64 so tracing will treat this as an integer instead of a string.
-        let outer_span = span!(Level::INFO, "process batch",
-            batch.name = &self.batcher_name,
-            batch.key = ?self.key(),
-            batch.size = batch_size as u64
-        );
-
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
         // run loop.
         tokio::spawn(async move {
             let processing_count_guard = processing_count_guard;
+
+            let batch_size = self.items.len();
+            let outer_span = span!(Level::INFO, "process batch",
+                batch.name = &self.batcher_name,
+                batch.key = ?self.key(),
+                // Convert to u64 so tracing will treat this as an integer instead of a string.
+                batch.size = batch_size as u64
+            );
 
             let key = self.key.clone();
 
@@ -389,7 +389,7 @@ impl<P: Processor> Batch<P> {
 
             // Now process the batch.
             let inner_span =
-                span!(Level::DEBUG, "process", batch.name = &name, batch.key = ?key, batch.size = batch_size as u64);
+                span!(Level::INFO, "process()", batch.name = &name, batch.key = ?key, batch.size = batch_size as u64);
             processor
                 .process(key, inputs.into_iter(), resources)
                 .map(|r| r.map_err(BatchError::BatchFailed))
