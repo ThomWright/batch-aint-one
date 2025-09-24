@@ -13,7 +13,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::{JoinError, JoinHandle},
 };
-use tracing::{Instrument, Level, Span, debug, span};
+use tracing::{Instrument, Level, Span, debug, instrument::WithSubscriber, span};
 
 use crate::{
     BatchError, error::BatchResult, processor::Processor, timeout::TimeoutHandle, worker::Message,
@@ -234,7 +234,7 @@ impl<P: Processor> Batch<P> {
             let handle = tokio::spawn(async move {
                 let acquiring_count_guard = acquiring_count_guard;
 
-                let span = acquire_resources_span(&name, &key);
+                let span = span!(Level::INFO, "pre-acquire resources", batch.name = name, batch.key = ?key);
 
                 let result = Self::pre_acquire_inner(key.clone(), processor, span.clone()).await;
 
@@ -275,7 +275,7 @@ impl<P: Processor> Batch<P> {
                         }
                     }
                 }
-            });
+            }.with_current_subscriber());
 
             *resources = ResourcesState::Acquiring(handle);
         }
@@ -287,12 +287,15 @@ impl<P: Processor> Batch<P> {
         span: Span,
     ) -> Result<P::Resources, BatchError<P::Error>> {
         // Wrap resource acquisition in a spawn to catch panics
-        tokio::spawn(async move {
-            processor
-                .acquire_resources(key.clone())
-                .instrument(span.clone())
-                .await
-        })
+        tokio::spawn(
+            async move {
+                processor
+                    .acquire_resources(key.clone())
+                    .instrument(span.clone())
+                    .await
+            }
+            .with_current_subscriber(),
+        )
         .await
         .map_err(join_error_to_batch_error)
         .and_then(|r| r.map_err(BatchError::ResourceAcquisitionFailed))
@@ -313,50 +316,53 @@ impl<P: Processor> Batch<P> {
 
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
         // run loop.
-        tokio::spawn(async move {
-            let processing_count_guard = processing_count_guard;
+        tokio::spawn(
+            async move {
+                let processing_count_guard = processing_count_guard;
 
-            let batch_size = self.items.len();
-            let outer_span = span!(Level::INFO, "process batch",
-                batch.name = &self.batcher_name,
-                batch.key = ?self.key(),
-                // Convert to u64 so tracing will treat this as an integer instead of a string.
-                batch.size = batch_size as u64
-            );
+                let batch_size = self.items.len();
+                let outer_span = span!(Level::INFO, "process batch",
+                    batch.name = &self.batcher_name,
+                    batch.key = ?self.key(),
+                    // Convert to u64 so tracing will treat this as an integer instead of a string.
+                    batch.size = batch_size as u64
+                );
 
-            let key = self.key.clone();
+                let key = self.key.clone();
 
-            // Extract the inputs and response channels from the batch items.
-            let (inputs, response_channels): (Vec<_>, Vec<_>) = mem::take(&mut self.items)
-                .into_iter()
-                .map(|item| {
-                    // Link the shared batch processing span to the span for each batch item. We
-                    // don't use a parent relationship because that's 1:many (parent:child), and
-                    // this is many:1.
-                    outer_span.follows_from(&item.requesting_span);
-                    (item.input, item.tx)
-                })
-                .unzip();
+                // Extract the inputs and response channels from the batch items.
+                let (inputs, response_channels): (Vec<_>, Vec<_>) = mem::take(&mut self.items)
+                    .into_iter()
+                    .map(|item| {
+                        // Link the shared batch processing span to the span for each batch item. We
+                        // don't use a parent relationship because that's 1:many (parent:child), and
+                        // this is many:1.
+                        outer_span.follows_from(&item.requesting_span);
+                        (item.input, item.tx)
+                    })
+                    .unzip();
 
-            // Process the batch.
-            let outputs = Self::process_inner(
-                self.batcher_name.clone(),
-                key.clone(),
-                processor,
-                inputs,
-                Arc::clone(&self.resources_state),
-            )
-            .instrument(outer_span.clone())
-            .await;
+                // Process the batch.
+                let outputs = Self::process_inner(
+                    self.batcher_name.clone(),
+                    key.clone(),
+                    processor,
+                    inputs,
+                    Arc::clone(&self.resources_state),
+                    outer_span.clone(),
+                )
+                .await;
 
-            // Send the outputs back to the requesters.
-            Self::send_outputs(response_channels, outputs, Some(outer_span)).await;
+                // Send the outputs back to the requesters.
+                Self::send_outputs(response_channels, outputs, Some(outer_span)).await;
 
-            drop(processing_count_guard);
+                drop(processing_count_guard);
 
-            // Signal that we're finished with this batch.
-            Self::finalise(key, on_finished).await;
-        });
+                // Signal that we're finished with this batch.
+                Self::finalise(key, on_finished).await;
+            }
+            .with_current_subscriber(),
+        );
     }
 
     async fn process_inner(
@@ -365,8 +371,11 @@ impl<P: Processor> Batch<P> {
         processor: P,
         inputs: Vec<P::Input>,
         resources_state: Arc<Mutex<ResourcesState<P::Resources>>>,
+        span: Span,
     ) -> Vec<Result<P::Output, BatchError<P::Error>>> {
         let batch_size = inputs.len();
+
+        let parent_span = span.clone();
 
         // Spawn a task so we can catch panics.
         let result = tokio::spawn(async move {
@@ -376,6 +385,7 @@ impl<P: Processor> Batch<P> {
                 processor.clone(),
                 &name,
                 key.clone(),
+                parent_span.clone(),
             )
             .await;
 
@@ -389,13 +399,14 @@ impl<P: Processor> Batch<P> {
 
             // Now process the batch.
             let inner_span =
-                span!(Level::INFO, "process()", batch.name = &name, batch.key = ?key, batch.size = batch_size as u64);
+                span!(parent: &parent_span, Level::INFO, "process()", batch.name = &name, batch.key = ?key, batch.size = batch_size as u64);
             processor
                 .process(key, inputs.into_iter(), resources)
-                .map(|r| r.map_err(BatchError::BatchFailed))
                 .instrument(inner_span.clone())
+                .map(|r| r.map_err(BatchError::BatchFailed))
                 .await
-        })
+        }.with_current_subscriber())
+        .instrument(span.clone())
         .await
         .map_err(join_error_to_batch_error)
         .and_then(|r| r);
@@ -417,6 +428,7 @@ impl<P: Processor> Batch<P> {
         processor: P,
         name: &str,
         key: P::Key,
+        parent_span: Span,
     ) -> Result<P::Resources, P::Error> {
         // Try to take pre-acquired resources first
         let pre_acquired = {
@@ -429,12 +441,13 @@ impl<P: Processor> Batch<P> {
         match pre_acquired {
             Some((resources, acquire_span)) => {
                 // We've pre-acquired resources
-                Span::current().follows_from(acquire_span);
+                parent_span.follows_from(acquire_span);
                 Ok(resources)
             }
             None => {
                 // Not pre-acquired, so acquire now
-                let acquire_span = acquire_resources_span(name, &key);
+                let acquire_span = span!(parent: &parent_span, Level::INFO, "acquire resources", batch.name = name, batch.key = ?key);
+
                 processor
                     .acquire_resources(key.clone())
                     .instrument(acquire_span.clone())
@@ -515,10 +528,6 @@ fn join_error_to_batch_error<E: Display>(join_err: JoinError) -> BatchError<E> {
     } else {
         BatchError::Panic
     }
-}
-
-fn acquire_resources_span(name: &str, key: &impl Debug) -> Span {
-    span!(Level::INFO, "acquire resources", batch.name = name, batch.key = ?key)
 }
 
 #[cfg(test)]

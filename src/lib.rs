@@ -56,6 +56,7 @@ mod tests {
         type Resources = ();
 
         async fn acquire_resources(&self, _key: String) -> Result<(), String> {
+            tokio::time::sleep(self.0).await;
             Ok(())
         }
 
@@ -91,7 +92,7 @@ mod tests {
 
         let batcher = Batcher::builder()
             .name("test_tracing")
-            .processor(SimpleBatchProcessor(Duration::ZERO))
+            .processor(SimpleBatchProcessor(Duration::from_millis(10)))
             .limits(Limits::default().with_max_batch_size(2))
             .batching_policy(BatchingPolicy::Size)
             .build();
@@ -137,6 +138,18 @@ mod tests {
             1,
             "should be a single outer span for processing the batch"
         );
+        let process_span = outer_process_spans.first().unwrap().clone();
+
+        assert_eq!(
+            process_span["batch.size"], 2u64,
+            "batch.size shouldn't be emitted as a string",
+        );
+
+        assert_eq!(
+            process_span.follows_from().len(),
+            2,
+            "should follow from both handler spans"
+        );
 
         let resource_spans: Vec<_> = storage
             .all_spans()
@@ -146,6 +159,15 @@ mod tests {
             resource_spans.len(),
             1,
             "should be a single span for acquiring resources"
+        );
+        let resource_span_parent = resource_spans
+            .first()
+            .unwrap()
+            .parent()
+            .expect("resource span should have a parent");
+        assert_eq!(
+            resource_span_parent, process_span,
+            "resource acquisition should be a child of the outer process span"
         );
 
         let inner_process_spans: Vec<_> = storage
@@ -157,18 +179,14 @@ mod tests {
             1,
             "should be a single inner span for processing the batch"
         );
-
-        let process_span = outer_process_spans.first().unwrap();
-
+        let inner_span_parent = inner_process_spans
+            .first()
+            .unwrap()
+            .parent()
+            .expect("resource span should have a parent");
         assert_eq!(
-            process_span["batch.size"], 2u64,
-            "batch.size shouldn't be emitted as a string",
-        );
-
-        assert_eq!(
-            process_span.follows_from().len(),
-            2,
-            "should follow from both handler spans"
+            inner_span_parent, process_span,
+            "resource acquisition should be a child of the outer process span"
         );
 
         let link_back_spans: Vec<_> = storage
@@ -189,10 +207,6 @@ mod tests {
             );
         }
 
-        assert_eq!(
-            dbg!(storage.all_spans()).len(),
-            7,
-            "should be 7 spans in total"
-        );
+        assert_eq!(storage.all_spans().len(), 7, "should be 7 spans in total");
     }
 }
