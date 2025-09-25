@@ -10,11 +10,7 @@ use tokio::{
 use tracing::{debug, info};
 
 use crate::{
-    BatchError,
-    batch::{BatchItem, Generation},
-    batch_queue::BatchQueue,
-    policies::{BatchingPolicy, Limits, PostFinish, PreAdd},
-    processor::Processor,
+    batch::BatchItem, batch_queue::BatchQueue, batch_inner::Generation, policies::{BatchingPolicy, Limits, PostFinish, PreAdd}, processor::Processor, BatchError
 };
 
 pub(crate) struct Worker<P: Processor> {

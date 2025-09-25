@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 use tracing::debug;
 
-use crate::{batch::Generation, processor::Processor, worker::Message};
+use crate::{batch_inner::Generation, processor::Processor, worker::Message};
 
 #[derive(Debug)]
 pub(crate) struct TimeoutHandle<P: Processor> {

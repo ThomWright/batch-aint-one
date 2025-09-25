@@ -11,10 +11,7 @@ use std::{
 use tokio::sync::mpsc;
 
 use crate::{
-    Limits,
-    batch::{Batch, BatchItem, Generation},
-    processor::Processor,
-    worker::Message,
+    batch::{Batch, BatchItem}, batch_inner::Generation, processor::Processor, worker::Message, Limits
 };
 
 /// A double-ended queue for queueing up multiple batches for later processing.
@@ -130,7 +127,7 @@ impl<P: Processor> BatchQueue<P> {
         }
 
         for (index, batch) in self.queue.iter().enumerate() {
-            if batch.is_processable() {
+            if batch.is_ready() {
                 let batch = self
                     .queue
                     .remove(index)
@@ -154,7 +151,7 @@ impl<P: Processor> BatchQueue<P> {
 
         for (index, batch) in self.queue.iter().enumerate() {
             if batch.is_generation(generation) {
-                if batch.is_processable() {
+                if batch.is_ready() {
                     let batch = self
                         .queue
                         .remove(index)

@@ -9,7 +9,7 @@ use std::{
 /// Should be cheap to clone.
 pub trait Processor: 'static + Send + Clone {
     /// The key used to group inputs.
-    type Key: 'static + Debug + Eq + Hash + Clone + Send;
+    type Key: 'static + Debug + Eq + Hash + Clone + Send + Sync;
     /// The input type for each item.
     type Input: Send;
     /// The output type for each item.
