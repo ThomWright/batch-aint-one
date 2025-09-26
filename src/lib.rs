@@ -36,6 +36,7 @@ pub use batcher::Batcher;
 pub use error::BatchError;
 pub use policies::{BatchingPolicy, Limits, OnFull};
 pub use processor::Processor;
+pub use worker::WorkerHandle;
 
 #[cfg(test)]
 mod tests {

@@ -63,6 +63,8 @@ pub(crate) enum ShutdownMessage {
 pub(crate) struct ShutdownNotifier(oneshot::Sender<()>);
 
 /// A handle to the worker task.
+///
+/// Used for shutting down the worker and waiting for it to finish.
 #[derive(Debug, Clone)]
 pub struct WorkerHandle {
     shutdown_tx: mpsc::Sender<ShutdownMessage>,

@@ -14,12 +14,18 @@ use crate::{
 
 /// Groups items to be processed in batches.
 ///
-/// Takes inputs (`I`) grouped by a key (`K`) and processes multiple together in a batch. An output
-/// (`O`) is produced for each input.
+/// Takes inputs one at a time and sends them to a background worker task which groups them into
+/// batches according to the specified [`BatchingPolicy`] and [`Limits`], and processes them using
+/// the provided [`Processor`].
 ///
-/// Errors (`E`) can be returned from a batch.
+/// Cheap to clone. Cloned instances share the same background worker task.
 ///
-/// Cheap to clone.
+/// ## Drop
+///
+/// When the last instance of a `Batcher` is dropped, the worker task will be aborted (ungracefully
+/// shut down).
+///
+/// If you want to shut down the worker gracefully, call [`WorkerHandle::shut_down()`].
 #[derive(Debug)]
 pub struct Batcher<P: Processor> {
     name: String,
@@ -51,7 +57,7 @@ impl<P: Processor> Batcher<P> {
         }
     }
 
-    /// Add an item to the batch and await the result.
+    /// Add an item to be batched and processed, and await the result.
     pub async fn add(&self, key: P::Key, input: P::Input) -> BatchResult<P::Output, P::Error> {
         // Record the span ID so we can link the shared processing span.
         let requesting_span = Span::current().clone();

@@ -46,8 +46,8 @@ pub enum BatchingPolicy {
 /// - The number of items that can be processed concurrently.
 /// - The number of items that can be queued concurrently.
 ///
-/// So the total number of items in the system can be up to `2 * max_key_concurrency *
-/// max_batch_size`.
+/// So the total number of items in the system for a given key can be up to `2 * max_key_concurrency
+/// * max_batch_size`.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Limits {
