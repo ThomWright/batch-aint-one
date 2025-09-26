@@ -46,7 +46,7 @@ impl<P: Processor> TimeoutHandle<P> {
         let new_handle = tokio::spawn(async move {
             tokio::time::sleep_until(new_deadline).await;
 
-            if tx.send(Message::Process(key, generation)).await.is_err() {
+            if tx.send(Message::TimedOut(key, generation)).await.is_err() {
                 // The worker must have shut down. In this case, we don't want to process any more
                 // batches anyway.
                 debug!("A batch reached a timeout but the worker has shut down");

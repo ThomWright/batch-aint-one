@@ -23,11 +23,11 @@ use doc_comment::doctest;
 doctest!("../README.md");
 
 mod batch;
+mod batch_inner;
 mod batch_queue;
 mod batcher;
 mod error;
 mod policies;
-mod batch_inner;
 mod processor;
 mod timeout;
 mod worker;

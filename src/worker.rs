@@ -10,7 +10,12 @@ use tokio::{
 use tracing::{debug, info};
 
 use crate::{
-    batch::BatchItem, batch_queue::BatchQueue, batch_inner::Generation, policies::{BatchingPolicy, Limits, PostFinish, PreAdd}, processor::Processor, BatchError
+    BatchError,
+    batch::BatchItem,
+    batch_inner::Generation,
+    batch_queue::BatchQueue,
+    policies::{BatchingPolicy, Limits, OnAdd, ProcessAction},
+    processor::Processor,
 };
 
 pub(crate) struct Worker<P: Processor> {
@@ -44,8 +49,9 @@ pub(crate) struct Worker<P: Processor> {
 
 #[derive(Debug)]
 pub(crate) enum Message<K, E: Display + Debug> {
-    Process(K, Generation),
-    Fail(K, Generation, BatchError<E>),
+    TimedOut(K, Generation),
+    ResourcesAcquired(K, Generation),
+    ResourceAcquisitionFailed(K, Generation, BatchError<E>),
     Finished(K),
 }
 
@@ -120,26 +126,26 @@ impl<P: Processor> Worker<P> {
             BatchQueue::new(self.batcher_name.clone(), key.clone(), self.limits)
         });
 
-        match self.batching_policy.pre_add(batch_queue) {
-            PreAdd::AddAndProcess => {
+        match self.batching_policy.on_add(batch_queue) {
+            OnAdd::AddAndProcess => {
                 batch_queue.push(item);
 
                 self.process_next_batch(&key);
             }
-            PreAdd::AddAndAcquireResources => {
+            OnAdd::AddAndAcquireResources => {
                 batch_queue.push(item);
 
                 batch_queue.pre_acquire_resources(self.processor.clone(), self.msg_tx.clone());
             }
-            PreAdd::AddAndProcessAfter(duration) => {
+            OnAdd::AddAndProcessAfter(duration) => {
                 batch_queue.push(item);
 
                 batch_queue.process_after(duration, self.msg_tx.clone());
             }
-            PreAdd::Add => {
+            OnAdd::Add => {
                 batch_queue.push(item);
             }
-            PreAdd::Reject(reason) => {
+            OnAdd::Reject(reason) => {
                 if item
                     .tx
                     .send((Err(BatchError::Rejected(reason)), None))
@@ -172,10 +178,46 @@ impl<P: Processor> Worker<P> {
             .get_mut(key)
             .expect("batch queue should exist");
 
-        if let Some(batch) = batch_queue.take_next_processable_batch() {
+        if let Some(batch) = batch_queue.take_next_ready_batch() {
             let on_finished = self.msg_tx.clone();
 
             batch.process(self.processor.clone(), on_finished);
+
+            debug_assert!(
+                batch_queue.within_processing_capacity(),
+                "processing count should not exceed max key concurrency"
+            );
+        }
+    }
+
+    fn on_timeout(&mut self, key: P::Key, generation: Generation) {
+        let batch_queue = self
+            .batch_queues
+            .get_mut(&key)
+            .expect("batch queue should exist");
+
+        match self.batching_policy.on_timeout(generation, batch_queue) {
+            ProcessAction::Process => {
+                self.process_generation(key, generation);
+            }
+            ProcessAction::DoNothing => {}
+        }
+    }
+
+    fn on_resource_acquired(&mut self, key: P::Key, generation: Generation) {
+        let batch_queue = self
+            .batch_queues
+            .get_mut(&key)
+            .expect("batch queue should exist");
+
+        match self
+            .batching_policy
+            .on_resources_acquired(generation, batch_queue)
+        {
+            ProcessAction::Process => {
+                self.process_generation(key, generation);
+            }
+            ProcessAction::DoNothing => {}
         }
     }
 
@@ -185,11 +227,11 @@ impl<P: Processor> Worker<P> {
             .get_mut(key)
             .expect("batch queue should exist");
 
-        match self.batching_policy.post_finish(batch_queue) {
-            PostFinish::Process => {
+        match self.batching_policy.on_finish(batch_queue) {
+            ProcessAction::Process => {
                 self.process_next_batch(key);
             }
-            PostFinish::DoNothing => {}
+            ProcessAction::DoNothing => {}
         }
     }
 
@@ -232,11 +274,14 @@ impl<P: Processor> Worker<P> {
 
                 Some(msg) = self.msg_rx.recv() => {
                     match msg {
-                        Message::Process(key, generation) => {
-                            self.process_generation(key, generation);
+                        Message::ResourcesAcquired(key, generation) => {
+                            self.on_resource_acquired(key, generation);
                         }
-                        Message::Fail(key, generation, err) => {
+                        Message::ResourceAcquisitionFailed(key, generation, err) => {
                             self.fail_batch(key, generation, err);
+                        }
+                        Message::TimedOut(key, generation) => {
+                            self.on_timeout(key, generation);
                         }
                         Message::Finished(key) => {
                             self.on_batch_finished(&key);

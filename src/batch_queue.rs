@@ -11,7 +11,11 @@ use std::{
 use tokio::sync::mpsc;
 
 use crate::{
-    batch::{Batch, BatchItem}, batch_inner::Generation, processor::Processor, worker::Message, Limits
+    Limits,
+    batch::{Batch, BatchItem},
+    batch_inner::Generation,
+    processor::Processor,
+    worker::Message,
 };
 
 /// A double-ended queue for queueing up multiple batches for later processing.
@@ -97,6 +101,11 @@ impl<P: Processor> BatchQueue<P> {
             >= self.limits.max_key_concurrency
     }
 
+    pub(crate) fn within_processing_capacity(&self) -> bool {
+        self.processing.load(std::sync::atomic::Ordering::Acquire)
+            <= self.limits.max_key_concurrency
+    }
+
     /// Are we currently processing any batches for this key?
     pub(crate) fn is_processing(&self) -> bool {
         self.processing.load(std::sync::atomic::Ordering::Acquire) > 0
@@ -121,7 +130,27 @@ impl<P: Processor> BatchQueue<P> {
         }
     }
 
-    pub(crate) fn take_next_processable_batch(&mut self) -> Option<Batch<P>> {
+    pub(crate) fn has_batch_ready(&self) -> bool {
+        for batch in &self.queue {
+            if batch.is_ready() {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub(crate) fn is_generation_ready(&self, generation: Generation) -> bool {
+        for batch in &self.queue {
+            if batch.is_generation(generation) {
+                return batch.is_ready();
+            }
+        }
+
+        false
+    }
+
+    pub(crate) fn take_next_ready_batch(&mut self) -> Option<Batch<P>> {
         if self.processing.load(Ordering::Acquire) >= self.limits.max_key_concurrency {
             return None;
         }
@@ -151,20 +180,16 @@ impl<P: Processor> BatchQueue<P> {
 
         for (index, batch) in self.queue.iter().enumerate() {
             if batch.is_generation(generation) {
-                if batch.is_ready() {
-                    let batch = self
-                        .queue
-                        .remove(index)
-                        .expect("Should exist, we just found it");
+                let batch = self
+                    .queue
+                    .remove(index)
+                    .expect("Should exist, we just found it");
 
-                    if self.queue.is_empty() {
-                        self.queue.push_back(batch.new_generation())
-                    }
-
-                    return Some(batch);
-                } else {
-                    return None;
+                if self.queue.is_empty() {
+                    self.queue.push_back(batch.new_generation())
                 }
+
+                return Some(batch);
             }
         }
 
@@ -179,6 +204,11 @@ impl<P: Processor> BatchQueue<P> {
     ) {
         let batch = self.queue.back_mut().expect("Should always be non-empty");
         batch.pre_acquire_resources(processor, tx);
+
+        debug_assert!(
+            self.pre_acquiring.load(Ordering::Relaxed) <= self.limits.max_key_concurrency,
+            "pre-acquiring count should not exceed max key concurrency"
+        );
     }
 
     /// Process the last batch after a delay.

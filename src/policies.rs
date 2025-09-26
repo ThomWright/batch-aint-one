@@ -1,6 +1,6 @@
 use std::{fmt::Debug, time::Duration};
 
-use crate::{Processor, batch_queue::BatchQueue, error::RejectionReason};
+use crate::{Processor, batch_inner::Generation, batch_queue::BatchQueue, error::RejectionReason};
 
 /// A policy controlling when batches get processed.
 #[derive(Debug)]
@@ -68,7 +68,7 @@ pub enum OnFull {
 }
 
 #[derive(Debug)]
-pub(crate) enum PreAdd {
+pub(crate) enum OnAdd {
     AddAndProcess,
     AddAndAcquireResources,
     AddAndProcessAfter(Duration),
@@ -76,7 +76,7 @@ pub(crate) enum PreAdd {
     Add,
 }
 
-pub(crate) enum PostFinish {
+pub(crate) enum ProcessAction {
     Process,
     DoNothing,
 }
@@ -110,9 +110,9 @@ impl Default for Limits {
 
 impl BatchingPolicy {
     /// Should be applied _before_ adding the new item to the batch.
-    pub(crate) fn pre_add<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> PreAdd {
+    pub(crate) fn on_add<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
         if let Some(rejection) = self.should_reject(batch_queue) {
-            return PreAdd::Reject(rejection);
+            return OnAdd::Reject(rejection);
         }
 
         self.determine_action(batch_queue)
@@ -132,7 +132,7 @@ impl BatchingPolicy {
     }
 
     /// Determine the appropriate action based on policy and batch state.
-    fn determine_action<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> PreAdd {
+    fn determine_action<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
         match self {
             Self::Size if batch_queue.last_space_in_batch() => self.add_or_process(batch_queue),
 
@@ -140,61 +140,103 @@ impl BatchingPolicy {
                 if matches!(on_full, OnFull::Process) {
                     self.add_or_process(batch_queue)
                 } else {
-                    PreAdd::Add
+                    OnAdd::Add
                 }
             }
 
             Self::Duration(dur, _on_full) if batch_queue.adding_to_new_batch() => {
-                PreAdd::AddAndProcessAfter(*dur)
+                OnAdd::AddAndProcessAfter(*dur)
             }
 
             Self::Immediate => {
                 if batch_queue.at_max_processing_capacity() {
-                    PreAdd::Add
+                    OnAdd::Add
                 } else {
                     // Start acquiring resources immediately for a new batch
                     if batch_queue.adding_to_new_batch() && !batch_queue.at_max_acquiring_capacity()
                     {
-                        PreAdd::AddAndAcquireResources
+                        OnAdd::AddAndAcquireResources
                     } else {
-                        PreAdd::Add
+                        OnAdd::Add
                     }
                 }
             }
 
-            _ => PreAdd::Add,
+            BatchingPolicy::Size | BatchingPolicy::Duration(_, _) => OnAdd::Add,
         }
     }
 
     /// Decide between Add and AddAndProcess based on processing capacity.
-    fn add_or_process<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> PreAdd {
+    fn add_or_process<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
         if batch_queue.at_max_processing_capacity() {
             // We can't process the batch yet, so just add to it.
-            PreAdd::Add
+            OnAdd::Add
         } else {
-            PreAdd::AddAndProcess
+            OnAdd::AddAndProcess
         }
     }
 
-    pub(crate) fn post_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> PostFinish {
-        if !batch_queue.at_max_processing_capacity() {
-            match self {
-                BatchingPolicy::Immediate => PostFinish::Process,
+    pub(crate) fn on_timeout<P: Processor>(
+        &self,
+        generation: Generation,
+        batch_queue: &BatchQueue<P>,
+    ) -> ProcessAction {
+        if batch_queue.at_max_processing_capacity() {
+            ProcessAction::DoNothing
+        } else {
+            Self::process_generation_if_ready(generation, batch_queue)
+        }
+    }
 
-                BatchingPolicy::Duration(_, _) if batch_queue.has_next_batch_timeout_expired() => {
-                    PostFinish::Process
-                }
+    pub(crate) fn on_resources_acquired<P: Processor>(
+        &self,
+        generation: Generation,
+        batch_queue: &BatchQueue<P>,
+    ) -> ProcessAction {
+        if batch_queue.at_max_processing_capacity() {
+            ProcessAction::DoNothing
+        } else {
+            Self::process_generation_if_ready(generation, batch_queue)
+        }
+    }
 
-                _ => {
-                    if batch_queue.is_next_batch_full() {
-                        PostFinish::Process
-                    } else {
-                        PostFinish::DoNothing
-                    }
+    pub(crate) fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> ProcessAction {
+        if batch_queue.at_max_processing_capacity() {
+            return ProcessAction::DoNothing;
+        }
+        match self {
+            BatchingPolicy::Immediate => Self::process_if_any_ready(batch_queue),
+
+            BatchingPolicy::Duration(_, _) if batch_queue.has_next_batch_timeout_expired() => {
+                ProcessAction::Process
+            }
+
+            BatchingPolicy::Duration(_, _) | BatchingPolicy::Size => {
+                if batch_queue.is_next_batch_full() {
+                    ProcessAction::Process
+                } else {
+                    ProcessAction::DoNothing
                 }
             }
+        }
+    }
+
+    fn process_generation_if_ready<P: Processor>(
+        generation: Generation,
+        batch_queue: &BatchQueue<P>,
+    ) -> ProcessAction {
+        if batch_queue.is_generation_ready(generation) {
+            ProcessAction::Process
         } else {
-            PostFinish::DoNothing
+            ProcessAction::DoNothing
+        }
+    }
+
+    fn process_if_any_ready<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessAction {
+        if batch_queue.has_batch_ready() {
+            ProcessAction::Process
+        } else {
+            ProcessAction::DoNothing
         }
     }
 }
@@ -259,9 +301,9 @@ mod tests {
         let queue = BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
         let policy = BatchingPolicy::Size;
-        let result = policy.pre_add(&queue);
+        let result = policy.on_add(&queue);
 
-        assert!(matches!(result, PreAdd::Add));
+        assert!(matches!(result, OnAdd::Add));
     }
 
     #[test]
@@ -272,9 +314,9 @@ mod tests {
         let queue = BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
         let policy = BatchingPolicy::Immediate;
-        let result = policy.pre_add(&queue);
+        let result = policy.on_add(&queue);
 
-        assert!(matches!(result, PreAdd::AddAndAcquireResources));
+        assert!(matches!(result, OnAdd::AddAndAcquireResources));
     }
 
     #[test]
@@ -284,9 +326,9 @@ mod tests {
 
         let duration = Duration::from_millis(100);
         let policy = BatchingPolicy::Duration(duration, OnFull::Process);
-        let result = policy.pre_add(&queue);
+        let result = policy.on_add(&queue);
 
-        assert!(matches!(result, PreAdd::AddAndProcessAfter(d) if d == duration));
+        assert!(matches!(result, OnAdd::AddAndProcessAfter(d) if d == duration));
     }
 
     #[test]
@@ -299,10 +341,10 @@ mod tests {
         queue.push(new_item());
 
         let policy = BatchingPolicy::Size;
-        let result = policy.pre_add(&queue);
+        let result = policy.on_add(&queue);
 
         // Should process when adding the last item
-        assert!(matches!(result, PreAdd::AddAndProcess));
+        assert!(matches!(result, OnAdd::AddAndProcess));
     }
 
     #[tokio::test]
@@ -315,15 +357,15 @@ mod tests {
 
         queue.push(new_item());
 
-        let batch = queue.take_next_processable_batch().unwrap();
+        let batch = queue.take_next_ready_batch().unwrap();
 
         let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
         batch.process(TestProcessor, on_finished);
 
         let policy = BatchingPolicy::Immediate;
 
-        let result = policy.pre_add(&queue);
-        assert!(matches!(result, PreAdd::Add));
+        let result = policy.on_add(&queue);
+        assert!(matches!(result, OnAdd::Add));
     }
 
     #[tokio::test]
@@ -338,7 +380,7 @@ mod tests {
         queue.push(new_item());
 
         // Start processing to reach max processing capacity
-        let batch = queue.take_next_processable_batch().unwrap();
+        let batch = queue.take_next_ready_batch().unwrap();
         let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
         batch.process(TestProcessor, on_finished);
 
@@ -347,11 +389,11 @@ mod tests {
 
         // Now we're full and at capacity - should reject
         let policy = BatchingPolicy::Size;
-        let result = policy.pre_add(&queue);
+        let result = policy.on_add(&queue);
 
         assert!(matches!(
             result,
-            PreAdd::Reject(RejectionReason::MaxConcurrency)
+            OnAdd::Reject(RejectionReason::MaxConcurrency)
         ));
     }
 
@@ -368,8 +410,8 @@ mod tests {
 
         // Full but not at processing capacity yet - should still reject as BatchFull
         let policy = BatchingPolicy::Duration(Duration::from_millis(100), OnFull::Reject);
-        let result = policy.pre_add(&queue);
+        let result = policy.on_add(&queue);
 
-        assert!(matches!(result, PreAdd::Reject(RejectionReason::BatchFull)));
+        assert!(matches!(result, OnAdd::Reject(RejectionReason::BatchFull)));
     }
 }

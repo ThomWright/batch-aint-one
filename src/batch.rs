@@ -173,6 +173,11 @@ impl<P: Processor> Batch<P> {
         state.is_acquiring()
     }
 
+    fn has_acquisition_failed(&self) -> bool {
+        let state = self.resources_state();
+        matches!(*state, ResourcesState::Failed)
+    }
+
     fn started_pre_acquiring(&self) -> ConcurrencyCountGuard {
         let mut state = self.resources_state();
         state.start();
@@ -196,6 +201,10 @@ impl<P: Processor> Batch<P> {
         processor: P,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
+        debug_assert!(
+            !self.has_started_acquiring(),
+            "should not try to acquire resources if already started acquiring"
+        );
         if !self.has_started_acquiring() {
             let name = self.inner.name().to_string();
             let key = self.inner.key().clone();
@@ -218,9 +227,12 @@ impl<P: Processor> Batch<P> {
                 let (new_state, msg) = match result {
                     Ok((resources, span)) => (
                         ResourcesState::Acquired { resources, span },
-                        Message::Process(key, generation),
+                        Message::ResourcesAcquired(key, generation),
                     ),
-                    Err(err) => (ResourcesState::Failed, Message::Fail(key, generation, err)),
+                    Err(err) => (
+                        ResourcesState::Failed,
+                        Message::ResourceAcquisitionFailed(key, generation, err),
+                    ),
                 };
 
                 {
@@ -249,6 +261,15 @@ impl<P: Processor> Batch<P> {
         processor: P,
         on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
+        debug_assert!(
+            !self.is_acquiring(),
+            "should not try to acquire resources if already acquiring"
+        );
+        debug_assert!(
+            !self.has_acquisition_failed(),
+            "should not try to process if resource acquisition failed"
+        );
+
         let processing_count_guard = self.started_processing();
 
         self.cancel_timeout();
