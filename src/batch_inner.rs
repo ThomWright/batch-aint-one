@@ -25,7 +25,7 @@ pub(crate) struct BatchInner<P: Processor> {
 pub(crate) struct Generation(u32);
 
 impl Generation {
-    fn next(&self) -> Self {
+    pub(crate) fn next(&self) -> Self {
         Self(self.0.wrapping_add(1))
     }
 }
