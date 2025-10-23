@@ -28,7 +28,7 @@ Example with 3 connections (pre-initialised):
 
 This can lead to inefficient processing, especially when a sudden influx of items requires acquiring lots of new connections, which can be slow.
 
-## Solution: Balanced Policy
+## Solution: `Balanced` Policy
 
 Implements a Nagle-like algorithm for batch processing.
 
@@ -76,9 +76,9 @@ Strongly prefers full batches, but will still process when:
 
 1. System is idle (first item processes immediately)
 2. Another batch finishes (uses available capacity with partial batch)
-3. The batch fills to `max_batch_size` (new resources are acquired and then the batch starts pocessing concurrently)
+3. The batch fills to `max_batch_size` (new resources are acquired and then the batch starts processing concurrently)
 
-This maximizes batch sizes before using more available concurrency. In effect, behaves opposite to `Immediate`, which maximuses concurrency before batch sizes.
+This maximizes batch sizes before using more available concurrency. In effect, behaves opposite to `Immediate`, which maximizes concurrency before batch sizes.
 
 #### `min_size_hint > max_batch_size`
 
