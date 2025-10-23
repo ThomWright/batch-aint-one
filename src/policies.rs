@@ -1,6 +1,11 @@
 use std::{fmt::Debug, time::Duration};
 
-use crate::{Processor, batch_inner::Generation, batch_queue::BatchQueue, error::RejectionReason};
+use crate::{
+    Processor,
+    batch_inner::Generation,
+    batch_queue::BatchQueue,
+    error::{ConcurrencyStatus, RejectionReason},
+};
 
 /// A policy controlling when batches get processed.
 #[derive(Debug)]
@@ -35,6 +40,21 @@ pub enum BatchingPolicy {
     ///
     /// Prioritises regularity.
     Duration(Duration, OnFull),
+
+    /// Balance between resource efficiency and latency based on system load.
+    ///
+    /// When no batches are processing, the first item processes immediately.
+    ///
+    /// When batches are already processing:
+    /// - If batch size < `min_size_hint`: Wait for either the batch to reach `min_size_hint` or
+    ///   any batch to complete
+    /// - If batch size >= `min_size_hint`: Start acquiring resources and process immediately
+    ///
+    /// The `min_size_hint` must be <= `max_batch_size`.
+    Balanced {
+        /// The minimum batch size to prefer before using additional concurrency.
+        min_size_hint: usize,
+    },
 }
 
 /// A policy controlling limits on batch sizes and concurrency.
@@ -116,16 +136,18 @@ impl BatchingPolicy {
             return OnAdd::Reject(rejection);
         }
 
-        self.determine_action(batch_queue)
+        self.on_add_inner(batch_queue)
     }
 
     /// Check if the item should be rejected due to capacity constraints.
     fn should_reject<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> Option<RejectionReason> {
         if batch_queue.is_full() {
             if batch_queue.at_max_processing_capacity() {
-                Some(RejectionReason::MaxConcurrency)
+                Some(RejectionReason::BatchQueueFull(ConcurrencyStatus::MaxedOut))
             } else {
-                Some(RejectionReason::BatchFull)
+                Some(RejectionReason::BatchQueueFull(
+                    ConcurrencyStatus::Available,
+                ))
             }
         } else {
             None
@@ -133,7 +155,7 @@ impl BatchingPolicy {
     }
 
     /// Determine the appropriate action based on policy and batch state.
-    fn determine_action<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
+    fn on_add_inner<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
         match self {
             Self::Size if batch_queue.last_space_in_batch() => self.add_or_process(batch_queue),
 
@@ -150,16 +172,32 @@ impl BatchingPolicy {
             }
 
             Self::Immediate => {
-                if batch_queue.at_max_processing_capacity() {
+                if batch_queue.at_max_processing_capacity()
+                    || batch_queue.at_max_acquiring_capacity()
+                {
                     OnAdd::Add
+                } else if batch_queue.adding_to_new_batch() {
+                    OnAdd::AddAndAcquireResources
                 } else {
-                    // Start acquiring resources immediately for a new batch
-                    if batch_queue.adding_to_new_batch() && !batch_queue.at_max_acquiring_capacity()
-                    {
-                        OnAdd::AddAndAcquireResources
-                    } else {
-                        OnAdd::Add
-                    }
+                    OnAdd::Add
+                }
+            }
+
+            Self::Balanced { min_size_hint } => {
+                dbg!(batch_queue);
+                if batch_queue.at_max_processing_capacity()
+                    || batch_queue.at_max_acquiring_capacity()
+                {
+                    OnAdd::Add
+                } else if batch_queue.adding_to_new_batch() && !batch_queue.is_processing() {
+                    // First item, nothing else processing
+                    OnAdd::AddAndAcquireResources
+                } else if batch_queue.has_next_batch_reached_size(min_size_hint.saturating_sub(1))
+                    && !batch_queue.is_next_batch_acquiring_resources()
+                {
+                    OnAdd::AddAndAcquireResources
+                } else {
+                    OnAdd::Add
                 }
             }
 
@@ -202,11 +240,13 @@ impl BatchingPolicy {
     }
 
     pub(crate) fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> ProcessAction {
-        if dbg!(batch_queue.at_max_processing_capacity()) {
+        if batch_queue.at_max_processing_capacity() {
             return ProcessAction::DoNothing;
         }
         match self {
             BatchingPolicy::Immediate => Self::process_if_any_ready(batch_queue),
+
+            BatchingPolicy::Balanced { .. } => Self::process_if_any_ready(batch_queue),
 
             BatchingPolicy::Duration(_, _) if batch_queue.has_next_batch_timeout_expired() => {
                 ProcessAction::Process
@@ -435,7 +475,10 @@ mod tests {
         let policy = BatchingPolicy::Size;
         let result = policy.on_add(&queue);
 
-        assert_matches!(result, OnAdd::Reject(RejectionReason::MaxConcurrency));
+        assert_matches!(
+            result,
+            OnAdd::Reject(RejectionReason::BatchQueueFull(ConcurrencyStatus::MaxedOut))
+        );
     }
 
     #[test]
@@ -453,7 +496,12 @@ mod tests {
         let policy = BatchingPolicy::Duration(Duration::from_millis(100), OnFull::Reject);
         let result = policy.on_add(&queue);
 
-        assert_matches!(result, OnAdd::Reject(RejectionReason::BatchFull));
+        assert_matches!(
+            result,
+            OnAdd::Reject(RejectionReason::BatchQueueFull(
+                ConcurrencyStatus::Available
+            ))
+        );
     }
 
     #[tokio::test]
@@ -650,5 +698,136 @@ mod tests {
 
         let result = policy.on_resources_acquired(first_gen, &queue);
         assert_matches!(result, ProcessAction::Process);
+    }
+
+    mod balanced {
+        use super::*;
+
+        #[test]
+        fn acquires_resources_when_nothing_processing() {
+            let limits = Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(1);
+            let queue =
+                BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
+
+            let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
+            let result = policy.on_add(&queue);
+
+            assert_matches!(result, OnAdd::AddAndAcquireResources);
+        }
+
+        #[tokio::test]
+        async fn waits_when_below_hint_and_processing() {
+            let limits = Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(1);
+            let mut queue =
+                BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
+
+            // Add one item and start processing
+            queue.push(new_item("key".to_string(), "item1".to_string()));
+            let batch = queue.take_next_ready_batch().unwrap();
+            let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
+            batch.process(TestProcessor, on_finished);
+
+            // Now add another item - should wait (size=1 < hint=5, processing=true)
+            let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
+            let result = policy.on_add(&queue);
+
+            assert_matches!(result, OnAdd::Add);
+        }
+
+        #[tokio::test]
+        async fn acquires_when_reached_hint() {
+            let limits = Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(2);
+            let mut queue =
+                BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
+
+            // Add one item and start processing
+            queue.push(new_item("key".to_string(), "item1".to_string()));
+            let batch = queue.take_next_ready_batch().unwrap();
+            let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
+            batch.process(TestProcessor, on_finished);
+
+            // Add 4 more items (total=5, reaching hint)
+            for i in 2..=5 {
+                queue.push(new_item("key".to_string(), format!("item{}", i)));
+            }
+
+            dbg!(&queue);
+
+            // Next item should trigger acquisition (size=5 >= hint=5)
+            let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
+            let result = policy.on_add(&queue);
+
+            assert_matches!(result, OnAdd::AddAndAcquireResources);
+        }
+
+        #[tokio::test]
+        async fn rejects_at_max_capacity() {
+            let limits = Limits::default()
+                .with_max_batch_size(5)
+                .with_max_key_concurrency(1);
+            let mut queue =
+                BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
+
+            // Fill and process first batch
+            for i in 1..=5 {
+                queue.push(new_item("key".to_string(), format!("item{}", i)));
+            }
+            let batch = queue.take_next_ready_batch().unwrap();
+            let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
+            batch.process(TestProcessor, on_finished);
+
+            // Fill second batch
+            for i in 6..=10 {
+                queue.push(new_item("key".to_string(), format!("item{}", i)));
+            }
+
+            // At max capacity - should reject
+            let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
+            let result = policy.on_add(&queue);
+
+            assert_matches!(
+                result,
+                OnAdd::Reject(RejectionReason::BatchQueueFull(ConcurrencyStatus::MaxedOut))
+            );
+        }
+
+        #[test]
+        fn processes_on_finish_when_batch_ready() {
+            let limits = Limits::default()
+                .with_max_batch_size(10)
+                .with_max_key_concurrency(1);
+            let mut queue =
+                BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
+
+            // Add items to next batch (below hint, waiting)
+            for i in 1..=3 {
+                queue.push(new_item("key".to_string(), format!("item{}", i)));
+            }
+
+            // When a batch finishes, should process the waiting batch
+            let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
+            let result = policy.on_finish(&queue);
+
+            assert_matches!(result, ProcessAction::Process);
+        }
+
+        #[test]
+        fn does_not_process_on_finish_when_no_batch_ready() {
+            let limits = Limits::default().with_max_batch_size(10);
+            let queue =
+                BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
+
+            // Empty queue - nothing to process
+            let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
+            let result = policy.on_finish(&queue);
+
+            assert_matches!(result, ProcessAction::DoNothing);
+        }
     }
 }

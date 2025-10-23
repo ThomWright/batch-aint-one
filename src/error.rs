@@ -45,17 +45,28 @@ pub enum BatchError<E: Display> {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum RejectionReason {
-    /// The batch queue is full and queued batches are waiting to be processed.
-    BatchFull,
-    /// The batch queue is full and no more batches can be processed concurrently.
-    MaxConcurrency,
+    /// The batch queue is full.
+    BatchQueueFull(ConcurrencyStatus),
+}
+
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum ConcurrencyStatus {
+    /// There is available concurrency to process another batch.
+    ///
+    /// It might be being used because batches are waiting to be processed.
+    Available,
+    /// The maximum concurrency for this key has been reached.
+    MaxedOut,
 }
 
 impl Display for RejectionReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            RejectionReason::BatchFull => "the batch is full",
-            RejectionReason::MaxConcurrency => "the key has reached maximum concurrency",
+            RejectionReason::BatchQueueFull(concurrency) => match concurrency {
+                ConcurrencyStatus::Available => "the batch queue is full",
+                ConcurrencyStatus::MaxedOut => "the batch queue is full and maximum concurrency reached",
+            },
         })
     }
 }

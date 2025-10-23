@@ -63,6 +63,17 @@ impl<P: Processor> BatchQueue<P> {
         next.is_full(self.limits.max_batch_size)
     }
 
+    /// Check if the next batch has reached the specified size.
+    pub(crate) fn has_next_batch_reached_size(&self, size: usize) -> bool {
+        let back = self.queue.front().expect("Should always be non-empty");
+        back.len() >= size
+    }
+
+    pub(crate) fn is_next_batch_acquiring_resources(&self) -> bool {
+        let next = self.queue.front().expect("Should always be non-empty");
+        next.has_started_acquiring()
+    }
+
     pub(crate) fn has_next_batch_timeout_expired(&self) -> bool {
         let next = self.queue.front().expect("Should always be non-empty");
         next.has_timeout_expired()
@@ -233,7 +244,7 @@ impl<P: Processor> Debug for BatchQueue<P> {
         } = self;
         f.debug_struct("BatchQueue")
             .field("batcher_name", &batcher_name)
-            .field("queue_len", &queue.len())
+            .field("queue", &queue)
             .field(
                 "processing",
                 &processing.load(std::sync::atomic::Ordering::Relaxed),

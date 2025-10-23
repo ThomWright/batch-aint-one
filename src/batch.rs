@@ -1,6 +1,7 @@
 use std::{
     fmt::Debug,
     iter, mem,
+    ops::Deref,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{self, AtomicUsize},
@@ -55,7 +56,37 @@ pub(crate) struct Batch<P: Processor> {
     resources_state: Arc<Mutex<ResourcesState<P::Resources>>>,
 }
 
-#[derive(Debug)]
+impl<P: Processor> Debug for Batch<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Batch {
+            inner,
+            items,
+            timeout: _,
+            processing,
+            pre_acquiring,
+            resources_state,
+        } = self;
+        f.debug_struct("Batch")
+            .field("name", &inner.name())
+            .field("key", &inner.key())
+            .field("generation", &inner.generation())
+            .field("items_len", &items.len())
+            .field("processing", &processing.load(atomic::Ordering::Relaxed))
+            .field(
+                "pre_acquiring",
+                &pre_acquiring.load(atomic::Ordering::Relaxed),
+            )
+            .field(
+                "resources_state",
+                resources_state
+                    .lock()
+                    .expect("Resources mutex should not be poisoned")
+                    .deref(),
+            )
+            .finish()
+    }
+}
+
 enum ResourcesState<R> {
     NotStartedAcquiring,
     StartedAcquiring,
@@ -67,6 +98,31 @@ enum ResourcesState<R> {
     },
     AcquiredAndTaken,
     Failed,
+}
+
+impl<R> Debug for ResourcesState<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResourcesState::NotStartedAcquiring => {
+                write!(f, "NotStartedAcquiring")
+            }
+            ResourcesState::StartedAcquiring => {
+                write!(f, "StartedAcquiring")
+            }
+            ResourcesState::Acquiring(_) => {
+                write!(f, "Acquiring(<JoinHandle>)")
+            }
+            ResourcesState::Acquired { .. } => {
+                write!(f, "Acquired(<Resources>)")
+            }
+            ResourcesState::AcquiredAndTaken => {
+                write!(f, "AcquiredAndTaken")
+            }
+            ResourcesState::Failed => {
+                write!(f, "Failed")
+            }
+        }
+    }
 }
 
 pub(crate) struct ConcurrencyCountGuard(Arc<AtomicUsize>);
@@ -163,7 +219,7 @@ impl<P: Processor> Batch<P> {
         self.timeout.cancel();
     }
 
-    fn has_started_acquiring(&self) -> bool {
+    pub(crate) fn has_started_acquiring(&self) -> bool {
         let state = self.resources_state();
         state.has_started()
     }

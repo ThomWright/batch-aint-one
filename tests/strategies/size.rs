@@ -95,7 +95,7 @@ async fn max_concurrency_limit() {
     assert_eq!(o4.unwrap(), "4 processed for A".to_string());
     assert_eq!(
         o5.unwrap_err().to_string(),
-        "Batch item rejected: the key has reached maximum concurrency",
+        "Batch item rejected: the batch queue is full and maximum concurrency reached",
     );
     assert_eq!(o6.unwrap(), "1 processed for B".to_string());
 }
