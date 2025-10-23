@@ -37,6 +37,11 @@ pub struct Batcher<P: Processor> {
 #[bon]
 impl<P: Processor> Batcher<P> {
     /// Create a new batcher.
+    ///
+    /// # Notes
+    ///
+    /// If `batching_policy` is `Balanced { min_size_hint }` where `min_size_hint` is greater than
+    /// `limits.max_batch_size`, the `min_size_hint` will be clamped to `max_batch_size`.
     #[builder]
     pub fn new(
         name: impl Into<String>,
@@ -45,6 +50,8 @@ impl<P: Processor> Batcher<P> {
         batching_policy: BatchingPolicy,
     ) -> Self {
         let name = name.into();
+
+        let batching_policy = batching_policy.normalise(limits);
 
         let (handle, worker_guard, item_tx) =
             Worker::spawn(name.clone(), processor, limits, batching_policy);

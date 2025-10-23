@@ -130,6 +130,16 @@ impl Default for Limits {
 }
 
 impl BatchingPolicy {
+    /// Normalise the policy to ensure it's valid for the given limits.
+    pub(crate) fn normalise(self, limits: Limits) -> Self {
+        match self {
+            BatchingPolicy::Balanced { min_size_hint } => BatchingPolicy::Balanced {
+                min_size_hint: min_size_hint.min(limits.max_batch_size),
+            },
+            other => other,
+        }
+    }
+
     /// Should be applied _before_ adding the new item to the batch.
     pub(crate) fn on_add<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
         if let Some(rejection) = self.should_reject(batch_queue) {
@@ -447,8 +457,7 @@ mod tests {
             let limits = Limits::default()
                 .with_max_batch_size(3)
                 .with_max_key_concurrency(2);
-            let mut queue =
-                BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
+            let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
             let policy = BatchingPolicy::Size;
 
             // Fill and process first batch
@@ -526,8 +535,7 @@ mod tests {
             let limits = Limits::default()
                 .with_max_batch_size(2)
                 .with_max_key_concurrency(1);
-            let mut queue =
-                BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
+            let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
             let policy = BatchingPolicy::Immediate;
 
             // Add items to fill first batch
@@ -563,8 +571,7 @@ mod tests {
             let limits = Limits::default()
                 .with_max_batch_size(2)
                 .with_max_key_concurrency(2);
-            let mut queue =
-                BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
+            let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
             let policy = BatchingPolicy::Immediate;
 
             // Add item - should start acquiring resources
@@ -655,61 +662,63 @@ mod tests {
 
             assert_matches!(
                 result,
-                OnAdd::Reject(RejectionReason::BatchQueueFull(ConcurrencyStatus::Available))
+                OnAdd::Reject(RejectionReason::BatchQueueFull(
+                    ConcurrencyStatus::Available
+                ))
             );
         }
 
         #[tokio::test]
         async fn timeout_while_processing() {
-        // Scenario: Duration policy, max_concurrency=1, batch_size=2
-        // 1. Add 3 items (2 in first batch, 1 in second)
-        // 2. First batch starts processing
-        // 3. Second batch times out while first is still processing
-        // 4. After first finishes, second batch should be processed
+            // Scenario: Duration policy, max_concurrency=1, batch_size=2
+            // 1. Add 3 items (2 in first batch, 1 in second)
+            // 2. First batch starts processing
+            // 3. Second batch times out while first is still processing
+            // 4. After first finishes, second batch should be processed
 
-        let processor = ControlledProcessor::default();
-        let limits = Limits::default()
-            .with_max_batch_size(2)
-            .with_max_key_concurrency(1);
-        let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
-        let policy = BatchingPolicy::Duration(Duration::from_millis(100), OnFull::Process);
+            let processor = ControlledProcessor::default();
+            let limits = Limits::default()
+                .with_max_batch_size(2)
+                .with_max_key_concurrency(1);
+            let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
+            let policy = BatchingPolicy::Duration(Duration::from_millis(100), OnFull::Process);
 
-        // Step 1: Add first 2 items (should fill first batch and start processing)
-        let result = policy.on_add(&queue);
-        assert_matches!(result, OnAdd::AddAndProcessAfter(_));
-        let notify1 = Arc::new(Notify::new());
-        queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
+            // Step 1: Add first 2 items (should fill first batch and start processing)
+            let result = policy.on_add(&queue);
+            assert_matches!(result, OnAdd::AddAndProcessAfter(_));
+            let notify1 = Arc::new(Notify::new());
+            queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
-        let result = policy.on_add(&queue);
-        assert_matches!(result, OnAdd::AddAndProcess); // Last space, should process
-        queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
+            let result = policy.on_add(&queue);
+            assert_matches!(result, OnAdd::AddAndProcess); // Last space, should process
+            queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
-        // Start processing first batch
-        let first_batch = queue.take_next_ready_batch().unwrap();
-        let (on_finished, mut rx) = mpsc::channel(1);
-        first_batch.process(processor, on_finished);
+            // Start processing first batch
+            let first_batch = queue.take_next_ready_batch().unwrap();
+            let (on_finished, mut rx) = mpsc::channel(1);
+            first_batch.process(processor, on_finished);
 
-        // Step 2: Add third item (goes to second batch)
-        let result = policy.on_add(&queue);
-        assert_matches!(result, OnAdd::AddAndProcessAfter(_)); // New batch, set timeout
-        let notify2 = Arc::new(Notify::new());
-        queue.push(new_item((), notify2.notified_owned()));
-        let (tx, mut timeout_rx) = mpsc::channel(1);
-        queue.process_after(Duration::from_millis(1), tx);
+            // Step 2: Add third item (goes to second batch)
+            let result = policy.on_add(&queue);
+            assert_matches!(result, OnAdd::AddAndProcessAfter(_)); // New batch, set timeout
+            let notify2 = Arc::new(Notify::new());
+            queue.push(new_item((), notify2.notified_owned()));
+            let (tx, mut timeout_rx) = mpsc::channel(1);
+            queue.process_after(Duration::from_millis(1), tx);
 
-        // Step 3: Second batch times out while first is still processing
-        let msg = timeout_rx.recv().await.unwrap(); // Wait for timeout signal
-        let second_gen = Generation::default().next();
-        assert_matches!(msg, Message::TimedOut(_, generation)=> {
-            assert_eq!(generation, second_gen);
-        });
-        let result = policy.on_timeout(second_gen, &queue);
-        assert_matches!(result, ProcessAction::DoNothing); // Can't process, at max capacity
+            // Step 3: Second batch times out while first is still processing
+            let msg = timeout_rx.recv().await.unwrap(); // Wait for timeout signal
+            let second_gen = Generation::default().next();
+            assert_matches!(msg, Message::TimedOut(_, generation)=> {
+                assert_eq!(generation, second_gen);
+            });
+            let result = policy.on_timeout(second_gen, &queue);
+            assert_matches!(result, ProcessAction::DoNothing); // Can't process, at max capacity
 
-        // Step 4: First batch finishes
-        notify1.notify_waiters(); // Let first batch complete
-        let msg = rx.recv().await.unwrap();
-        assert_matches!(msg, Message::Finished(_));
+            // Step 4: First batch finishes
+            notify1.notify_waiters(); // Let first batch complete
+            let msg = rx.recv().await.unwrap();
+            assert_matches!(msg, Message::Finished(_));
 
             let result = policy.on_finish(&queue);
             assert_matches!(result, ProcessAction::Process); // Should process second batch
