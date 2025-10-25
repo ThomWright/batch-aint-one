@@ -80,9 +80,10 @@ async fn variable_timing(
         .name("variable_timing_immediate")
         .processor(processor)
         .limits(
-            Limits::default()
-                .with_max_batch_size(batch_size)
-                .with_max_key_concurrency(key_concurrency),
+            Limits::builder()
+                .max_batch_size(batch_size)
+                .max_key_concurrency(key_concurrency)
+                .build(),
         )
         .batching_policy(policy)
         .build();

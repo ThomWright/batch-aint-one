@@ -93,9 +93,10 @@ async fn immediate_resource_locking(
         .name("immediate_resource_locking")
         .processor(processor.clone())
         .limits(
-            Limits::default()
-                .with_max_batch_size(batch_size)
-                .with_max_key_concurrency(key_concurrency),
+            Limits::builder()
+                .max_batch_size(batch_size)
+                .max_key_concurrency(key_concurrency)
+                .build(),
         )
         .batching_policy(policy)
         .build();

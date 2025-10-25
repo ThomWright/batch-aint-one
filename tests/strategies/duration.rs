@@ -19,7 +19,7 @@ async fn total_duration() {
     let batcher = Batcher::builder()
         .name("test_total_duration")
         .processor(SimpleBatchProcessor(processing_dur))
-        .limits(Limits::default().with_max_batch_size(10))
+        .limits(Limits::builder().max_batch_size(10).build())
         .batching_policy(BatchingPolicy::Duration(batching_dur, OnFull::Process))
         .build();
 
@@ -53,7 +53,7 @@ async fn loaded_process_on_full() {
     let batcher = Batcher::builder()
         .name("test_loaded_process_on_full")
         .processor(SimpleBatchProcessor(processing_dur))
-        .limits(Limits::default().with_max_batch_size(10))
+        .limits(Limits::builder().max_batch_size(10).build())
         .batching_policy(BatchingPolicy::Duration(
             Duration::from_millis(10),
             OnFull::Process,
@@ -89,9 +89,10 @@ async fn loaded_reject_on_full() {
         .name("test_loaded_reject_on_full")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_key_concurrency(1)
-                .with_max_batch_size(10),
+            Limits::builder()
+                .max_key_concurrency(1)
+                .max_batch_size(10)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Duration(
             Duration::from_millis(10),

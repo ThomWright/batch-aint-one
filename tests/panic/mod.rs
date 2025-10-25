@@ -74,9 +74,10 @@ async fn immediate_resource_acquisition_panic_handling() {
         .name("panic_test")
         .processor(processor)
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(1),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(1)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Immediate)
         .build();
@@ -102,9 +103,10 @@ async fn process_panic_handling() {
         .name("panic_test")
         .processor(processor)
         .limits(
-            Limits::default()
-                .with_max_batch_size(2)
-                .with_max_key_concurrency(1),
+            Limits::builder()
+                .max_batch_size(2)
+                .max_key_concurrency(1)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Size)
         .build();

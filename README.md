@@ -89,9 +89,10 @@ fn example() {
             // This will process items in a background worker task.
             .processor(SleepyBatchProcessor)
             // Set some limits.
-            .limits(Limits::default()
-                .with_max_batch_size(2)
-                .with_max_key_concurrency(1))
+            .limits(Limits::builder()
+                .max_batch_size(2)
+                .max_key_concurrency(1)
+                .build())
             // Process a batch when it reaches the max_batch_size.
             .batching_policy(BatchingPolicy::Size)
             .build()

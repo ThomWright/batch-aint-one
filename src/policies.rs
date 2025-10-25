@@ -1,5 +1,7 @@
 use std::{fmt::Debug, time::Duration};
 
+use bon::bon;
+
 use crate::{
     Processor,
     batch_inner::Generation,
@@ -51,6 +53,8 @@ pub enum BatchingPolicy {
     /// - If batch size >= `min_size_hint`: Start acquiring resources and process immediately
     ///
     /// The `min_size_hint` must be <= `max_batch_size`.
+    ///
+    /// Prioritises efficient resource usage while maintaining reasonable latency.
     Balanced {
         /// The minimum batch size to prefer before using additional concurrency.
         min_size_hint: usize,
@@ -64,15 +68,17 @@ pub enum BatchingPolicy {
 /// `max_key_concurrency * max_batch_size` is both:
 ///
 /// - The number of items that can be processed concurrently.
-/// - The number of items that can be queued concurrently.
+/// - By default, the number of items that can be queued.
 ///
-/// So the total number of items in the system for a given key can be up to `2 * max_key_concurrency
+/// So when using the default `max_batch_queue_size` the total number of items in the system for a
+/// given key can be up to `2 * max_key_concurrency
 /// * max_batch_size`.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Limits {
     pub(crate) max_batch_size: usize,
     pub(crate) max_key_concurrency: usize,
+    pub(crate) max_batch_queue_size: usize,
 }
 
 /// What to do when a batch becomes full.
@@ -102,29 +108,38 @@ pub(crate) enum ProcessAction {
     DoNothing,
 }
 
+#[bon]
 impl Limits {
-    /// Limits the maximum size of a batch.
-    pub fn with_max_batch_size(self, max: usize) -> Self {
+    #[allow(missing_docs)]
+    #[builder]
+    pub fn new(
+        /// Limits the maximum size of a batch.
+        #[builder(default = 100)]
+        max_batch_size: usize,
+        /// Limits the maximum number of batches that can be processed concurrently for a key.
+        #[builder(default = 10)]
+        max_key_concurrency: usize,
+        /// Limits the maximum number of batches that can be queued for processing.
+        max_batch_queue_size: Option<usize>,
+    ) -> Self {
         Self {
-            max_batch_size: max,
-            ..self
-        }
-    }
-
-    /// Limits the maximum number of batches that can be processed concurrently for a key.
-    pub fn with_max_key_concurrency(self, max: usize) -> Self {
-        Self {
-            max_key_concurrency: max,
-            ..self
+            max_batch_size,
+            max_key_concurrency,
+            max_batch_queue_size: max_batch_queue_size
+                .unwrap_or(max_key_concurrency * max_batch_size),
         }
     }
 }
 
 impl Default for Limits {
     fn default() -> Self {
+        let max_batch_size = 100;
+        let max_key_concurrency = 10;
+        let max_batch_queue_size = max_key_concurrency;
         Self {
-            max_batch_size: 100,
-            max_key_concurrency: 10,
+            max_batch_size,
+            max_key_concurrency,
+            max_batch_queue_size,
         }
     }
 }
@@ -379,9 +394,10 @@ mod tests {
 
     #[test]
     fn limits_builder_methods() {
-        let limits = Limits::default()
-            .with_max_batch_size(50)
-            .with_max_key_concurrency(5);
+        let limits = Limits::builder()
+            .max_batch_size(50)
+            .max_key_concurrency(5)
+            .build();
 
         assert_eq!(limits.max_batch_size, 50);
         assert_eq!(limits.max_key_concurrency, 5);
@@ -392,9 +408,10 @@ mod tests {
 
         #[test]
         fn waits_for_full_batch_when_empty() {
-            let limits = Limits::default()
-                .with_max_batch_size(3)
-                .with_max_key_concurrency(2);
+            let limits = Limits::builder()
+                .max_batch_size(3)
+                .max_key_concurrency(2)
+                .build();
             let queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -406,7 +423,7 @@ mod tests {
 
         #[test]
         fn processes_when_batch_becomes_full() {
-            let limits = Limits::default().with_max_batch_size(2);
+            let limits = Limits::builder().max_batch_size(2).build();
             let mut queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -422,9 +439,10 @@ mod tests {
 
         #[tokio::test]
         async fn rejects_when_full_and_at_capacity() {
-            let limits = Limits::default()
-                .with_max_batch_size(1)
-                .with_max_key_concurrency(1);
+            let limits = Limits::builder()
+                .max_batch_size(1)
+                .max_key_concurrency(1)
+                .build();
             let mut queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -454,9 +472,10 @@ mod tests {
             // Scenario: Size policy waits for full batch even after other batches finish
 
             let processor = ControlledProcessor::default();
-            let limits = Limits::default()
-                .with_max_batch_size(3)
-                .with_max_key_concurrency(2);
+            let limits = Limits::builder()
+                .max_batch_size(3)
+                .max_key_concurrency(2)
+                .build();
             let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
             let policy = BatchingPolicy::Size;
 
@@ -494,9 +513,10 @@ mod tests {
 
         #[test]
         fn acquires_resources_when_empty() {
-            let limits = Limits::default()
-                .with_max_batch_size(3)
-                .with_max_key_concurrency(2);
+            let limits = Limits::builder()
+                .max_batch_size(3)
+                .max_key_concurrency(2)
+                .build();
             let queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -508,9 +528,10 @@ mod tests {
 
         #[tokio::test]
         async fn adds_when_at_max_capacity() {
-            let limits = Limits::default()
-                .with_max_batch_size(1)
-                .with_max_key_concurrency(1);
+            let limits = Limits::builder()
+                .max_batch_size(1)
+                .max_key_concurrency(1)
+                .build();
             let mut queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -532,9 +553,10 @@ mod tests {
             // Scenario: Immediate policy processes next batch after one finishes
 
             let processor = ControlledProcessor::default();
-            let limits = Limits::default()
-                .with_max_batch_size(2)
-                .with_max_key_concurrency(1);
+            let limits = Limits::builder()
+                .max_batch_size(2)
+                .max_key_concurrency(1)
+                .build();
             let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
             let policy = BatchingPolicy::Immediate;
 
@@ -568,9 +590,10 @@ mod tests {
             // Scenario: Resources are acquired out of order
 
             let mut processor = ControlledProcessor::default();
-            let limits = Limits::default()
-                .with_max_batch_size(2)
-                .with_max_key_concurrency(2);
+            let limits = Limits::builder()
+                .max_batch_size(2)
+                .max_key_concurrency(2)
+                .build();
             let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
             let policy = BatchingPolicy::Immediate;
 
@@ -634,7 +657,7 @@ mod tests {
 
         #[test]
         fn schedules_timeout_when_empty() {
-            let limits = Limits::default().with_max_batch_size(2);
+            let limits = Limits::builder().max_batch_size(2).build();
             let queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -647,9 +670,10 @@ mod tests {
 
         #[test]
         fn onfull_reject_rejects_when_full_but_not_processing() {
-            let limits = Limits::default()
-                .with_max_batch_size(1)
-                .with_max_key_concurrency(1);
+            let limits = Limits::builder()
+                .max_batch_size(1)
+                .max_key_concurrency(1)
+                .build();
             let mut queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -677,9 +701,10 @@ mod tests {
             // 4. After first finishes, second batch should be processed
 
             let processor = ControlledProcessor::default();
-            let limits = Limits::default()
-                .with_max_batch_size(2)
-                .with_max_key_concurrency(1);
+            let limits = Limits::builder()
+                .max_batch_size(2)
+                .max_key_concurrency(1)
+                .build();
             let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
             let policy = BatchingPolicy::Duration(Duration::from_millis(100), OnFull::Process);
 
@@ -730,9 +755,10 @@ mod tests {
 
         #[test]
         fn acquires_resources_when_nothing_processing() {
-            let limits = Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(1);
+            let limits = Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(1)
+                .build();
             let queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -744,9 +770,10 @@ mod tests {
 
         #[tokio::test]
         async fn waits_when_below_hint_and_processing() {
-            let limits = Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(1);
+            let limits = Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(1)
+                .build();
             let mut queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -765,9 +792,10 @@ mod tests {
 
         #[tokio::test]
         async fn acquires_when_reached_hint() {
-            let limits = Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(2);
+            let limits = Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(2)
+                .build();
             let mut queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -793,9 +821,10 @@ mod tests {
 
         #[tokio::test]
         async fn rejects_at_max_capacity() {
-            let limits = Limits::default()
-                .with_max_batch_size(5)
-                .with_max_key_concurrency(1);
+            let limits = Limits::builder()
+                .max_batch_size(5)
+                .max_key_concurrency(1)
+                .build();
             let mut queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -824,9 +853,10 @@ mod tests {
 
         #[test]
         fn processes_on_finish_when_batch_ready() {
-            let limits = Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(1);
+            let limits = Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(1)
+                .build();
             let mut queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
@@ -844,7 +874,7 @@ mod tests {
 
         #[test]
         fn does_not_process_on_finish_when_no_batch_ready() {
-            let limits = Limits::default().with_max_batch_size(10);
+            let limits = Limits::builder().max_batch_size(10).build();
             let queue =
                 BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 

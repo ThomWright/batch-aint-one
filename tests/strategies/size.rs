@@ -14,7 +14,7 @@ async fn process_when_full() {
     let batcher = Batcher::builder()
         .name("test_process_when_full")
         .processor(SimpleBatchProcessor(Duration::ZERO))
-        .limits(Limits::default().with_max_batch_size(3))
+        .limits(Limits::builder().max_batch_size(3).build())
         .batching_policy(BatchingPolicy::Size)
         .build();
 
@@ -41,7 +41,7 @@ async fn loaded() {
     let batcher = Batcher::builder()
         .name("test_loaded")
         .processor(SimpleBatchProcessor(processing_dur))
-        .limits(Limits::default().with_max_batch_size(10))
+        .limits(Limits::builder().max_batch_size(10).build())
         .batching_policy(BatchingPolicy::Size)
         .build();
 
@@ -66,9 +66,10 @@ async fn max_concurrency_limit() {
         .name("test_max_concurrency_limit")
         .processor(SimpleBatchProcessor(Duration::ZERO))
         .limits(
-            Limits::default()
-                .with_max_batch_size(1)
-                .with_max_key_concurrency(2),
+            Limits::builder()
+                .max_batch_size(1)
+                .max_key_concurrency(2)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Size)
         .build();

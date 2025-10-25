@@ -95,7 +95,7 @@ mod tests {
         let batcher = Batcher::builder()
             .name("test_tracing")
             .processor(SimpleBatchProcessor(Duration::from_millis(10)))
-            .limits(Limits::default().with_max_batch_size(2))
+            .limits(Limits::builder().max_batch_size(2).build())
             .batching_policy(BatchingPolicy::Size)
             .build();
 

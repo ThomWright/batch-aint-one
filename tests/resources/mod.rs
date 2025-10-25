@@ -109,9 +109,10 @@ async fn immediate_batches_while_acquiring() {
         .name("immediate_batches_while_acquiring")
         .processor(processor.clone())
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(2),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(2)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Immediate)
         .build();
@@ -163,9 +164,10 @@ async fn size_when_acquisition_fails() {
         .name("test_size_when_acquisition_fails")
         .processor(processor.clone())
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(2),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(2)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Size)
         .build();
@@ -215,9 +217,10 @@ async fn immediate_when_acquisition_fails() {
         .name("immediate_when_acquisition_fails")
         .processor(processor.clone())
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(2),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(2)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Immediate)
         .build();

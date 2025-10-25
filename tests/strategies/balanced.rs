@@ -19,9 +19,10 @@ async fn first_item_processes_immediately() {
         .name("test_first_item_immediate")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(1),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(1)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Balanced { min_size_hint: 5 })
         .build();
@@ -49,9 +50,10 @@ async fn waits_below_min_size_hint() {
         .name("test_waits_below_hint")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(1),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(1)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Balanced { min_size_hint: 5 })
         .build();
@@ -98,9 +100,10 @@ async fn processes_at_min_size_hint() {
             .name("test_processes_at_hint")
             .processor(SimpleBatchProcessor(processing_dur))
             .limits(
-                Limits::default()
-                    .with_max_batch_size(10)
-                    .with_max_key_concurrency(2), // Allow 2 concurrent batches
+                Limits::builder()
+                    .max_batch_size(10)
+                    .max_key_concurrency(2) // Allow 2 concurrent batches
+                    .build(),
             )
             .batching_policy(BatchingPolicy::Balanced { min_size_hint: 5 })
             .build(),
@@ -155,9 +158,10 @@ async fn min_size_hint_one_behaves_like_immediate() {
         .name("test_hint_one")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(2),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(2)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Balanced { min_size_hint: 1 })
         .build();
@@ -199,9 +203,10 @@ async fn min_size_hint_equals_max_batch_size() {
         .name("test_hint_equals_max")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(5)
-                .with_max_key_concurrency(1),
+            Limits::builder()
+                .max_batch_size(5)
+                .max_key_concurrency(1)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Balanced { min_size_hint: 5 })
         .build();
@@ -248,9 +253,10 @@ async fn multiple_concurrent_batches() {
             .name("test_concurrent_batches")
             .processor(SimpleBatchProcessor(processing_dur))
             .limits(
-                Limits::default()
-                    .with_max_batch_size(10)
-                    .with_max_key_concurrency(3),
+                Limits::builder()
+                    .max_batch_size(10)
+                    .max_key_concurrency(3)
+                    .build(),
             )
             .batching_policy(BatchingPolicy::Balanced { min_size_hint: 3 })
             .build(),
@@ -294,9 +300,10 @@ async fn rejects_when_over_capacity() {
             .name("test_rejection")
             .processor(SimpleBatchProcessor(processing_dur))
             .limits(
-                Limits::default()
-                    .with_max_batch_size(10)
-                    .with_max_key_concurrency(1),
+                Limits::builder()
+                    .max_batch_size(10)
+                    .max_key_concurrency(1)
+                    .build(),
             )
             .batching_policy(BatchingPolicy::Balanced { min_size_hint: 5 })
             .build(),
@@ -336,9 +343,10 @@ async fn steady_load_achieves_good_batch_sizes() {
             .name("test_steady_load")
             .processor(SimpleBatchProcessor(processing_dur))
             .limits(
-                Limits::default()
-                    .with_max_batch_size(20)
-                    .with_max_key_concurrency(1),
+                Limits::builder()
+                    .max_batch_size(20)
+                    .max_key_concurrency(1)
+                    .build(),
             )
             .batching_policy(BatchingPolicy::Balanced {
                 min_size_hint: 6, // Expect ~7 items per batch (20ms / 3ms)
@@ -381,9 +389,10 @@ async fn burst_load_uses_concurrency() {
             .name("test_burst_load")
             .processor(SimpleBatchProcessor(processing_dur))
             .limits(
-                Limits::default()
-                    .with_max_batch_size(10)
-                    .with_max_key_concurrency(3),
+                Limits::builder()
+                    .max_batch_size(10)
+                    .max_key_concurrency(3)
+                    .build(),
             )
             .batching_policy(BatchingPolicy::Balanced { min_size_hint: 5 })
             .build(),

@@ -16,7 +16,7 @@ async fn shut_down_when_last_batcher_dropped() {
     let batcher = Batcher::builder()
         .name("shut_down_when_last_batcher_dropped")
         .processor(SimpleBatchProcessor(Duration::ZERO))
-        .limits(Limits::default().with_max_batch_size(3))
+        .limits(Limits::builder().max_batch_size(3).build())
         .batching_policy(BatchingPolicy::Size)
         .build();
 
@@ -41,7 +41,7 @@ async fn shut_down_when_shut_down_called() {
     let batcher = Batcher::builder()
         .name("shut_down_when_shut_down_called")
         .processor(SimpleBatchProcessor(Duration::ZERO))
-        .limits(Limits::default().with_max_batch_size(3))
+        .limits(Limits::builder().max_batch_size(3).build())
         .batching_policy(BatchingPolicy::Size)
         .build();
 
@@ -119,7 +119,7 @@ async fn shut_down_during_batch_processing() {
             processing_started_tx,
             processing_duration,
         ))
-        .limits(Limits::default().with_max_batch_size(1))
+        .limits(Limits::builder().max_batch_size(1).build())
         .batching_policy(BatchingPolicy::Immediate)
         .build();
 
@@ -167,7 +167,7 @@ async fn idempotent_shutdown() {
     let batcher = Batcher::builder()
         .name("idempotent_shutdown")
         .processor(SimpleBatchProcessor(Duration::ZERO))
-        .limits(Limits::default().with_max_batch_size(3))
+        .limits(Limits::builder().max_batch_size(3).build())
         .batching_policy(BatchingPolicy::Size)
         .build();
 

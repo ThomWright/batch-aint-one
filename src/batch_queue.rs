@@ -37,8 +37,7 @@ pub(crate) struct BatchQueue<P: Processor> {
 
 impl<P: Processor> BatchQueue<P> {
     pub(crate) fn new(batcher_name: String, key: P::Key, limits: Limits) -> Self {
-        // The queue size is the same as the max processing capacity.
-        let mut queue = VecDeque::with_capacity(limits.max_key_concurrency);
+        let mut queue = VecDeque::with_capacity(limits.max_batch_queue_size);
 
         let processing = Arc::<AtomicUsize>::default();
         let pre_acquiring = Arc::<AtomicUsize>::default();

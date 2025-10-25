@@ -19,9 +19,10 @@ async fn single_concurrency() {
         .name("test_single_concurrency")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(1),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(1)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Immediate)
         .build();
@@ -63,9 +64,10 @@ async fn dual() {
         .name("test_dual")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(1)
-                .with_max_key_concurrency(2),
+            Limits::builder()
+                .max_batch_size(1)
+                .max_key_concurrency(2)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Immediate)
         .build();
@@ -109,9 +111,10 @@ async fn single_concurrency_with_wait() {
         .name("test_single_concurrency_with_wait")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(1),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(1)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Immediate)
         .build();
@@ -144,9 +147,10 @@ async fn single_concurrency_full() {
         .name("test_single_concurrency_full")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(100)
-                .with_max_key_concurrency(1),
+            Limits::builder()
+                .max_batch_size(100)
+                .max_key_concurrency(1)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Immediate)
         .build();
@@ -179,9 +183,10 @@ async fn single_concurrency_reject() {
         .name("test_single_concurrency_reject")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(100)
-                .with_max_key_concurrency(1),
+            Limits::builder()
+                .max_batch_size(100)
+                .max_key_concurrency(1)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Immediate)
         .build();
@@ -219,9 +224,10 @@ async fn double_concurrency_full() {
         .name("test_double_concurrency_full")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
-            Limits::default()
-                .with_max_batch_size(10)
-                .with_max_key_concurrency(2),
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(2)
+                .build(),
         )
         .batching_policy(BatchingPolicy::Immediate)
         .build();

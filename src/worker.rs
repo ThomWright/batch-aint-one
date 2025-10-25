@@ -364,7 +364,7 @@ mod test {
         let (_worker_handle, _worker_guard, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
             "test".to_string(),
             SimpleBatchProcessor,
-            Limits::default().with_max_batch_size(2),
+            Limits::builder().max_batch_size(2).build(),
             BatchingPolicy::Size,
         );
 
