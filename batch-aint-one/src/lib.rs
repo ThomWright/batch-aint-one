@@ -20,7 +20,7 @@
 #[cfg(doctest)]
 use doc_comment::doctest;
 #[cfg(doctest)]
-doctest!("../README.md");
+doctest!("../../README.md");
 
 mod batch;
 mod batch_inner;
