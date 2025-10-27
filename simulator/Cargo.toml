@@ -16,4 +16,4 @@ tokio = { workspace = true, features = ["full"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-# For future use
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }

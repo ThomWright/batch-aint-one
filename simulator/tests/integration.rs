@@ -88,7 +88,10 @@ async fn test_minimal_simulation() {
 
 #[tokio::test]
 async fn test_distributed_arrivals_and_latency() {
+    tokio::time::pause();
     let seed = *TEST_SEED;
+
+    let start = std::time::Instant::now();
 
     // Arrival rate: 20 items/sec (mean inter-arrival: 50ms)
     let mut arrivals = PoissonArrivals::new(20.0, Some(seed));
@@ -185,5 +188,17 @@ async fn test_distributed_arrivals_and_latency() {
     assert!(
         min_batch >= 1 && max_batch <= 10,
         "Batch sizes should be reasonable"
+    );
+
+    // Verify that time was paused - wall-clock time should be much faster than simulated time
+    let wall_clock_elapsed = start.elapsed();
+    println!("Wall-clock elapsed: {:?}", wall_clock_elapsed);
+
+    // With 20 items arriving at ~50ms intervals, simulated time would take ~1000ms
+    // With paused time, wall-clock should complete much faster
+    assert!(
+        wall_clock_elapsed < Duration::from_millis(100),
+        "Test should complete quickly with paused time, took {:?}",
+        wall_clock_elapsed
     );
 }
