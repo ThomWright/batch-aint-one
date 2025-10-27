@@ -167,7 +167,7 @@ impl BatchingPolicy {
     /// Check if the item should be rejected due to capacity constraints.
     fn should_reject<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> Option<RejectionReason> {
         if batch_queue.is_full() {
-            if batch_queue.at_max_processing_capacity() {
+            if batch_queue.at_max_total_capacity() {
                 Some(RejectionReason::BatchQueueFull(ConcurrencyStatus::MaxedOut))
             } else {
                 Some(RejectionReason::BatchQueueFull(
@@ -197,9 +197,7 @@ impl BatchingPolicy {
             }
 
             Self::Immediate => {
-                if batch_queue.at_max_processing_capacity()
-                    || batch_queue.at_max_acquiring_capacity()
-                {
+                if batch_queue.at_max_total_capacity() {
                     OnAdd::Add
                 } else if batch_queue.adding_to_new_batch() {
                     OnAdd::AddAndAcquireResources
@@ -210,9 +208,7 @@ impl BatchingPolicy {
 
             Self::Balanced { min_size_hint } => {
                 dbg!(batch_queue);
-                if batch_queue.at_max_processing_capacity()
-                    || batch_queue.at_max_acquiring_capacity()
-                {
+                if batch_queue.at_max_total_capacity() {
                     OnAdd::Add
                 } else if batch_queue.adding_to_new_batch() && !batch_queue.is_processing() {
                     // First item, nothing else processing
@@ -232,7 +228,7 @@ impl BatchingPolicy {
 
     /// Decide between Add and AddAndProcess based on processing capacity.
     fn add_or_process<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
-        if batch_queue.at_max_processing_capacity() {
+        if batch_queue.at_max_total_capacity() {
             // We can't process the batch yet, so just add to it.
             OnAdd::Add
         } else {
@@ -245,7 +241,7 @@ impl BatchingPolicy {
         generation: Generation,
         batch_queue: &BatchQueue<P>,
     ) -> ProcessAction {
-        if batch_queue.at_max_processing_capacity() {
+        if batch_queue.at_max_total_capacity() {
             ProcessAction::DoNothing
         } else {
             Self::process_generation_if_ready(generation, batch_queue)
@@ -257,7 +253,7 @@ impl BatchingPolicy {
         generation: Generation,
         batch_queue: &BatchQueue<P>,
     ) -> ProcessAction {
-        if batch_queue.at_max_processing_capacity() {
+        if batch_queue.at_max_total_capacity() {
             ProcessAction::DoNothing
         } else {
             Self::process_generation_if_ready(generation, batch_queue)
@@ -265,7 +261,7 @@ impl BatchingPolicy {
     }
 
     pub(crate) fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> ProcessAction {
-        if batch_queue.at_max_processing_capacity() {
+        if batch_queue.at_max_total_capacity() {
             return ProcessAction::DoNothing;
         }
         match self {
@@ -524,6 +520,53 @@ mod tests {
             let result = policy.on_add(&queue);
 
             assert_matches!(result, OnAdd::AddAndAcquireResources);
+        }
+
+        #[tokio::test]
+        async fn wont_acquire_more_resources_than_capacity() {
+            // Arrange
+            // - max_concurrency = 2
+            // - 1 batch already processing
+            // - 1 batch acquiring resources
+            let limits = Limits::builder()
+                .max_batch_size(2)
+                .max_key_concurrency(2)
+                .build();
+
+            let processor = ControlledProcessor::default();
+
+            let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
+            let policy = BatchingPolicy::Immediate;
+
+            // Add items to fill first batch
+            let notify1 = Arc::new(Notify::new());
+            queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
+            queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
+
+            // Start processing first batch
+            let first_batch = queue.take_next_ready_batch().unwrap();
+            let (on_finished, _rx) = mpsc::channel(1);
+            first_batch.process(processor.clone(), on_finished);
+
+            // Add items to fill second batch (acquiring resources)
+            let notify2 = Arc::new(Notify::new());
+            queue.push(new_item((), Arc::clone(&notify2).notified_owned()));
+            queue.push(new_item((), Arc::clone(&notify2).notified_owned())); // Only 2 items, not full yet
+
+            let mut second_batch = queue.take_next_ready_batch().unwrap();
+            let (on_finished, _rx) = mpsc::channel(1);
+            second_batch.pre_acquire_resources(processor, on_finished);
+
+            // Act
+            // Now add the first item to the third batch
+            let result = policy.on_add(&queue);
+
+            // Assert
+            assert_matches!(
+                result,
+                OnAdd::Add,
+                "Should not acquire more resources when at max total concurrency"
+            );
         }
 
         #[tokio::test]
