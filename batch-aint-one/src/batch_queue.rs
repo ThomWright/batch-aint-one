@@ -104,13 +104,6 @@ impl<P: Processor> BatchQueue<P> {
         back.is_new_batch() || back.is_full(self.limits.max_batch_size)
     }
 
-    /// Are we currently processing the maximum number of batches for this key (according to
-    /// the `Limits`)?
-    // pub(crate) fn at_max_processing_capacity(&self) -> bool {
-    //     self.processing.load(std::sync::atomic::Ordering::Acquire)
-    //         >= self.limits.max_key_concurrency
-    // }
-
     pub(crate) fn within_processing_capacity(&self) -> bool {
         self.processing.load(std::sync::atomic::Ordering::Acquire)
             <= self.limits.max_key_concurrency
@@ -121,14 +114,9 @@ impl<P: Processor> BatchQueue<P> {
         self.processing.load(std::sync::atomic::Ordering::Acquire) > 0
     }
 
-    /// Are we currently using the maximum concurrency, including both processing and pre-acquiring?
-    // pub(crate) fn at_max_acquiring_capacity(&self) -> bool {
-    //     self.pre_acquiring
-    //         .load(std::sync::atomic::Ordering::Acquire)
-    //         + self.processing.load(std::sync::atomic::Ordering::Acquire)
-    //         >= self.limits.max_key_concurrency
-    // }
-
+    /// Are we currently at maximum total capacity for this key?
+    ///
+    /// Includes both processing and pre-acquiring batches.
     pub(crate) fn at_max_total_capacity(&self) -> bool {
         self.pre_acquiring
             .load(std::sync::atomic::Ordering::Acquire)
