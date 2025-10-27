@@ -65,7 +65,9 @@ impl Display for RejectionReason {
         f.write_str(match self {
             RejectionReason::BatchQueueFull(concurrency) => match concurrency {
                 ConcurrencyStatus::Available => "the batch queue is full",
-                ConcurrencyStatus::MaxedOut => "the batch queue is full and maximum concurrency reached",
+                ConcurrencyStatus::MaxedOut => {
+                    "the batch queue is full and maximum concurrency reached"
+                }
             },
         })
     }
