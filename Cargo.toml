@@ -9,5 +9,6 @@ license = "MIT"
 repository = "https://github.com/ThomWright/batch-aint-one"
 
 [workspace.dependencies]
+bon = "3.7.2"
 tokio = "1.33"
 uuid = "1.11"

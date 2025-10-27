@@ -1,8 +1,10 @@
 //! Simulated processor implementation
 
+use crate::latency::LatencyProfile;
 use batch_aint_one::Processor;
-use std::sync::Arc;
+use bon::bon;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Input submitted to the batcher with timing information
 #[derive(Debug, Clone)]
@@ -26,20 +28,21 @@ pub struct SimulatedOutput {
     pub completed_at: tokio::time::Instant,
 }
 
-/// Simple processor that tracks batch sizes and simulates fixed latency
+/// Simulated processor with configurable latency distribution
 #[derive(Clone)]
 pub struct SimProcessor {
     batch_counter: Arc<AtomicUsize>,
-
-    processing_duration: tokio::time::Duration,
+    processing_latency: Arc<Mutex<LatencyProfile>>,
 }
 
+#[bon]
 impl SimProcessor {
-    /// Create a new processor with fixed processing duration
-    pub fn new(processing_duration: tokio::time::Duration) -> Self {
+    /// Create a new processor with Erlang-distributed latency
+    #[builder]
+    pub fn new(processing_latency: LatencyProfile) -> Self {
         Self {
             batch_counter: Arc::new(AtomicUsize::new(0)),
-            processing_duration,
+            processing_latency: Arc::new(Mutex::new(processing_latency)),
         }
     }
 }
@@ -65,8 +68,14 @@ impl Processor for SimProcessor {
         let batch_size = inputs.len();
         let batch_id = self.batch_counter.fetch_add(1, Ordering::SeqCst);
 
-        // Simulate processing latency
-        tokio::time::sleep(self.processing_duration).await;
+        // Sample processing latency from distribution
+        let latency = self
+            .processing_latency
+            .lock()
+            .expect("should not panic while holding lock")
+            .sample();
+
+        tokio::time::sleep(latency).await;
 
         let completed_at = tokio::time::Instant::now();
 

@@ -9,7 +9,9 @@ publish = false
 
 [dependencies]
 batch-aint-one = { path = "../batch-aint-one" }
-statrs = "0.18.0"
+bon = { workspace = true }
+rand = { version = "0.9", features = ["std_rng"] }
+rand_distr = "0.5.1"
 tokio = { workspace = true, features = ["full"] }
 uuid = { workspace = true, features = ["v4"] }
 
