@@ -1,9 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["batch-aint-one"]
+members = ["batch-aint-one", "simulator"]
 
 [workspace.package]
 edition = "2024"
 authors = ["Thom Wright <dev@thomwright.co.uk>"]
 license = "MIT"
 repository = "https://github.com/ThomWright/batch-aint-one"
+
+[workspace.dependencies]
+tokio = "1.33"
+uuid = "1.11"
