@@ -207,7 +207,6 @@ impl BatchingPolicy {
             }
 
             Self::Balanced { min_size_hint } => {
-                dbg!(batch_queue);
                 if batch_queue.at_max_total_capacity() {
                     OnAdd::Add
                 } else if batch_queue.adding_to_new_batch() && !batch_queue.is_processing() {
@@ -852,8 +851,6 @@ mod tests {
             for i in 2..=5 {
                 queue.push(new_item("key".to_string(), format!("item{}", i)));
             }
-
-            dbg!(&queue);
 
             // Next item should trigger acquisition (size=5 >= hint=5)
             let policy = BatchingPolicy::Balanced { min_size_hint: 5 };

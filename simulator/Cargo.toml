@@ -12,6 +12,7 @@ batch-aint-one = { path = "../batch-aint-one" }
 bon = { workspace = true }
 rand = { version = "0.9", features = ["std_rng"] }
 rand_distr = "0.5.1"
+tempfile = "3.8"
 tokio = { workspace = true, features = ["full"] }
 uuid = { workspace = true, features = ["v4"] }
 
