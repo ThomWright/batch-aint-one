@@ -93,9 +93,7 @@ impl ScenarioRunner {
         let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
 
         let batcher = self.create_batcher(metrics.clone())?;
-        // FIXME: don't estimate num items for duration-based termination
-        let num_items = self.calculate_num_items();
-        let tasks = self.spawn_arrivals(num_items, batcher.clone()).await?;
+        let tasks = self.spawn_arrivals(batcher.clone()).await?;
         self.await_all_items(tasks).await?;
         self.shut_down_batcher(batcher).await;
         self.extract_metrics(metrics)
@@ -133,35 +131,31 @@ impl ScenarioRunner {
         Ok(batcher)
     }
 
-    /// Calculate number of items to process based on termination condition
-    fn calculate_num_items(&self) -> usize {
-        match self.config.termination {
-            TerminationCondition::ItemCount(count) => count,
-            TerminationCondition::Duration(duration) => {
-                // Calculate approximate number of items that will arrive in the duration
-                let duration_secs = duration.as_secs_f64();
-                (self.config.arrival_rate * duration_secs).ceil() as usize
-            }
-        }
-    }
-
     /// Spawn arrival generator task that submits items to the batcher
     async fn spawn_arrivals(
         &self,
-        num_items: usize,
         batcher: Batcher<SimProcessor>,
     ) -> Result<Vec<tokio::task::JoinHandle<Result<SimulatedOutput, batch_aint_one::BatchError<String>>>>, ScenarioError> {
         let mut arrivals = PoissonArrivals::new(self.config.arrival_rate, self.config.seed);
         let mut key_generator = KeyGenerator::new(self.config.key_distribution.clone(), self.config.seed);
+        let termination = self.config.termination;
 
         let arrival_task = tokio::spawn(async move {
             let mut results = Vec::new();
             let sim_start = tokio::time::Instant::now();
             let mut precise_time_offset = Duration::ZERO;
+            let mut item_id = 0;
 
-            for item_id in 0..num_items {
+            loop {
                 let next_inter_arrival = arrivals.next_inter_arrival_duration();
                 precise_time_offset += next_inter_arrival;
+
+                // Check termination condition
+                match termination {
+                    TerminationCondition::ItemCount(count) if item_id >= count => break,
+                    TerminationCondition::Duration(duration) if precise_time_offset > duration => break,
+                    _ => {}
+                }
 
                 // Calculate what millisecond this item should arrive in
                 let target_ms_offset = precise_time_offset.as_millis();
@@ -180,16 +174,18 @@ impl ScenarioRunner {
                 // Now submit with precise timestamp
                 let submitted_at = sim_start + precise_time_offset;
                 let batcher = batcher.clone();
+                let current_item_id = item_id;
 
                 let task = tokio::spawn(async move {
                     let input = SimulatedInput {
-                        item_id,
+                        item_id: current_item_id,
                         submitted_at,
                     };
                     batcher.add(key, input).await
                 });
 
                 results.push(task);
+                item_id += 1;
             }
 
             results
