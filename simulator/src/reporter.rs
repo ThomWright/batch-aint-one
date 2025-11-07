@@ -46,7 +46,10 @@ impl<'a> SimulationReporter<'a> {
                 "Mean Processing Latency:  {:.2} ms",
                 scenario.processing_latency.mean().as_secs_f64() * 1000.0
             );
-            println!("Arrival Rate:             {:.2} items/sec", scenario.arrival_rate);
+            println!(
+                "Arrival Rate:             {:.2} items/sec",
+                scenario.arrival_rate
+            );
             println!("Key Distribution:         {:?}", scenario.key_distribution);
         }
 
@@ -79,15 +82,23 @@ impl<'a> SimulationReporter<'a> {
 
     /// Generate all visualizations
     pub fn generate_visualizations(&self) -> std::io::Result<()> {
-        println!("\n=== Charts ===");
-
         let visualiser = Visualiser::new(
             self.metrics,
             &self.config.output_dir,
             &self.config.templates_dir,
         );
 
-        visualiser.generate_all()
+        visualiser.generate_all()?;
+
+        // Print generated chart paths
+        println!("\n=== Charts ===");
+        println!("Batch size histogram: {}", self.config.output_dir.join("batch_size_histogram.png").display());
+        println!("RPS chart:            {}", self.config.output_dir.join("arrival_rate.png").display());
+        println!("Latency histogram:    {}", self.config.output_dir.join("latency_histogram.png").display());
+        println!("Latency over time:    {}", self.config.output_dir.join("latency_over_time.png").display());
+        println!("Resource usage:       {}", self.config.output_dir.join("resource_usage.png").display());
+
+        Ok(())
     }
 
     /// Print summary and generate visualizations
