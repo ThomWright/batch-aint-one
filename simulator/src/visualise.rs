@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::NamedTempFile;
+use tokio::time::Duration;
 
 /// Visualiser for generating charts from collected metrics
 pub struct Visualiser<'a> {
@@ -42,11 +43,11 @@ impl<'a> Visualiser<'a> {
     }
 
     /// Generate arrival rate over time (RPS) chart
-    pub fn rps_chart(&self, bucket_size_secs: Option<f64>) -> std::io::Result<()> {
+    pub fn rps_chart(&self, bucket_size: Option<Duration>) -> std::io::Result<()> {
         let output_path = self.output_dir.join("arrival_rate.png");
         let template_path = self.templates_dir.join("arrivals_over_time.gnuplot");
 
-        generate_rps_chart(self.collector, &output_path, &template_path, bucket_size_secs)
+        generate_rps_chart(self.collector, &output_path, &template_path, bucket_size)
     }
 
     /// Generate latency distribution histogram
@@ -66,11 +67,11 @@ impl<'a> Visualiser<'a> {
     }
 
     /// Generate latency over time chart
-    pub fn latency_over_time_chart(&self, bucket_size_secs: Option<f64>) -> std::io::Result<()> {
+    pub fn latency_over_time_chart(&self, bucket_size: Option<Duration>) -> std::io::Result<()> {
         let output_path = self.output_dir.join("latency_over_time.png");
         let template_path = self.templates_dir.join("latency_over_time.gnuplot");
 
-        generate_latency_over_time_chart(self.collector, &output_path, &template_path, bucket_size_secs)
+        generate_latency_over_time_chart(self.collector, &output_path, &template_path, bucket_size)
     }
 
     /// Generate all standard visualizations
@@ -167,9 +168,9 @@ fn generate_rps_chart(
     collector: &MetricsCollector,
     output_path: &Path,
     template_path: &Path,
-    bucket_size_secs: Option<f64>,
+    bucket_size: Option<Duration>,
 ) -> io::Result<()> {
-    let data = collector.rps_over_time(bucket_size_secs);
+    let data = collector.rps_over_time(bucket_size);
 
     if data.is_empty() {
         return Err(io::Error::new(
@@ -181,7 +182,7 @@ fn generate_rps_chart(
     generate_gnuplot_chart("RPS chart", output_path, template_path, |file| {
         writeln!(file, "# time_seconds rps")?;
         for (time, rps) in data {
-            writeln!(file, "{} {}", time, rps)?;
+            writeln!(file, "{} {}", time.as_secs_f64(), rps)?;
         }
         Ok(())
     })?;
@@ -207,7 +208,7 @@ fn generate_latency_histogram(
     generate_gnuplot_chart("latency histogram", output_path, template_path, |file| {
         writeln!(file, "# latency_ms")?;
         for latency in latencies {
-            writeln!(file, "{}", latency)?;
+            writeln!(file, "{}", latency.as_secs_f64() * 1000.0)?;
         }
         Ok(())
     })?;
@@ -233,7 +234,7 @@ fn generate_resource_usage_chart(
     generate_gnuplot_chart("resource usage chart", output_path, template_path, |file| {
         writeln!(file, "# time_seconds in_use available")?;
         for (time, in_use, available) in data {
-            writeln!(file, "{} {} {}", time, in_use, available)?;
+            writeln!(file, "{} {} {}", time.as_secs_f64(), in_use, available)?;
         }
         Ok(())
     })?;
@@ -246,9 +247,9 @@ fn generate_latency_over_time_chart(
     collector: &MetricsCollector,
     output_path: &Path,
     template_path: &Path,
-    bucket_size_secs: Option<f64>,
+    bucket_size: Option<Duration>,
 ) -> io::Result<()> {
-    let data = collector.latency_over_time(bucket_size_secs);
+    let data = collector.latency_over_time(bucket_size);
 
     if data.is_empty() {
         return Err(io::Error::new(
@@ -260,7 +261,11 @@ fn generate_latency_over_time_chart(
     generate_gnuplot_chart("latency over time chart", output_path, template_path, |file| {
         writeln!(file, "# time_seconds mean_ms p50_ms p99_ms")?;
         for (time, mean, p50, p99) in data {
-            writeln!(file, "{} {} {} {}", time, mean, p50, p99)?;
+            let time_secs = time.as_secs_f64();
+            let mean_ms = mean.as_secs_f64() * 1000.0;
+            let p50_ms = p50.as_secs_f64() * 1000.0;
+            let p99_ms = p99.as_secs_f64() * 1000.0;
+            writeln!(file, "{} {} {} {}", time_secs, mean_ms, p50_ms, p99_ms)?;
         }
         Ok(())
     })?;

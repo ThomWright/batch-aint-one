@@ -54,7 +54,7 @@ impl<'a> SimulationReporter<'a> {
         }
 
         let efficiency = self.metrics.batch_efficiency();
-        let mean_latency = self.metrics.mean_latency_ms();
+        let mean_latency = self.metrics.mean_latency();
         let mean_rps = self.metrics.mean_rps();
 
         println!("\n=== Simulation Results ===");
@@ -65,7 +65,7 @@ impl<'a> SimulationReporter<'a> {
         }
 
         println!("Mean RPS:           {:.2}", mean_rps);
-        println!("Mean Latency:       {:.2} ms", mean_latency);
+        println!("Mean Latency:       {:.2} ms", mean_latency.as_secs_f64() * 1000.0);
 
         println!("\nBatch Efficiency:");
         println!("  Total batches: {}", efficiency.total_batches);
