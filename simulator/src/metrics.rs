@@ -76,6 +76,18 @@ impl MetricsCollector {
         &self.items
     }
 
+    /// Calculate the total simulated duration from first item submission to last completion
+    pub fn simulated_duration(&self) -> Option<Duration> {
+        if self.items.is_empty() {
+            return None;
+        }
+
+        let first_submitted = self.items.iter().map(|i| i.submitted_at).min()?;
+        let last_completed = self.items.iter().map(|i| i.completed_at).max()?;
+
+        Some(last_completed - first_submitted)
+    }
+
     pub fn batches(&self) -> &[BatchMetrics] {
         &self.batches
     }
@@ -169,6 +181,13 @@ impl MetricsCollector {
         let mut batch_sizes: Vec<usize> = self.batches.iter().map(|b| b.batch_size).collect();
         batch_sizes.sort_unstable();
 
+        let smallest_batch_size = *batch_sizes.first().unwrap_or(&0);
+        let batches_at_smallest = self
+            .batches
+            .iter()
+            .filter(|b| b.batch_size == smallest_batch_size)
+            .count();
+
         let largest_batch_size = *batch_sizes.iter().max().unwrap_or(&0);
         let batches_at_largest = self
             .batches
@@ -196,8 +215,9 @@ impl MetricsCollector {
             total_batches,
             mean_batch_size: mean,
             median_batch_size: median,
-            smallest_batch_size: *batch_sizes.first().unwrap_or(&0),
+            smallest_batch_size,
             largest_batch_size,
+            batches_at_smallest_size: batches_at_smallest,
             batches_at_largest_size: batches_at_largest,
             size_distribution,
         }
@@ -309,11 +329,20 @@ pub struct BatchEfficiency {
     pub median_batch_size: f64,
     pub smallest_batch_size: usize,
     pub largest_batch_size: usize,
+    pub batches_at_smallest_size: usize,
     pub batches_at_largest_size: usize,
     pub size_distribution: HashMap<usize, usize>,
 }
 
 impl BatchEfficiency {
+    pub fn percentage_at_smallest(&self) -> f64 {
+        if self.total_batches == 0 {
+            0.0
+        } else {
+            (self.batches_at_smallest_size as f64 / self.total_batches as f64) * 100.0
+        }
+    }
+
     pub fn percentage_at_largest(&self) -> f64 {
         if self.total_batches == 0 {
             0.0

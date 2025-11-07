@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use tokio::time::Duration;
 
 /// Configuration for a simulation scenario
+#[derive(Debug, Clone)]
 pub struct ScenarioConfig {
     /// Scenario name for identification
     pub name: String,
@@ -50,6 +51,7 @@ pub enum TerminationCondition {
 }
 
 /// Configuration for connection pool
+#[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// Initial number of connections in pool
     pub initial_size: usize,
@@ -170,16 +172,16 @@ impl ScenarioRunner {
         });
 
         // Wait for all arrivals and collect results
-        let tasks = arrival_task.await.map_err(|e| {
-            ScenarioError::ProcessingError(format!("Arrival task failed: {}", e))
-        })?;
+        let tasks = arrival_task
+            .await
+            .map_err(|e| ScenarioError::ProcessingError(format!("Arrival task failed: {}", e)))?;
 
         // Collect all results - don't stop on individual failures
         // TODO: Record rejections/failures in metrics
         for task in tasks {
-            let result = task.await.map_err(|e| {
-                ScenarioError::ProcessingError(format!("Item task failed: {}", e))
-            })?;
+            let result = task
+                .await
+                .map_err(|e| ScenarioError::ProcessingError(format!("Item task failed: {}", e)))?;
 
             // Ignore individual item failures - they should be tracked in metrics
             let _ = result;

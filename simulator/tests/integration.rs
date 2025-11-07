@@ -270,25 +270,19 @@ async fn test_longer_simulation() {
     };
 
     // Run scenario
-    let runner = ScenarioRunner::new(config);
+    let runner = ScenarioRunner::new(config.clone());
     let metrics = runner.run().await.expect("scenario should complete");
 
     let wall_clock_elapsed = start.elapsed();
 
     // Print additional test-specific info
-    println!("\n=== Test Configuration ===");
-    println!("Policy: {:?}", policy);
-    println!("Limits: {:?}", limits);
-    println!("Items: {}", num_items);
+    println!("\n=== Test Information ===");
     println!("Wall-clock time: {:?}", wall_clock_elapsed);
-    println!(
-        "Mean Processing Latency: {:.2} ms",
-        latency_profile.mean().as_secs_f64() * 1000.0
-    );
 
     // Use reporter for standardized output and visualization
     let reporter = SimulationReporter::new(
         &metrics,
+        &config,
         ReporterConfig {
             output_dir: "tests/output/test_longer_simulation".into(),
             templates_dir: "tests/templates".into(),
