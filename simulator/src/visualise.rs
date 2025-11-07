@@ -181,8 +181,8 @@ fn generate_rps_chart(
 
     generate_gnuplot_chart("RPS chart", output_path, template_path, |file| {
         writeln!(file, "# time_seconds rps")?;
-        for (time, rps) in data {
-            writeln!(file, "{} {}", time.as_secs_f64(), rps)?;
+        for point in data {
+            writeln!(file, "{} {}", point.time.as_secs_f64(), point.rps)?;
         }
         Ok(())
     })?;
@@ -233,8 +233,8 @@ fn generate_resource_usage_chart(
 
     generate_gnuplot_chart("resource usage chart", output_path, template_path, |file| {
         writeln!(file, "# time_seconds in_use available")?;
-        for (time, in_use, available) in data {
-            writeln!(file, "{} {} {}", time.as_secs_f64(), in_use, available)?;
+        for point in data {
+            writeln!(file, "{} {} {}", point.time.as_secs_f64(), point.in_use, point.available)?;
         }
         Ok(())
     })?;
@@ -260,11 +260,11 @@ fn generate_latency_over_time_chart(
 
     generate_gnuplot_chart("latency over time chart", output_path, template_path, |file| {
         writeln!(file, "# time_seconds mean_ms p50_ms p99_ms")?;
-        for (time, mean, p50, p99) in data {
-            let time_secs = time.as_secs_f64();
-            let mean_ms = mean.as_secs_f64() * 1000.0;
-            let p50_ms = p50.as_secs_f64() * 1000.0;
-            let p99_ms = p99.as_secs_f64() * 1000.0;
+        for stats in data {
+            let time_secs = stats.time.as_secs_f64();
+            let mean_ms = stats.mean.as_secs_f64() * 1000.0;
+            let p50_ms = stats.p50.as_secs_f64() * 1000.0;
+            let p99_ms = stats.p99.as_secs_f64() * 1000.0;
             writeln!(file, "{} {} {} {}", time_secs, mean_ms, p50_ms, p99_ms)?;
         }
         Ok(())

@@ -3,6 +3,30 @@
 use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
+/// A single data point for requests per second over time
+#[derive(Debug, Clone)]
+pub struct RpsPoint {
+    pub time: Duration,
+    pub rps: f64,
+}
+
+/// Resource usage at a point in time
+#[derive(Debug, Clone)]
+pub struct ResourceUsagePoint {
+    pub time: Duration,
+    pub in_use: usize,
+    pub available: usize,
+}
+
+/// Latency statistics for a time bucket
+#[derive(Debug, Clone)]
+pub struct LatencyStats {
+    pub time: Duration,
+    pub mean: Duration,
+    pub p50: Duration,
+    pub p99: Duration,
+}
+
 /// Metrics for a single processed item
 #[derive(Debug, Clone)]
 pub struct ItemMetrics {
@@ -147,11 +171,11 @@ impl MetricsCollector {
 
     /// Get requests per second (RPS) over time.
     ///
-    /// Returns (time, requests_per_second) pairs where time is relative to start.
+    /// Returns data points where time is relative to start.
     ///
     /// Automatically buckets arrivals to produce 100 data points by default, or uses the specified
     /// bucket size.
-    pub fn rps_over_time(&self, bucket_size: Option<Duration>) -> Vec<(Duration, f64)> {
+    pub fn rps_over_time(&self, bucket_size: Option<Duration>) -> Vec<RpsPoint> {
         let Some((bucket_size, buckets)) = self.bucket_items_by_time(bucket_size) else {
             return Vec::new();
         };
@@ -163,7 +187,7 @@ impl MetricsCollector {
             .map(|(idx, items)| {
                 let time = bucket_size * idx as u32;
                 let rps = items.len() as f64 / bucket_size.as_secs_f64();
-                (time, rps)
+                RpsPoint { time, rps }
             })
             .collect()
     }
@@ -178,13 +202,17 @@ impl MetricsCollector {
 
     /// Get resource usage over time.
     ///
-    /// Returns (time, in_use, available) tuples for each snapshot where time is relative to start.
-    pub fn resource_usage_over_time(&self) -> Vec<(Duration, usize, usize)> {
+    /// Returns data points for each snapshot where time is relative to start.
+    pub fn resource_usage_over_time(&self) -> Vec<ResourceUsagePoint> {
         self.resource_snapshots
             .iter()
             .map(|snapshot| {
                 let time = snapshot.timestamp - self.start_time;
-                (time, snapshot.in_use, snapshot.available)
+                ResourceUsagePoint {
+                    time,
+                    in_use: snapshot.in_use,
+                    available: snapshot.available,
+                }
             })
             .collect()
     }
@@ -261,17 +289,17 @@ impl MetricsCollector {
         if rps_data.is_empty() {
             0.0
         } else {
-            rps_data.iter().map(|&(_, rps)| rps).sum::<f64>() / rps_data.len() as f64
+            rps_data.iter().map(|point| point.rps).sum::<f64>() / rps_data.len() as f64
         }
     }
 
     /// Get latency statistics over time.
     ///
-    /// Returns (time, mean, p50, p99) tuples for each time bucket where time is relative to start.
+    /// Returns statistics for each time bucket where time is relative to start.
     ///
     /// Automatically buckets items to produce 100 data points by default, or uses the specified
     /// bucket size.
-    pub fn latency_over_time(&self, bucket_size: Option<Duration>) -> Vec<(Duration, Duration, Duration, Duration)> {
+    pub fn latency_over_time(&self, bucket_size: Option<Duration>) -> Vec<LatencyStats> {
         let Some((bucket_size, buckets)) = self.bucket_items_by_time(bucket_size) else {
             return Vec::new();
         };
@@ -297,7 +325,7 @@ impl MetricsCollector {
                 let p50 = duration_percentile(&latencies, 0.5);
                 let p99 = duration_percentile(&latencies, 0.99);
 
-                Some((time, mean, p50, p99))
+                Some(LatencyStats { time, mean, p50, p99 })
             })
             .collect()
     }
@@ -402,23 +430,23 @@ mod tests {
         let rate_data = collector.rps_over_time(Some(Duration::from_secs(1)));
 
         // Check each bucket has the expected RPS
-        for (time, rps) in &rate_data {
+        for point in &rate_data {
             assert!(
-                (rps - 100.0).abs() < 1.0,
+                (point.rps - 100.0).abs() < 1.0,
                 "RPS at time {:.1}s should be ~100, got {:.1}",
-                time.as_secs_f64(),
-                rps
+                point.time.as_secs_f64(),
+                point.rps
             );
         }
 
         // Check the time span matches duration
-        let first_time = rate_data.first().unwrap().0;
-        let last_time = rate_data.last().unwrap().0;
-        assert_eq!(first_time, Duration::ZERO, "First bucket should start at 0");
+        let first_point = rate_data.first().unwrap();
+        let last_point = rate_data.last().unwrap();
+        assert_eq!(first_point.time, Duration::ZERO, "First bucket should start at 0");
 
         // Duration is 9.99s, so with 1s buckets we expect buckets at 0,1,2,...,9
         // Last bucket starts at 9.0
-        let last_time_secs = last_time.as_secs_f64();
+        let last_time_secs = last_point.time.as_secs_f64();
         assert!(
             last_time_secs >= 9.0 && last_time_secs < 10.0,
             "Last bucket should start around 9s, got {}s",
