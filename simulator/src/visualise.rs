@@ -65,11 +65,20 @@ impl<'a> Visualiser<'a> {
         generate_resource_usage_chart(self.collector, &output_path, &template_path)
     }
 
+    /// Generate latency over time chart
+    pub fn latency_over_time_chart(&self, bucket_size_secs: Option<f64>) -> std::io::Result<()> {
+        let output_path = self.output_dir.join("latency_over_time.png");
+        let template_path = self.templates_dir.join("latency_over_time.gnuplot");
+
+        generate_latency_over_time_chart(self.collector, &output_path, &template_path, bucket_size_secs)
+    }
+
     /// Generate all standard visualizations
     pub fn generate_all(&self) -> std::io::Result<()> {
         self.batch_size_histogram()?;
         self.rps_chart(None)?;
         self.latency_histogram()?;
+        self.latency_over_time_chart(None)?;
         self.resource_usage_chart()?;
         Ok(())
     }
@@ -303,6 +312,66 @@ pub fn generate_resource_usage_chart(
     }
 
     println!("Generated resource usage chart: {}", output_path.display());
+
+    Ok(())
+}
+
+/// Generate latency over time chart using gnuplot
+pub fn generate_latency_over_time_chart(
+    collector: &MetricsCollector,
+    output_path: &Path,
+    template_path: &Path,
+    bucket_size_secs: Option<f64>,
+) -> std::io::Result<()> {
+    let data = collector.latency_over_time(bucket_size_secs);
+
+    if data.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "No latency data available",
+        ));
+    }
+
+    // Ensure parent directory exists
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Create data file
+    let data_path = output_path.with_extension("dat");
+    let mut data_file = std::fs::File::create(&data_path)?;
+    writeln!(data_file, "# time_seconds mean_ms p50_ms p99_ms")?;
+    for (time, mean, p50, p99) in data {
+        writeln!(data_file, "{} {} {} {}", time, mean, p50, p99)?;
+    }
+
+    // Read template and substitute placeholders
+    let template = std::fs::read_to_string(template_path)?;
+    let script_content = template
+        .replace("{{OUTPUT_PATH}}", &output_path.display().to_string())
+        .replace("{{DATA_PATH}}", &data_path.display().to_string());
+
+    // Write gnuplot script to a unique temp file
+    let mut temp_script = NamedTempFile::new()?;
+    temp_script.write_all(script_content.as_bytes())?;
+    temp_script.flush()?;
+
+    // Run gnuplot
+    let output = Command::new("gnuplot")
+        .arg(temp_script.path())
+        .output()?;
+
+    if !output.status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "gnuplot failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        ));
+    }
+
+    println!("Generated latency over time chart: {}", output_path.display());
 
     Ok(())
 }

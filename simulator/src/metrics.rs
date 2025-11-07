@@ -202,6 +202,103 @@ impl MetricsCollector {
             size_distribution,
         }
     }
+
+    /// Calculate mean latency in milliseconds.
+    ///
+    /// Returns 0.0 if no items have been processed.
+    pub fn mean_latency_ms(&self) -> f64 {
+        let samples = self.latency_samples();
+        if samples.is_empty() {
+            0.0
+        } else {
+            samples.iter().sum::<f64>() / samples.len() as f64
+        }
+    }
+
+    /// Calculate mean requests per second (RPS) across all time buckets.
+    ///
+    /// Returns 0.0 if no items have been processed.
+    pub fn mean_rps(&self) -> f64 {
+        let rps_data = self.rps_over_time(None);
+        if rps_data.is_empty() {
+            0.0
+        } else {
+            rps_data.iter().map(|&(_, rps)| rps).sum::<f64>() / rps_data.len() as f64
+        }
+    }
+
+    /// Get latency statistics over time.
+    ///
+    /// Returns (time_seconds, mean_ms, p50_ms, p99_ms) tuples for each time bucket.
+    ///
+    /// Automatically buckets items to produce 100 data points by default, or uses the specified
+    /// bucket size.
+    pub fn latency_over_time(&self, bucket_size_secs: Option<f64>) -> Vec<(f64, f64, f64, f64)> {
+        if self.items.is_empty() {
+            return Vec::new();
+        }
+
+        let mut items: Vec<_> = self.items.iter().collect();
+        items.sort_by_key(|item| item.submitted_at);
+
+        let start_time = items[0].submitted_at;
+        let end_time = items.last().unwrap().submitted_at;
+        let duration = (end_time - start_time).as_secs_f64();
+
+        // Calculate bucket size: aim for 100 buckets by default
+        let bucket_size = bucket_size_secs.unwrap_or_else(|| {
+            let target_buckets = 100.0;
+            (duration / target_buckets).max(0.1) // At least 100ms buckets
+        });
+
+        // Group items into buckets
+        let num_buckets = (duration / bucket_size).ceil() as usize;
+        let mut buckets: Vec<Vec<f64>> = vec![Vec::new(); num_buckets];
+
+        for item in &items {
+            let elapsed = (item.submitted_at - start_time).as_secs_f64();
+            let bucket_idx = ((elapsed / bucket_size).floor() as usize).min(num_buckets - 1);
+            let latency_ms = item.total_latency().as_secs_f64() * 1000.0;
+            buckets[bucket_idx].push(latency_ms);
+        }
+
+        // Calculate statistics for each bucket
+        buckets
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, mut latencies)| {
+                if latencies.is_empty() {
+                    return None;
+                }
+
+                latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+                let time = idx as f64 * bucket_size;
+                let mean = latencies.iter().sum::<f64>() / latencies.len() as f64;
+                let p50 = percentile(&latencies, 0.5);
+                let p99 = percentile(&latencies, 0.99);
+
+                Some((time, mean, p50, p99))
+            })
+            .collect()
+    }
+}
+
+/// Calculate percentile from sorted data
+fn percentile(sorted_data: &[f64], p: f64) -> f64 {
+    if sorted_data.is_empty() {
+        return 0.0;
+    }
+    if sorted_data.len() == 1 {
+        return sorted_data[0];
+    }
+
+    let rank = p * (sorted_data.len() - 1) as f64;
+    let lower_idx = rank.floor() as usize;
+    let upper_idx = rank.ceil() as usize;
+    let weight = rank - lower_idx as f64;
+
+    sorted_data[lower_idx] * (1.0 - weight) + sorted_data[upper_idx] * weight
 }
 
 /// Analysis of batch efficiency

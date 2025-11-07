@@ -338,12 +338,8 @@ async fn test_longer_simulation() {
 
     // Get batch efficiency metrics
     let efficiency = metrics_guard.batch_efficiency();
-
-    let latency_samples = metrics_guard.latency_samples();
-    let mean_latency = latency_samples.iter().sum::<f64>() / latency_samples.len() as f64;
-
-    let rps_data = metrics_guard.rps_over_time(None);
-    let mean_rps = rps_data.iter().map(|&(_, rps)| rps).sum::<f64>() / rps_data.len() as f64;
+    let mean_latency = metrics_guard.mean_latency_ms();
+    let mean_rps = metrics_guard.mean_rps();
 
     println!("\n=== Longer Simulation Results ===");
     println!("Policy: {:?}", policy);
