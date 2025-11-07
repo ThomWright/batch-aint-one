@@ -3,10 +3,11 @@
 use crate::arrival::PoissonArrivals;
 use crate::keys::{KeyDistributionConfig, KeyGenerator};
 use crate::latency::LatencyProfile;
+use crate::metrics::ItemMetrics;
 use crate::metrics::MetricsCollector;
 use crate::pool::ConnectionPool;
 use crate::processor::{SimProcessor, SimulatedInput, SimulatedOutput};
-use batch_aint_one::{Batcher, BatchingPolicy, Limits};
+use batch_aint_one::{BatchError, Batcher, BatchingPolicy, Limits};
 use std::sync::{Arc, Mutex};
 use tokio::time::Duration;
 
@@ -94,7 +95,7 @@ impl ScenarioRunner {
 
         let batcher = self.create_batcher(metrics.clone())?;
         let tasks = self.spawn_arrivals(batcher.clone()).await?;
-        self.await_all_items(tasks).await?;
+        self.await_all_items(tasks, metrics.clone()).await?;
         self.shut_down_batcher(batcher).await;
         self.extract_metrics(metrics)
     }
@@ -135,9 +136,18 @@ impl ScenarioRunner {
     async fn spawn_arrivals(
         &self,
         batcher: Batcher<SimProcessor>,
-    ) -> Result<Vec<tokio::task::JoinHandle<Result<SimulatedOutput, batch_aint_one::BatchError<String>>>>, ScenarioError> {
+    ) -> Result<
+        Vec<
+            tokio::task::JoinHandle<(
+                SimulatedInput,
+                Result<SimulatedOutput, batch_aint_one::BatchError<String>>,
+            )>,
+        >,
+        ScenarioError,
+    > {
         let mut arrivals = PoissonArrivals::new(self.config.arrival_rate, self.config.seed);
-        let mut key_generator = KeyGenerator::new(self.config.key_distribution.clone(), self.config.seed);
+        let mut key_generator =
+            KeyGenerator::new(self.config.key_distribution.clone(), self.config.seed);
         let termination = self.config.termination;
 
         let arrival_task = tokio::spawn(async move {
@@ -153,7 +163,9 @@ impl ScenarioRunner {
                 // Check termination condition
                 match termination {
                     TerminationCondition::ItemCount(count) if item_id >= count => break,
-                    TerminationCondition::Duration(duration) if precise_time_offset > duration => break,
+                    TerminationCondition::Duration(duration) if precise_time_offset > duration => {
+                        break;
+                    }
                     _ => {}
                 }
 
@@ -181,7 +193,8 @@ impl ScenarioRunner {
                         item_id: current_item_id,
                         submitted_at,
                     };
-                    batcher.add(key, input).await
+                    let result = batcher.add(key, input.clone()).await;
+                    (input, result)
                 });
 
                 results.push(task);
@@ -196,20 +209,39 @@ impl ScenarioRunner {
             .map_err(|e| ScenarioError::ProcessingError(format!("Arrival task failed: {}", e)))
     }
 
-    /// Wait for all item processing tasks to complete
+    /// Wait for all item processing tasks to complete and record all outcomes
     async fn await_all_items(
         &self,
-        tasks: Vec<tokio::task::JoinHandle<Result<SimulatedOutput, batch_aint_one::BatchError<String>>>>,
+        tasks: Vec<
+            tokio::task::JoinHandle<(
+                SimulatedInput,
+                Result<SimulatedOutput, batch_aint_one::BatchError<String>>,
+            )>,
+        >,
+        metrics: Arc<Mutex<MetricsCollector>>,
     ) -> Result<(), ScenarioError> {
-        // Collect all results - don't stop on individual failures
-        // TODO: Record rejections/failures in metrics
+        // Collect all results and record metrics for each outcome
         for task in tasks {
             let result = task
                 .await
                 .map_err(|e| ScenarioError::ProcessingError(format!("Item task failed: {}", e)))?;
 
-            // Ignore individual item failures - they should be tracked in metrics
-            let _ = result;
+            // Record item metrics based on outcome
+            let (input, result) = result;
+            let item_metrics = match result {
+                Ok(output) => ItemMetrics::success(output),
+                Err(BatchError::Rejected(_reason)) => {
+                    ItemMetrics::rejection(input, tokio::time::Instant::now())
+                }
+                Err(e) => {
+                    panic!("Item processing error: {:?}", e);
+                }
+            };
+
+            metrics
+                .lock()
+                .expect("should not panic while holding lock")
+                .record_item(item_metrics);
         }
 
         Ok(())
@@ -234,8 +266,6 @@ impl ScenarioRunner {
                 )
             })?
             .into_inner()
-            .map_err(|e| {
-                ScenarioError::ProcessingError(format!("Failed to lock metrics: {}", e))
-            })
+            .map_err(|e| ScenarioError::ProcessingError(format!("Failed to lock metrics: {}", e)))
     }
 }

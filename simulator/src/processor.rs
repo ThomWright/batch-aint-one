@@ -1,7 +1,7 @@
 //! Simulated processor implementation
 
 use crate::latency::LatencyProfile;
-use crate::metrics::{BatchMetrics, ItemMetrics, MetricsCollector};
+use crate::metrics::{BatchMetrics, MetricsCollector};
 use crate::pool::{Connection, ConnectionPool};
 use batch_aint_one::Processor;
 use bon::bon;
@@ -22,6 +22,10 @@ pub struct SimulatedInput {
 pub struct SimulatedOutput {
     /// Unique item identifier (matches input)
     pub item_id: usize,
+    /// Key used for this item
+    pub key: String,
+    /// When this item was submitted
+    pub submitted_at: tokio::time::Instant,
     /// Batch identifier
     pub batch_id: usize,
     /// Number of items in this batch
@@ -108,29 +112,16 @@ impl Processor for SimProcessor {
             .expect("should not panic while holding lock")
             .record_batch(batch_metrics);
 
-        // Return output for each input and record item metrics
+        // Return output for each input
         let outputs: Vec<_> = inputs
             .into_iter()
-            .map(|input| {
-                let item_metrics = ItemMetrics {
-                    item_id: input.item_id,
-                    key: key.clone(),
-                    submitted_at: input.submitted_at,
-                    completed_at,
-                    batch_id,
-                    batch_size,
-                };
-                self.metrics
-                    .lock()
-                    .expect("should not panic while holding lock")
-                    .record_item(item_metrics);
-
-                SimulatedOutput {
-                    item_id: input.item_id,
-                    batch_id,
-                    batch_size,
-                    completed_at,
-                }
+            .map(|input| SimulatedOutput {
+                item_id: input.item_id,
+                key: key.clone(),
+                submitted_at: input.submitted_at,
+                batch_id,
+                batch_size,
+                completed_at,
             })
             .collect();
 

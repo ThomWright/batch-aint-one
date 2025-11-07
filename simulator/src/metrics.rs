@@ -1,7 +1,10 @@
 //! Metrics collection and analysis
 
 use std::collections::HashMap;
+
 use tokio::time::{Duration, Instant};
+
+use crate::processor::{SimulatedInput, SimulatedOutput};
 
 /// A single data point for requests per second over time
 #[derive(Debug, Clone)]
@@ -27,21 +30,55 @@ pub struct LatencyStats {
     pub p99: Duration,
 }
 
+/// Outcome of processing an item
+#[derive(Debug, Clone)]
+enum ItemOutcome {
+    /// Item was successfully processed
+    Success { completed_at: Instant },
+    /// Item was rejected (e.g., queue full, policy rejection)
+    Rejected { rejected_at: Instant },
+}
+
 /// Metrics for a single processed item
 #[derive(Debug, Clone)]
 pub struct ItemMetrics {
-    pub item_id: usize,
-    pub key: String,
-    pub submitted_at: Instant,
-    pub completed_at: Instant,
-    pub batch_id: usize,
-    pub batch_size: usize,
+    submitted_at: Instant,
+    outcome: ItemOutcome,
 }
 
 impl ItemMetrics {
-    /// Total end-to-end latency
+    pub fn success(output: SimulatedOutput) -> Self {
+        Self {
+            submitted_at: output.submitted_at,
+            outcome: ItemOutcome::Success {
+                completed_at: output.completed_at,
+            },
+        }
+    }
+
+    pub fn rejection(input: SimulatedInput, rejected_at: Instant) -> Self {
+        Self {
+            submitted_at: input.submitted_at,
+            outcome: ItemOutcome::Rejected { rejected_at },
+        }
+    }
+
+    /// Total end-to-end latency from submission to outcome
     pub fn total_latency(&self) -> Duration {
-        self.completed_at - self.submitted_at
+        self.end_time() - self.submitted_at
+    }
+
+    /// Get the end time of this item (completed, rejected, or failed)
+    pub fn end_time(&self) -> Instant {
+        match &self.outcome {
+            ItemOutcome::Success { completed_at, .. } => *completed_at,
+            ItemOutcome::Rejected { rejected_at, .. } => *rejected_at,
+        }
+    }
+
+    /// Check if this item was successfully processed
+    pub fn is_success(&self) -> bool {
+        matches!(self.outcome, ItemOutcome::Success { .. })
     }
 }
 
@@ -110,16 +147,16 @@ impl MetricsCollector {
         &self.items
     }
 
-    /// Calculate the total simulated duration from first item submission to last completion
+    /// Calculate the total simulated duration from first item submission to last outcome
     pub fn simulated_duration(&self) -> Option<Duration> {
         if self.items.is_empty() {
             return None;
         }
 
         let first_submitted = self.items.iter().map(|i| i.submitted_at).min()?;
-        let last_completed = self.items.iter().map(|i| i.completed_at).max()?;
+        let last_outcome = self.items.iter().map(|i| i.end_time()).max()?;
 
-        Some(last_completed - first_submitted)
+        Some(last_outcome - first_submitted)
     }
 
     pub fn batches(&self) -> &[BatchMetrics] {
@@ -194,10 +231,7 @@ impl MetricsCollector {
 
     /// Get processing latency samples.
     pub fn latency_samples(&self) -> Vec<Duration> {
-        self.items
-            .iter()
-            .map(|item| item.total_latency())
-            .collect()
+        self.items.iter().map(|item| item.total_latency()).collect()
     }
 
     /// Get resource usage over time.
@@ -314,10 +348,8 @@ impl MetricsCollector {
                 }
 
                 // Extract and sort latencies
-                let mut latencies: Vec<Duration> = items
-                    .iter()
-                    .map(|item| item.total_latency())
-                    .collect();
+                let mut latencies: Vec<Duration> =
+                    items.iter().map(|item| item.total_latency()).collect();
                 latencies.sort();
 
                 let time = bucket_size * idx as u32;
@@ -325,7 +357,12 @@ impl MetricsCollector {
                 let p50 = duration_percentile(&latencies, 0.5);
                 let p99 = duration_percentile(&latencies, 0.99);
 
-                Some(LatencyStats { time, mean, p50, p99 })
+                Some(LatencyStats {
+                    time,
+                    mean,
+                    p50,
+                    p99,
+                })
             })
             .collect()
     }
@@ -416,12 +453,10 @@ mod tests {
         for i in 0..1000 {
             let submitted_at = start + tokio::time::Duration::from_millis(i * 10);
             collector.record_item(ItemMetrics {
-                item_id: i as usize,
-                key: "test".to_string(),
                 submitted_at,
-                completed_at: submitted_at,
-                batch_id: 0,
-                batch_size: 1,
+                outcome: ItemOutcome::Success {
+                    completed_at: submitted_at,
+                },
             });
         }
 
@@ -442,7 +477,11 @@ mod tests {
         // Check the time span matches duration
         let first_point = rate_data.first().unwrap();
         let last_point = rate_data.last().unwrap();
-        assert_eq!(first_point.time, Duration::ZERO, "First bucket should start at 0");
+        assert_eq!(
+            first_point.time,
+            Duration::ZERO,
+            "First bucket should start at 0"
+        );
 
         // Duration is 9.99s, so with 1s buckets we expect buckets at 0,1,2,...,9
         // Last bucket starts at 9.0

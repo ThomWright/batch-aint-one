@@ -26,7 +26,7 @@ mod batch;
 mod batch_inner;
 mod batch_queue;
 mod batcher;
-mod error;
+pub mod error;
 mod policies;
 mod processor;
 mod timeout;

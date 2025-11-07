@@ -1,3 +1,5 @@
+//! Errors.
+
 use std::fmt::Display;
 
 use thiserror::Error;
@@ -42,6 +44,7 @@ pub enum BatchError<E: Display> {
     Panic,
 }
 
+/// Reason for rejecting a batch item.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum RejectionReason {
@@ -49,6 +52,7 @@ pub enum RejectionReason {
     BatchQueueFull(ConcurrencyStatus),
 }
 
+/// Status of concurrency when rejecting a batch item.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum ConcurrencyStatus {
@@ -73,6 +77,7 @@ impl Display for RejectionReason {
     }
 }
 
+/// Result type for batch operations.
 pub type BatchResult<T, E> = std::result::Result<T, BatchError<E>>;
 
 impl<E: Display> From<RecvError> for BatchError<E> {
