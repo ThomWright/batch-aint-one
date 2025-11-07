@@ -2,6 +2,7 @@
 
 use crate::latency::LatencyProfile;
 use crate::metrics::{BatchMetrics, ItemMetrics, MetricsCollector};
+use crate::pool::{Connection, ConnectionPool};
 use batch_aint_one::Processor;
 use bon::bon;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,17 +36,23 @@ pub struct SimProcessor {
     batch_counter: Arc<AtomicUsize>,
     processing_latency: Arc<Mutex<LatencyProfile>>,
     metrics: Arc<Mutex<MetricsCollector>>,
+    pool: Option<Arc<ConnectionPool>>,
 }
 
 #[bon]
 impl SimProcessor {
     /// Create a new processor with Erlang-distributed latency
     #[builder]
-    pub fn new(processing_latency: LatencyProfile, metrics: Arc<Mutex<MetricsCollector>>) -> Self {
+    pub fn new(
+        processing_latency: LatencyProfile,
+        metrics: Arc<Mutex<MetricsCollector>>,
+        pool: Option<Arc<ConnectionPool>>,
+    ) -> Self {
         Self {
             batch_counter: Arc::new(AtomicUsize::new(0)),
             processing_latency: Arc::new(Mutex::new(processing_latency)),
             metrics,
+            pool,
         }
     }
 }
@@ -55,17 +62,21 @@ impl Processor for SimProcessor {
     type Input = SimulatedInput;
     type Output = SimulatedOutput;
     type Error = String;
-    type Resources = ();
+    type Resources = Option<Connection>;
 
     async fn acquire_resources(&self, _key: Self::Key) -> Result<Self::Resources, Self::Error> {
-        Ok(())
+        if let Some(pool) = &self.pool {
+            Ok(Some(pool.acquire().await))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn process(
         &self,
         key: Self::Key,
         inputs: impl Iterator<Item = Self::Input> + Send,
-        _resources: Self::Resources,
+        _connection: Self::Resources,
     ) -> Result<Vec<Self::Output>, Self::Error> {
         let inputs: Vec<_> = inputs.collect();
         let batch_size = inputs.len();

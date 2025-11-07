@@ -57,11 +57,20 @@ impl<'a> Visualiser<'a> {
         generate_latency_histogram(self.collector, &output_path, &template_path)
     }
 
+    /// Generate resource usage over time chart
+    pub fn resource_usage_chart(&self) -> std::io::Result<()> {
+        let output_path = self.output_dir.join("resource_usage.png");
+        let template_path = self.templates_dir.join("resource_usage.gnuplot");
+
+        generate_resource_usage_chart(self.collector, &output_path, &template_path)
+    }
+
     /// Generate all standard visualizations
     pub fn generate_all(&self) -> std::io::Result<()> {
         self.batch_size_histogram()?;
         self.rps_chart(None)?;
         self.latency_histogram()?;
+        self.resource_usage_chart()?;
         Ok(())
     }
 }
@@ -235,6 +244,65 @@ pub fn generate_latency_histogram(
     }
 
     println!("Generated latency histogram: {}", output_path.display());
+
+    Ok(())
+}
+
+/// Generate resource usage over time chart using gnuplot
+pub fn generate_resource_usage_chart(
+    collector: &MetricsCollector,
+    output_path: &Path,
+    template_path: &Path,
+) -> std::io::Result<()> {
+    let data = collector.resource_usage_over_time();
+
+    if data.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "No resource usage data available",
+        ));
+    }
+
+    // Ensure parent directory exists
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Create data file
+    let data_path = output_path.with_extension("dat");
+    let mut data_file = std::fs::File::create(&data_path)?;
+    writeln!(data_file, "# time_seconds in_use available")?;
+    for (time, in_use, available) in data {
+        writeln!(data_file, "{} {} {}", time, in_use, available)?;
+    }
+
+    // Read template and substitute placeholders
+    let template = std::fs::read_to_string(template_path)?;
+    let script_content = template
+        .replace("{{OUTPUT_PATH}}", &output_path.display().to_string())
+        .replace("{{DATA_PATH}}", &data_path.display().to_string());
+
+    // Write gnuplot script to a unique temp file
+    let mut temp_script = NamedTempFile::new()?;
+    temp_script.write_all(script_content.as_bytes())?;
+    temp_script.flush()?;
+
+    // Run gnuplot
+    let output = Command::new("gnuplot")
+        .arg(temp_script.path())
+        .output()?;
+
+    if !output.status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "gnuplot failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        ));
+    }
+
+    println!("Generated resource usage chart: {}", output_path.display());
 
     Ok(())
 }

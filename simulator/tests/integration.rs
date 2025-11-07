@@ -24,7 +24,13 @@ async fn test_minimal_simulation() {
 
     // Create a processor with ~10ms processing latency
     let processor = SimProcessor::builder()
-        .processing_latency(LatencyProfile::new(2, 10.0, Some(seed)))
+        .processing_latency(
+            LatencyProfile::builder()
+                .tasks(2)
+                .task_rate(10.0)
+                .seed(seed)
+                .build(),
+        )
         .metrics(metrics.clone())
         .build();
 
@@ -104,7 +110,11 @@ async fn test_distributed_arrivals_and_latency() {
     let metrics = Arc::new(Mutex::new(MetricsCollector::new()));
 
     // Processing latency: Erlang(k=3, rate=100) => mean ~30ms
-    let latency_profile = LatencyProfile::new(3, 100.0, Some(seed));
+    let latency_profile = LatencyProfile::builder()
+        .tasks(3)
+        .task_rate(100.0)
+        .seed(seed)
+        .build();
     let processor = SimProcessor::builder()
         .processing_latency(latency_profile)
         .metrics(metrics.clone())
@@ -224,24 +234,41 @@ async fn test_longer_simulation() {
 
     let metrics = Arc::new(Mutex::new(MetricsCollector::new()));
 
+    // Connection pool: start with 1 connection, ~300ms to open new ones
+    let connect_latency = LatencyProfile::builder()
+        .tasks(3)
+        .task_rate(10.0)
+        .seed(seed)
+        .build();
+    let pool = Arc::new(simulator::pool::ConnectionPool::new(
+        1,
+        connect_latency,
+        metrics.clone(),
+    ));
+
     // Processing latency: Erlang(k=2, rate=200) => mean ~10ms
-    let latency_profile = LatencyProfile::new(2, 200.0, Some(seed));
+    let latency_profile = LatencyProfile::builder()
+        .tasks(2)
+        .task_rate(200.0)
+        .seed(seed)
+        .build();
     let processor = SimProcessor::builder()
-        .processing_latency(latency_profile)
+        .processing_latency(latency_profile.clone())
         .metrics(metrics.clone())
+        .pool(pool)
         .build();
 
     // Configure batcher with Balanced policy
+    let limits = Limits::builder()
+        .max_batch_size(50)
+        .max_key_concurrency(10)
+        .build();
+    let policy = BatchingPolicy::Balanced { min_size_hint: 20 };
     let batcher = Batcher::builder()
         .name("longer-test")
         .processor(processor)
-        .limits(
-            Limits::builder()
-                .max_batch_size(50)
-                .max_key_concurrency(10)
-                .build(),
-        )
-        .batching_policy(BatchingPolicy::Balanced { min_size_hint: 20 })
+        .limits(limits)
+        .batching_policy(policy.clone())
         .build();
 
     let key = "test-key".to_string();
@@ -307,13 +334,29 @@ async fn test_longer_simulation() {
 
     let wall_clock_elapsed = start.elapsed();
 
+    let metrics_guard = metrics.lock().unwrap();
+
     // Get batch efficiency metrics
-    let efficiency = metrics.lock().unwrap().batch_efficiency();
+    let efficiency = metrics_guard.batch_efficiency();
+
+    let latency_samples = metrics_guard.latency_samples();
+    let mean_latency = latency_samples.iter().sum::<f64>() / latency_samples.len() as f64;
+
+    let rps_data = metrics_guard.rps_over_time(None);
+    let mean_rps = rps_data.iter().map(|&(_, rps)| rps).sum::<f64>() / rps_data.len() as f64;
 
     println!("\n=== Longer Simulation Results ===");
+    println!("Policy: {:?}", policy);
+    println!("Limits: {:?}", limits);
     println!("Items: {}", num_items);
     println!("Wall-clock time: {:?}", wall_clock_elapsed);
     println!("Simulated time: {:?}", simulated_time.lock().unwrap());
+    println!("Mean RPS: {:.2}", mean_rps);
+    println!(
+        "Mean Processing Latency: {:.2} ms",
+        latency_profile.mean().as_secs_f64() * 1000.0
+    );
+    println!("Mean Latency: {:.2} ms", mean_latency);
     println!("\nBatch Efficiency:");
     println!("  Total batches: {}", efficiency.total_batches);
     println!("  Mean batch size: {:.2}", efficiency.mean_batch_size);
@@ -322,7 +365,10 @@ async fn test_longer_simulation() {
         "  Smallest/Largest: {}/{}",
         efficiency.smallest_batch_size, efficiency.largest_batch_size
     );
-    println!("  At largest size: {:.1}%", efficiency.percentage_at_largest());
+    println!(
+        "  At largest size: {:.1}%",
+        efficiency.percentage_at_largest()
+    );
 
     // Basic sanity checks
     assert!(
@@ -334,15 +380,10 @@ async fn test_longer_simulation() {
         "Should achieve some batching"
     );
 
-    let metrics_guard = metrics.lock().unwrap();
-
-    let rps_data = metrics_guard.rps_over_time(None);
-    // average
-    let average_rps = rps_data.iter().map(|&(_, rps)| rps).sum::<f64>() / rps_data.len() as f64;
     assert!(
-        (average_rps - arrival_rate).abs() / arrival_rate < 0.1,
+        (mean_rps - arrival_rate).abs() / arrival_rate < 0.1,
         "Average RPS {:.2} should be within 10% of expected arrival rate {:.2}",
-        average_rps,
+        mean_rps,
         arrival_rate
     );
 

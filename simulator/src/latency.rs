@@ -1,5 +1,6 @@
 //! Latency distribution modelling using Gamma/Erlang distribution
 
+use bon::bon;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Gamma};
 
@@ -17,14 +18,20 @@ pub struct LatencyProfile {
     rng: rand::rngs::StdRng,
 }
 
+#[bon]
 impl LatencyProfile {
     /// Create a new latency profile
-    ///
-    /// # Arguments
-    /// * `tasks` - Number of sequential tasks
-    /// * `task_rate` - Tasks completed per second
-    /// * `seed` - Optional seed for reproducibility
-    pub fn new(tasks: u64, task_rate: f64, seed: Option<u64>) -> Self {
+    #[builder]
+    pub fn new(
+        /// Number of sequential tasks (shape parameter k)
+        tasks: u64,
+
+        /// Tasks completed per second (rate parameter λ)
+        task_rate: f64,
+
+        /// Optional seed for reproducibility
+        seed: Option<u64>,
+    ) -> Self {
         // Erlang(k, λ) is equivalent to Gamma(k, 1/λ)
         // Gamma uses shape parameter k and scale parameter θ = 1/λ
         let shape = tasks as f64;
@@ -63,7 +70,11 @@ mod tests {
     #[test]
     fn test_mean_calculation() {
         // 2 tasks at 10/sec = 200ms average
-        let profile = LatencyProfile::new(2, 10.0, Some(42));
+        let profile = LatencyProfile::builder()
+            .tasks(2)
+            .task_rate(10.0)
+            .seed(42)
+            .build();
         let mean = profile.mean();
         assert_eq!(mean.as_millis(), 200);
     }

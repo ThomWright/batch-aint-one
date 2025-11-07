@@ -38,11 +38,21 @@ impl BatchMetrics {
     }
 }
 
+/// Snapshot of resource pool state at a point in time
+#[derive(Debug, Clone)]
+pub struct ResourceSnapshot {
+    pub timestamp: Instant,
+    pub total: usize,
+    pub in_use: usize,
+    pub available: usize,
+}
+
 /// Collects metrics during simulation
 #[derive(Debug, Default)]
 pub struct MetricsCollector {
     items: Vec<ItemMetrics>,
     batches: Vec<BatchMetrics>,
+    resource_snapshots: Vec<ResourceSnapshot>,
 }
 
 impl MetricsCollector {
@@ -58,12 +68,20 @@ impl MetricsCollector {
         self.batches.push(metrics);
     }
 
+    pub fn record_resource_snapshot(&mut self, snapshot: ResourceSnapshot) {
+        self.resource_snapshots.push(snapshot);
+    }
+
     pub fn items(&self) -> &[ItemMetrics] {
         &self.items
     }
 
     pub fn batches(&self) -> &[BatchMetrics] {
         &self.batches
+    }
+
+    pub fn resource_snapshots(&self) -> &[ResourceSnapshot] {
+        &self.resource_snapshots
     }
 
     /// Get requests per second (RPS) over time.
@@ -119,6 +137,25 @@ impl MetricsCollector {
         self.items
             .iter()
             .map(|item| item.total_latency().as_secs_f64() * 1000.0)
+            .collect()
+    }
+
+    /// Get resource usage over time.
+    ///
+    /// Returns (time_seconds, in_use, available) tuples for each snapshot.
+    pub fn resource_usage_over_time(&self) -> Vec<(f64, usize, usize)> {
+        if self.resource_snapshots.is_empty() {
+            return Vec::new();
+        }
+
+        let start_time = self.resource_snapshots[0].timestamp;
+
+        self.resource_snapshots
+            .iter()
+            .map(|snapshot| {
+                let time = (snapshot.timestamp - start_time).as_secs_f64();
+                (time, snapshot.in_use, snapshot.available)
+            })
             .collect()
     }
 
