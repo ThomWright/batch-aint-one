@@ -2,6 +2,7 @@ use batch_aint_one::{Batcher, BatchingPolicy, Limits, OnFull};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use simulator::arrival::PoissonArrivals;
+use simulator::keys::KeyDistributionConfig;
 use simulator::latency::LatencyProfile;
 use simulator::metrics::MetricsCollector;
 use simulator::processor::{SimProcessor, SimulatedInput};
@@ -256,6 +257,7 @@ async fn test_longer_simulation() {
     let config = ScenarioConfig {
         name: "longer-test".to_string(),
         termination: TerminationCondition::ItemCount(num_items),
+        key_distribution: KeyDistributionConfig::Single,
         arrival_rate,
         seed: Some(seed),
         processing_latency: latency_profile.clone(),

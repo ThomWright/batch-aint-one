@@ -111,17 +111,8 @@ impl Drop for Connection {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::LazyLock;
-
-    use rand::{RngCore, SeedableRng, rngs::StdRng};
-
     use super::*;
-
-    static TEST_SEED: LazyLock<u64> = LazyLock::new(|| {
-        let seed = StdRng::from_os_rng().next_u64();
-        println!("Using test seed: {}", seed);
-        seed
-    });
+    use crate::test_utils::TEST_SEED;
 
     #[tokio::test(start_paused = true)]
     async fn test_pool_grows_on_demand() {

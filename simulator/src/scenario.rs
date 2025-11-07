@@ -1,6 +1,7 @@
 //! Scenario runner for orchestrating simulations
 
 use crate::arrival::PoissonArrivals;
+use crate::keys::{KeyDistributionConfig, KeyGenerator};
 use crate::latency::LatencyProfile;
 use crate::metrics::MetricsCollector;
 use crate::pool::ConnectionPool;
@@ -17,10 +18,13 @@ pub struct ScenarioConfig {
     /// When to stop the simulation
     pub termination: TerminationCondition,
 
+    /// Key distribution across items
+    pub key_distribution: KeyDistributionConfig,
+
     /// Arrival rate (items/sec)
     pub arrival_rate: f64,
 
-    /// Seed for reproducibility (used for arrivals, latencies, etc.)
+    /// Seed for reproducibility (used for arrivals, latencies, keys, etc.)
     pub seed: Option<u64>,
 
     /// Processing latency profile
@@ -121,8 +125,8 @@ impl ScenarioRunner {
 
         // Spawn arrival generator
         let mut arrivals = PoissonArrivals::new(self.config.arrival_rate, self.config.seed);
+        let mut key_generator = KeyGenerator::new(self.config.key_distribution, self.config.seed);
         let batcher_clone = batcher.clone();
-        let key = "test-key".to_string();
 
         let arrival_task = tokio::spawn(async move {
             let mut results = Vec::new();
@@ -144,10 +148,12 @@ impl ScenarioRunner {
                     tokio::time::sleep(sleep_duration).await;
                 }
 
+                // Generate key for this item
+                let key = key_generator.next_key();
+
                 // Now submit with precise timestamp
                 let submitted_at = sim_start + precise_time_offset;
                 let batcher = batcher_clone.clone();
-                let key = key.clone();
 
                 let task = tokio::spawn(async move {
                     let input = SimulatedInput {

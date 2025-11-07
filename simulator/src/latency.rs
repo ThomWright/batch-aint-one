@@ -66,6 +66,7 @@ impl LatencyProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::TEST_SEED;
 
     #[test]
     fn test_mean_calculation() {
@@ -73,7 +74,7 @@ mod tests {
         let profile = LatencyProfile::builder()
             .tasks(2)
             .task_rate(10.0)
-            .seed(42)
+            .seed(*TEST_SEED)
             .build();
         let mean = profile.mean();
         assert_eq!(mean.as_millis(), 200);

@@ -51,11 +51,12 @@ impl PoissonArrivals {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::TEST_SEED;
 
     #[test]
     fn test_mean_inter_arrival_time() {
         let rate = 10.0; // 10 items/sec = 100ms average inter-arrival
-        let mut arrivals = PoissonArrivals::new(rate, Some(42));
+        let mut arrivals = PoissonArrivals::new(rate, Some(*TEST_SEED));
 
         // Sample many times and check mean is close to expected
         let samples: Vec<_> = (0..1000)
@@ -78,8 +79,8 @@ mod tests {
 
     #[test]
     fn test_reproducibility() {
-        let mut arrivals1 = PoissonArrivals::new(10.0, Some(42));
-        let mut arrivals2 = PoissonArrivals::new(10.0, Some(42));
+        let mut arrivals1 = PoissonArrivals::new(10.0, Some(*TEST_SEED));
+        let mut arrivals2 = PoissonArrivals::new(10.0, Some(*TEST_SEED));
 
         for _ in 0..10 {
             let t1 = arrivals1.next_inter_arrival_duration();
@@ -91,7 +92,7 @@ mod tests {
     #[test]
     fn test_arrival_rate_500_rps() {
         let rate = 500.0; // 500 items/sec = 2ms average inter-arrival
-        let mut arrivals = PoissonArrivals::new(rate, Some(123));
+        let mut arrivals = PoissonArrivals::new(rate, Some(*TEST_SEED));
 
         // Simulate 10,000 arrivals
         let num_samples = 10_000;
