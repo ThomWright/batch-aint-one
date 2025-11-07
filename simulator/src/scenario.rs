@@ -5,7 +5,7 @@ use crate::keys::{KeyDistributionConfig, KeyGenerator};
 use crate::latency::LatencyProfile;
 use crate::metrics::MetricsCollector;
 use crate::pool::ConnectionPool;
-use crate::processor::{SimProcessor, SimulatedInput};
+use crate::processor::{SimProcessor, SimulatedInput, SimulatedOutput};
 use batch_aint_one::{Batcher, BatchingPolicy, Limits};
 use std::sync::{Arc, Mutex};
 use tokio::time::Duration;
@@ -92,19 +92,33 @@ impl ScenarioRunner {
         let start_time = tokio::time::Instant::now();
         let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
 
+        let batcher = self.create_batcher(metrics.clone())?;
+        // FIXME: don't estimate num items for duration-based termination
+        let num_items = self.calculate_num_items();
+        let tasks = self.spawn_arrivals(num_items, batcher.clone()).await?;
+        self.await_all_items(tasks).await?;
+        self.shut_down_batcher(batcher).await;
+        self.extract_metrics(metrics)
+    }
+
+    /// Create batcher with processor and optional connection pool
+    fn create_batcher(
+        &self,
+        metrics: Arc<Mutex<MetricsCollector>>,
+    ) -> Result<Batcher<SimProcessor>, ScenarioError> {
         // Create connection pool if configured
-        let pool = self.config.pool_config.map(|pool_config| {
+        let pool = self.config.pool_config.as_ref().map(|pool_config| {
             Arc::new(ConnectionPool::new(
                 pool_config.initial_size,
-                pool_config.connect_latency,
+                pool_config.connect_latency.clone(),
                 metrics.clone(),
             ))
         });
 
         // Create processor
         let processor = SimProcessor::builder()
-            .processing_latency(self.config.processing_latency)
-            .metrics(metrics.clone())
+            .processing_latency(self.config.processing_latency.clone())
+            .metrics(metrics)
             .maybe_pool(pool)
             .build();
 
@@ -113,23 +127,32 @@ impl ScenarioRunner {
             .name(&self.config.name)
             .processor(processor)
             .limits(self.config.limits)
-            .batching_policy(self.config.batching_policy)
+            .batching_policy(self.config.batching_policy.clone())
             .build();
 
-        // Determine number of items based on termination condition
-        let num_items = match self.config.termination {
+        Ok(batcher)
+    }
+
+    /// Calculate number of items to process based on termination condition
+    fn calculate_num_items(&self) -> usize {
+        match self.config.termination {
             TerminationCondition::ItemCount(count) => count,
             TerminationCondition::Duration(duration) => {
                 // Calculate approximate number of items that will arrive in the duration
                 let duration_secs = duration.as_secs_f64();
                 (self.config.arrival_rate * duration_secs).ceil() as usize
             }
-        };
+        }
+    }
 
-        // Spawn arrival generator
+    /// Spawn arrival generator task that submits items to the batcher
+    async fn spawn_arrivals(
+        &self,
+        num_items: usize,
+        batcher: Batcher<SimProcessor>,
+    ) -> Result<Vec<tokio::task::JoinHandle<Result<SimulatedOutput, batch_aint_one::BatchError<String>>>>, ScenarioError> {
         let mut arrivals = PoissonArrivals::new(self.config.arrival_rate, self.config.seed);
-        let mut key_generator = KeyGenerator::new(self.config.key_distribution, self.config.seed);
-        let batcher_clone = batcher.clone();
+        let mut key_generator = KeyGenerator::new(self.config.key_distribution.clone(), self.config.seed);
 
         let arrival_task = tokio::spawn(async move {
             let mut results = Vec::new();
@@ -156,7 +179,7 @@ impl ScenarioRunner {
 
                 // Now submit with precise timestamp
                 let submitted_at = sim_start + precise_time_offset;
-                let batcher = batcher_clone.clone();
+                let batcher = batcher.clone();
 
                 let task = tokio::spawn(async move {
                     let input = SimulatedInput {
@@ -172,11 +195,16 @@ impl ScenarioRunner {
             results
         });
 
-        // Wait for all arrivals and collect results
-        let tasks = arrival_task
+        arrival_task
             .await
-            .map_err(|e| ScenarioError::ProcessingError(format!("Arrival task failed: {}", e)))?;
+            .map_err(|e| ScenarioError::ProcessingError(format!("Arrival task failed: {}", e)))
+    }
 
+    /// Wait for all item processing tasks to complete
+    async fn await_all_items(
+        &self,
+        tasks: Vec<tokio::task::JoinHandle<Result<SimulatedOutput, batch_aint_one::BatchError<String>>>>,
+    ) -> Result<(), ScenarioError> {
         // Collect all results - don't stop on individual failures
         // TODO: Record rejections/failures in metrics
         for task in tasks {
@@ -188,12 +216,22 @@ impl ScenarioRunner {
             let _ = result;
         }
 
+        Ok(())
+    }
+
+    /// Shut down batcher and wait for all work to complete
+    async fn shut_down_batcher(&self, batcher: Batcher<SimProcessor>) {
         batcher.worker_handle().shut_down().await;
         batcher.worker_handle().wait_for_shutdown().await;
         drop(batcher);
+    }
 
-        // Extract metrics from Arc<Mutex<>>
-        let metrics = Arc::try_unwrap(metrics)
+    /// Extract metrics from Arc<Mutex<>>
+    fn extract_metrics(
+        &self,
+        metrics: Arc<Mutex<MetricsCollector>>,
+    ) -> Result<MetricsCollector, ScenarioError> {
+        Arc::try_unwrap(metrics)
             .map_err(|_| {
                 ScenarioError::ProcessingError(
                     "Failed to unwrap metrics (still has references)".to_string(),
@@ -202,8 +240,6 @@ impl ScenarioRunner {
             .into_inner()
             .map_err(|e| {
                 ScenarioError::ProcessingError(format!("Failed to lock metrics: {}", e))
-            })?;
-
-        Ok(metrics)
+            })
     }
 }
