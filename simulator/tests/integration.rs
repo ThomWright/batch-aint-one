@@ -22,7 +22,8 @@ static TEST_SEED: LazyLock<u64> = LazyLock::new(|| {
 async fn test_minimal_simulation() {
     let seed = *TEST_SEED;
 
-    let metrics = Arc::new(Mutex::new(MetricsCollector::new()));
+    let start_time = tokio::time::Instant::now();
+    let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
 
     // Create a processor with ~10ms processing latency
     let processor = SimProcessor::builder()
@@ -109,7 +110,8 @@ async fn test_distributed_arrivals_and_latency() {
     // Arrival rate: 20 items/sec (mean inter-arrival: 50ms)
     let mut arrivals = PoissonArrivals::new(20.0, Some(seed));
 
-    let metrics = Arc::new(Mutex::new(MetricsCollector::new()));
+    let start_time = tokio::time::Instant::now();
+    let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
 
     // Processing latency: Erlang(k=3, rate=100) => mean ~30ms
     let latency_profile = LatencyProfile::builder()

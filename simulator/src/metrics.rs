@@ -48,16 +48,26 @@ pub struct ResourceSnapshot {
 }
 
 /// Collects metrics during simulation
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MetricsCollector {
+    start_time: Instant,
     items: Vec<ItemMetrics>,
     batches: Vec<BatchMetrics>,
     resource_snapshots: Vec<ResourceSnapshot>,
 }
 
 impl MetricsCollector {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(start_time: Instant) -> Self {
+        Self {
+            start_time,
+            items: Vec::new(),
+            batches: Vec::new(),
+            resource_snapshots: Vec::new(),
+        }
+    }
+
+    pub fn start_time(&self) -> Instant {
+        self.start_time
     }
 
     pub fn record_item(&mut self, metrics: ItemMetrics) {
@@ -96,15 +106,15 @@ impl MetricsCollector {
         &self.resource_snapshots
     }
 
-    /// Get requests per second (RPS) over time.
+    /// Helper to bucket items by time.
     ///
-    /// Returns (time_seconds, requests_per_second) pairs.
-    ///
-    /// Automatically buckets arrivals to produce 100 data points by default, or uses the specified
-    /// bucket size.
-    pub fn rps_over_time(&self, bucket_size_secs: Option<f64>) -> Vec<(f64, f64)> {
+    /// Returns (bucket_size, buckets) where buckets is a Vec of item collections.
+    fn bucket_items_by_time(
+        &self,
+        bucket_size_secs: Option<f64>,
+    ) -> Option<(f64, Vec<Vec<&ItemMetrics>>)> {
         if self.items.is_empty() {
-            return Vec::new();
+            return None;
         }
 
         let mut items: Vec<_> = self.items.iter().collect();
@@ -120,23 +130,37 @@ impl MetricsCollector {
             (duration / target_buckets).max(0.1) // At least 100ms buckets
         });
 
-        // Count items per bucket
+        // Group items into buckets
         let num_buckets = (duration / bucket_size).ceil() as usize;
-        let mut buckets = vec![0usize; num_buckets];
+        let mut buckets: Vec<Vec<&ItemMetrics>> = vec![Vec::new(); num_buckets];
 
         for item in &items {
             let elapsed = (item.submitted_at - start_time).as_secs_f64();
             let bucket_idx = ((elapsed / bucket_size).floor() as usize).min(num_buckets - 1);
-            buckets[bucket_idx] += 1;
+            buckets[bucket_idx].push(item);
         }
+
+        Some((bucket_size, buckets))
+    }
+
+    /// Get requests per second (RPS) over time.
+    ///
+    /// Returns (time_seconds, requests_per_second) pairs.
+    ///
+    /// Automatically buckets arrivals to produce 100 data points by default, or uses the specified
+    /// bucket size.
+    pub fn rps_over_time(&self, bucket_size_secs: Option<f64>) -> Vec<(f64, f64)> {
+        let Some((bucket_size, buckets)) = self.bucket_items_by_time(bucket_size_secs) else {
+            return Vec::new();
+        };
 
         // Convert to RPS (items per second)
         buckets
             .into_iter()
             .enumerate()
-            .map(|(idx, count)| {
+            .map(|(idx, items)| {
                 let time = idx as f64 * bucket_size;
-                let rps = count as f64 / bucket_size;
+                let rps = items.len() as f64 / bucket_size;
                 (time, rps)
             })
             .collect()
@@ -156,16 +180,10 @@ impl MetricsCollector {
     ///
     /// Returns (time_seconds, in_use, available) tuples for each snapshot.
     pub fn resource_usage_over_time(&self) -> Vec<(f64, usize, usize)> {
-        if self.resource_snapshots.is_empty() {
-            return Vec::new();
-        }
-
-        let start_time = self.resource_snapshots[0].timestamp;
-
         self.resource_snapshots
             .iter()
             .map(|snapshot| {
-                let time = (snapshot.timestamp - start_time).as_secs_f64();
+                let time = (snapshot.timestamp - self.start_time).as_secs_f64();
                 (time, snapshot.in_use, snapshot.available)
             })
             .collect()
@@ -254,43 +272,24 @@ impl MetricsCollector {
     /// Automatically buckets items to produce 100 data points by default, or uses the specified
     /// bucket size.
     pub fn latency_over_time(&self, bucket_size_secs: Option<f64>) -> Vec<(f64, f64, f64, f64)> {
-        if self.items.is_empty() {
+        let Some((bucket_size, buckets)) = self.bucket_items_by_time(bucket_size_secs) else {
             return Vec::new();
-        }
-
-        let mut items: Vec<_> = self.items.iter().collect();
-        items.sort_by_key(|item| item.submitted_at);
-
-        let start_time = items[0].submitted_at;
-        let end_time = items.last().unwrap().submitted_at;
-        let duration = (end_time - start_time).as_secs_f64();
-
-        // Calculate bucket size: aim for 100 buckets by default
-        let bucket_size = bucket_size_secs.unwrap_or_else(|| {
-            let target_buckets = 100.0;
-            (duration / target_buckets).max(0.1) // At least 100ms buckets
-        });
-
-        // Group items into buckets
-        let num_buckets = (duration / bucket_size).ceil() as usize;
-        let mut buckets: Vec<Vec<f64>> = vec![Vec::new(); num_buckets];
-
-        for item in &items {
-            let elapsed = (item.submitted_at - start_time).as_secs_f64();
-            let bucket_idx = ((elapsed / bucket_size).floor() as usize).min(num_buckets - 1);
-            let latency_ms = item.total_latency().as_secs_f64() * 1000.0;
-            buckets[bucket_idx].push(latency_ms);
-        }
+        };
 
         // Calculate statistics for each bucket
         buckets
             .into_iter()
             .enumerate()
-            .filter_map(|(idx, mut latencies)| {
-                if latencies.is_empty() {
+            .filter_map(|(idx, items)| {
+                if items.is_empty() {
                     return None;
                 }
 
+                // Extract and sort latencies
+                let mut latencies: Vec<f64> = items
+                    .iter()
+                    .map(|item| item.total_latency().as_secs_f64() * 1000.0)
+                    .collect();
                 latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
                 let time = idx as f64 * bucket_size;
@@ -370,7 +369,8 @@ mod tests {
 
     #[test]
     fn test_rps_calculation() {
-        let mut collector = MetricsCollector::new();
+        let start = tokio::time::Instant::now();
+        let mut collector = MetricsCollector::new(start);
 
         // Simulate 1000 items arriving at exactly 100 RPS (10ms intervals)
         let start = tokio::time::Instant::now();

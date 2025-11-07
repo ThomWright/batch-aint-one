@@ -121,7 +121,8 @@ mod tests {
             .task_rate(100.0)
             .seed(*TEST_SEED)
             .build(); // ~10ms mean
-        let metrics = Arc::new(Mutex::new(MetricsCollector::new()));
+        let start_time = tokio::time::Instant::now();
+        let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
         let pool = Arc::new(ConnectionPool::new(2, connect_latency, metrics.clone()));
 
         // Initially: 2 total, 2 available, 0 in use
@@ -172,7 +173,8 @@ mod tests {
             .task_rate(1.0)
             .seed(*TEST_SEED)
             .build(); // ~1s mean
-        let metrics = Arc::new(Mutex::new(MetricsCollector::new()));
+        let start_time = tokio::time::Instant::now();
+        let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
         let pool = Arc::new(ConnectionPool::new(0, connect_latency, metrics));
 
         let start = tokio::time::Instant::now();

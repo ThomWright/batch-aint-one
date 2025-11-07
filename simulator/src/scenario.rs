@@ -89,7 +89,8 @@ impl ScenarioRunner {
 
     /// Run the scenario and return collected metrics
     pub async fn run(self) -> Result<MetricsCollector, ScenarioError> {
-        let metrics = Arc::new(Mutex::new(MetricsCollector::new()));
+        let start_time = tokio::time::Instant::now();
+        let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
 
         // Create connection pool if configured
         let pool = self.config.pool_config.map(|pool_config| {
