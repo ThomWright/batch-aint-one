@@ -5,7 +5,8 @@ use simulator::arrival::PoissonArrivals;
 use simulator::latency::LatencyProfile;
 use simulator::metrics::MetricsCollector;
 use simulator::processor::{SimProcessor, SimulatedInput};
-use simulator::visualise::Visualiser;
+use simulator::reporter::{ReporterConfig, SimulationReporter};
+use simulator::scenario::{PoolConfig, ScenarioConfig, ScenarioRunner, TerminationCondition};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio::time::Duration;
@@ -224,27 +225,11 @@ async fn test_distributed_arrivals_and_latency() {
 #[tokio::test(start_paused = true)]
 async fn test_longer_simulation() {
     let seed = *TEST_SEED;
-
     let start = std::time::Instant::now();
-    let simulated_time = Arc::new(Mutex::new(Duration::ZERO));
 
     // Arrival rate: 500 items/sec (mean inter-arrival: 2ms)
     let arrival_rate = 500.0;
-    let mut arrivals = PoissonArrivals::new(arrival_rate, Some(seed));
-
-    let metrics = Arc::new(Mutex::new(MetricsCollector::new()));
-
-    // Connection pool: start with 1 connection, ~300ms to open new ones
-    let connect_latency = LatencyProfile::builder()
-        .tasks(3)
-        .task_rate(10.0)
-        .seed(seed)
-        .build();
-    let pool = Arc::new(simulator::pool::ConnectionPool::new(
-        1,
-        connect_latency,
-        metrics.clone(),
-    ));
+    let num_items = 10_000;
 
     // Processing latency: Erlang(k=2, rate=200) => mean ~10ms
     let latency_profile = LatencyProfile::builder()
@@ -252,10 +237,12 @@ async fn test_longer_simulation() {
         .task_rate(200.0)
         .seed(seed)
         .build();
-    let processor = SimProcessor::builder()
-        .processing_latency(latency_profile.clone())
-        .metrics(metrics.clone())
-        .pool(pool)
+
+    // Connection pool: start with 1 connection, ~300ms to open new ones
+    let connect_latency = LatencyProfile::builder()
+        .tasks(3)
+        .task_rate(10.0)
+        .seed(seed)
         .build();
 
     // Configure batcher with Balanced policy
@@ -264,109 +251,54 @@ async fn test_longer_simulation() {
         .max_key_concurrency(10)
         .build();
     let policy = BatchingPolicy::Balanced { min_size_hint: 20 };
-    let batcher = Batcher::builder()
-        .name("longer-test")
-        .processor(processor)
-        .limits(limits)
-        .batching_policy(policy.clone())
-        .build();
 
-    let key = "test-key".to_string();
-    let num_items = 10_000;
+    // Create scenario config
+    let config = ScenarioConfig {
+        name: "longer-test".to_string(),
+        termination: TerminationCondition::ItemCount(num_items),
+        arrival_rate,
+        seed: Some(seed),
+        processing_latency: latency_profile.clone(),
+        pool_config: Some(PoolConfig {
+            initial_size: 1,
+            connect_latency,
+        }),
+        batching_policy: policy.clone(),
+        limits,
+    };
 
-    // Spawn arrival generator
-    let batcher_clone = batcher.clone();
-    let key_clone = key.clone();
-    let simulated_time_clone = simulated_time.clone();
-    let arrival_task = tokio::spawn(async move {
-        let mut results = Vec::new();
-        let sim_start = tokio::time::Instant::now();
-        let mut precise_time_offset = Duration::ZERO;
-
-        for item_id in 0..num_items {
-            let next_inter_arrival = arrivals.next_inter_arrival_duration();
-            precise_time_offset += next_inter_arrival;
-
-            // Calculate what millisecond this item should arrive in
-            let target_ms_offset = precise_time_offset.as_millis();
-            let current_ms_offset = (tokio::time::Instant::now() - sim_start).as_millis();
-
-            // If we need to advance time, sleep until target millisecond
-            if target_ms_offset > current_ms_offset {
-                let sleep_duration =
-                    Duration::from_millis((target_ms_offset - current_ms_offset) as u64);
-                tokio::time::sleep(sleep_duration).await;
-            }
-
-            // Now submit with precise timestamp
-            let submitted_at = sim_start + precise_time_offset;
-            let batcher = batcher_clone.clone();
-            let key = key_clone.clone();
-
-            let task = tokio::spawn(async move {
-                let input = SimulatedInput {
-                    item_id,
-                    submitted_at,
-                };
-                batcher.add(key, input).await
-            });
-
-            results.push(task);
-        }
-
-        *simulated_time_clone.lock().unwrap() = precise_time_offset;
-        results
-    });
-
-    // Wait for all arrivals and collect results
-    let tasks = arrival_task.await.unwrap();
-    let mut outputs = Vec::new();
-    for task in tasks {
-        let result = task.await.unwrap();
-        match result {
-            Ok(output) => outputs.push(output),
-            Err(e) => panic!("Item processing failed: {:?}", e),
-        }
-    }
-
-    // Analyze results
-    assert_eq!(outputs.len(), num_items, "All items should be processed");
+    // Run scenario
+    let runner = ScenarioRunner::new(config);
+    let metrics = runner.run().await.expect("scenario should complete");
 
     let wall_clock_elapsed = start.elapsed();
 
-    let metrics_guard = metrics.lock().unwrap();
-
-    // Get batch efficiency metrics
-    let efficiency = metrics_guard.batch_efficiency();
-    let mean_latency = metrics_guard.mean_latency_ms();
-    let mean_rps = metrics_guard.mean_rps();
-
-    println!("\n=== Longer Simulation Results ===");
+    // Print additional test-specific info
+    println!("\n=== Test Configuration ===");
     println!("Policy: {:?}", policy);
     println!("Limits: {:?}", limits);
     println!("Items: {}", num_items);
     println!("Wall-clock time: {:?}", wall_clock_elapsed);
-    println!("Simulated time: {:?}", simulated_time.lock().unwrap());
-    println!("Mean RPS: {:.2}", mean_rps);
     println!(
         "Mean Processing Latency: {:.2} ms",
         latency_profile.mean().as_secs_f64() * 1000.0
     );
-    println!("Mean Latency: {:.2} ms", mean_latency);
-    println!("\nBatch Efficiency:");
-    println!("  Total batches: {}", efficiency.total_batches);
-    println!("  Mean batch size: {:.2}", efficiency.mean_batch_size);
-    println!("  Median batch size: {:.2}", efficiency.median_batch_size);
-    println!(
-        "  Smallest/Largest: {}/{}",
-        efficiency.smallest_batch_size, efficiency.largest_batch_size
-    );
-    println!(
-        "  At largest size: {:.1}%",
-        efficiency.percentage_at_largest()
+
+    // Use reporter for standardized output and visualization
+    let reporter = SimulationReporter::new(
+        &metrics,
+        ReporterConfig {
+            output_dir: "tests/output/test_longer_simulation".into(),
+            templates_dir: "tests/templates".into(),
+        },
     );
 
+    reporter.report().expect("should generate report");
+
     // Basic sanity checks
+    let efficiency = metrics.batch_efficiency();
+    let mean_rps = metrics.mean_rps();
+
     assert!(
         efficiency.total_batches > 0,
         "Should have processed batches"
@@ -382,16 +314,4 @@ async fn test_longer_simulation() {
         mean_rps,
         arrival_rate
     );
-
-    // Generate visualizations
-    // Paths are relative to the simulator crate directory when running tests
-    let visualiser = Visualiser::new(
-        &metrics_guard,
-        "tests/output/test_longer_simulation",
-        "tests/templates",
-    );
-
-    visualiser
-        .generate_all()
-        .expect("should generate all visualizations");
 }

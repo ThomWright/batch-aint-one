@@ -5,5 +5,6 @@ pub mod latency;
 pub mod metrics;
 pub mod pool;
 pub mod processor;
+pub mod reporter;
 pub mod scenario;
 pub mod visualise;
