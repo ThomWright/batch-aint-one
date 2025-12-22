@@ -7,6 +7,7 @@ use crate::metrics::ItemMetrics;
 use crate::metrics::MetricsCollector;
 use crate::pool::ConnectionPool;
 use crate::processor::{SimProcessor, SimulatedInput, SimulatedOutput};
+
 use batch_aint_one::{BatchError, Batcher, BatchingPolicy, Limits};
 use std::sync::{Arc, Mutex};
 use tokio::time::Duration;
@@ -32,6 +33,12 @@ pub struct ScenarioConfig {
     /// Processing latency profile
     pub processing_latency: LatencyProfile,
 
+    /// Simulated processing error rate (0.0 to 1.0)
+    pub processing_error_rate: f64,
+
+    /// Simulated resource acquisition error rate (0.0 to 1.0)
+    pub resource_acquisition_error_rate: f64,
+
     /// Optional connection pool configuration
     pub pool_config: Option<PoolConfig>,
 
@@ -56,6 +63,8 @@ pub enum TerminationCondition {
 pub struct PoolConfig {
     /// Initial number of connections in pool
     pub initial_size: usize,
+    /// Latency profile for acquiring a connection
+    pub acquire_latency: LatencyProfile,
     /// Latency profile for opening new connections
     pub connect_latency: LatencyProfile,
 }
@@ -109,6 +118,7 @@ impl ScenarioRunner {
         let pool = self.config.pool_config.as_ref().map(|pool_config| {
             Arc::new(ConnectionPool::new(
                 pool_config.initial_size,
+                pool_config.acquire_latency.clone(),
                 pool_config.connect_latency.clone(),
                 metrics.clone(),
             ))
@@ -119,6 +129,8 @@ impl ScenarioRunner {
             .processing_latency(self.config.processing_latency.clone())
             .metrics(metrics)
             .maybe_pool(pool)
+            .acquire_error_rate(self.config.resource_acquisition_error_rate)
+            .process_error_rate(self.config.processing_error_rate)
             .build();
 
         // Create batcher
@@ -140,7 +152,7 @@ impl ScenarioRunner {
         Vec<
             tokio::task::JoinHandle<(
                 SimulatedInput,
-                Result<SimulatedOutput, batch_aint_one::BatchError<String>>,
+                Result<SimulatedOutput, (batch_aint_one::BatchError<String>, tokio::time::Instant)>,
             )>,
         >,
         ScenarioError,
@@ -194,6 +206,7 @@ impl ScenarioRunner {
                         submitted_at,
                     };
                     let result = batcher.add(key, input.clone()).await;
+                    let result = result.map_err(|e| (e, tokio::time::Instant::now()));
                     (input, result)
                 });
 
@@ -215,14 +228,17 @@ impl ScenarioRunner {
         tasks: Vec<
             tokio::task::JoinHandle<(
                 SimulatedInput,
-                Result<SimulatedOutput, batch_aint_one::BatchError<String>>,
+                Result<SimulatedOutput, (batch_aint_one::BatchError<String>, tokio::time::Instant)>,
             )>,
         >,
         metrics: Arc<Mutex<MetricsCollector>>,
     ) -> Result<(), ScenarioError> {
         // Collect all results and record metrics for each outcome
-        for task in tasks {
-            let result = task
+        // let mut tasks: FuturesOrdered<_> = tasks.into_iter().collect();
+        let mut tasks = tasks.into_iter();
+
+        while let Some(result) = tasks.next() {
+            let result = result
                 .await
                 .map_err(|e| ScenarioError::ProcessingError(format!("Item task failed: {}", e)))?;
 
@@ -230,8 +246,14 @@ impl ScenarioRunner {
             let (input, result) = result;
             let item_metrics = match result {
                 Ok(output) => ItemMetrics::success(output),
-                Err(BatchError::Rejected(_reason)) => {
-                    ItemMetrics::rejection(input, tokio::time::Instant::now())
+                Err((BatchError::Rejected(_reason), rejected_at)) => {
+                    ItemMetrics::rejection(input, rejected_at)
+                }
+                Err((BatchError::ResourceAcquisitionFailed(_err_msg), errored_at)) => {
+                    ItemMetrics::failure(input, errored_at)
+                }
+                Err((BatchError::BatchFailed(_e), errored_at)) => {
+                    ItemMetrics::failure(input, errored_at)
                 }
                 Err(e) => {
                     panic!("Item processing error: {:?}", e);

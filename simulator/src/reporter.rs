@@ -55,10 +55,12 @@ impl<'a> SimulationReporter<'a> {
 
         let efficiency = self.metrics.batch_efficiency();
         let mean_latency = self.metrics.mean_latency();
+        let mean_error_latency = self.metrics.mean_error_latency();
         let mean_rps = self.metrics.mean_rps();
 
         println!("\n=== Simulation Results ===");
         println!("Items processed:    {}", self.metrics.items().len());
+        println!("Items errored:      {}", self.metrics.error_count());
 
         if let Some(duration) = self.metrics.simulated_duration() {
             println!("Simulated duration: {:.2}s", duration.as_secs_f64());
@@ -66,6 +68,7 @@ impl<'a> SimulationReporter<'a> {
 
         println!("Mean RPS:           {:.2}", mean_rps);
         println!("Mean Latency:       {:.2} ms", mean_latency.as_secs_f64() * 1000.0);
+        println!("Mean Error Latency: {:.2} ms", mean_error_latency.as_secs_f64() * 1000.0);
 
         println!("\nBatch Efficiency:");
         println!("  Total batches: {}", efficiency.total_batches);

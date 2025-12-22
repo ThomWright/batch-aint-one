@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 pub struct ConnectionPool {
     total: AtomicUsize,
     available: AtomicUsize,
+    acquire_latency: Arc<Mutex<LatencyProfile>>,
     connect_latency: Arc<Mutex<LatencyProfile>>,
     metrics: Arc<Mutex<MetricsCollector>>,
 }
@@ -22,12 +23,14 @@ impl ConnectionPool {
     /// * `metrics` - Metrics collector for recording pool state changes
     pub fn new(
         initial_size: usize,
+        acquire_latency: LatencyProfile,
         connect_latency: LatencyProfile,
         metrics: Arc<Mutex<MetricsCollector>>,
     ) -> Self {
         let pool = Self {
             total: AtomicUsize::new(initial_size),
             available: AtomicUsize::new(initial_size),
+            acquire_latency: Arc::new(Mutex::new(acquire_latency)),
             connect_latency: Arc::new(Mutex::new(connect_latency)),
             metrics,
         };
@@ -57,12 +60,22 @@ impl ConnectionPool {
     ///
     /// If no connections are available, opens a new one (which takes time based on connect_latency)
     pub async fn acquire(self: &Arc<Self>) -> Connection {
-        let prev_available = self.available.fetch_sub(1, Ordering::SeqCst);
+        let acquire_latency = self.acquire_latency.lock().unwrap().sample();
+        tokio::time::sleep(acquire_latency).await;
+
+        let prev_available = self
+            .available
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |available| {
+                if available > 0 {
+                    Some(available - 1)
+                } else {
+                    Some(available)
+                }
+            })
+            .expect("should always update");
 
         if prev_available == 0 {
             // No connections available, need to open a new one
-            self.available.fetch_add(1, Ordering::SeqCst); // Undo the decrement
-
             let latency = self.connect_latency.lock().unwrap().sample();
             tokio::time::sleep(latency).await;
 
@@ -116,14 +129,25 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_pool_grows_on_demand() {
+        let acquire_latency = LatencyProfile::builder()
+            .tasks(1)
+            .task_rate(1000.0)
+            .seed(*TEST_SEED)
+            .build(); // ~1ms mean
         let connect_latency = LatencyProfile::builder()
             .tasks(2)
-            .task_rate(100.0)
+            .task_rate(10.0)
             .seed(*TEST_SEED)
-            .build(); // ~10ms mean
+            .build(); // ~100ms mean
+
         let start_time = tokio::time::Instant::now();
         let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
-        let pool = Arc::new(ConnectionPool::new(2, connect_latency, metrics.clone()));
+        let pool = Arc::new(ConnectionPool::new(
+            2,
+            acquire_latency,
+            connect_latency,
+            metrics.clone(),
+        ));
 
         // Initially: 2 total, 2 available, 0 in use
         assert_eq!(pool.total(), 2);
@@ -168,6 +192,11 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_connection_latency() {
+        let acquire_latency = LatencyProfile::builder()
+            .tasks(1)
+            .task_rate(1000.0)
+            .seed(*TEST_SEED)
+            .build(); // ~1ms mean
         let connect_latency = LatencyProfile::builder()
             .tasks(5)
             .task_rate(1.0)
@@ -175,7 +204,12 @@ mod tests {
             .build(); // ~1s mean
         let start_time = tokio::time::Instant::now();
         let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
-        let pool = Arc::new(ConnectionPool::new(0, connect_latency, metrics));
+        let pool = Arc::new(ConnectionPool::new(
+            0,
+            acquire_latency,
+            connect_latency,
+            metrics,
+        ));
 
         let start = tokio::time::Instant::now();
         let _conn = pool.acquire().await;

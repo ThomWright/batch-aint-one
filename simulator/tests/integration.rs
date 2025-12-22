@@ -232,7 +232,7 @@ async fn test_longer_simulation() {
 
     // Arrival rate: 500 items/sec (mean inter-arrival: 2ms)
     let arrival_rate = 500.0;
-    let num_items = 10_000;
+    let num_items = 1_000_000;
 
     // Processing latency: Erlang(k=2, rate=200) => mean ~10ms
     let latency_profile = LatencyProfile::builder()
@@ -241,7 +241,12 @@ async fn test_longer_simulation() {
         .seed(seed)
         .build();
 
-    // Connection pool: start with 1 connection, ~300ms to open new ones
+    // Connection pool: start with 1 connection, ~1ms to acquire, ~300ms to open new ones
+    let acquire_latency = LatencyProfile::builder()
+        .tasks(1)
+        .task_rate(1000.0)
+        .seed(seed)
+        .build();
     let connect_latency = LatencyProfile::builder()
         .tasks(3)
         .task_rate(10.0)
@@ -250,21 +255,24 @@ async fn test_longer_simulation() {
 
     // Configure batcher with Balanced policy
     let limits = Limits::builder()
-        .max_batch_size(50)
-        .max_key_concurrency(10)
+        .max_batch_size(15)
+        .max_key_concurrency(1)
         .build();
-    let policy = BatchingPolicy::Balanced { min_size_hint: 20 };
+    let policy = BatchingPolicy::Immediate;
 
     // Create scenario config
     let config = ScenarioConfig {
         name: "longer-test".to_string(),
         termination: TerminationCondition::ItemCount(num_items),
-        key_distribution: KeyDistributionConfig::Zipf { num_keys: 20, s: 1.0 },
+        key_distribution: KeyDistributionConfig::Zipf { num_keys: 10, s: 1.0 },
         arrival_rate,
         seed: Some(seed),
         processing_latency: latency_profile.clone(),
+        processing_error_rate: 0.001,
+        resource_acquisition_error_rate: 0.001,
         pool_config: Some(PoolConfig {
             initial_size: 1,
+            acquire_latency,
             connect_latency,
         }),
         batching_policy: policy.clone(),

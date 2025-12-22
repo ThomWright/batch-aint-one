@@ -5,6 +5,7 @@ use crate::metrics::{BatchMetrics, MetricsCollector};
 use crate::pool::{Connection, ConnectionPool};
 use batch_aint_one::Processor;
 use bon::bon;
+use rand::Rng;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -41,6 +42,9 @@ pub struct SimProcessor {
     processing_latency: Arc<Mutex<LatencyProfile>>,
     metrics: Arc<Mutex<MetricsCollector>>,
     pool: Option<Arc<ConnectionPool>>,
+
+    acquire_error_rate: f64,
+    process_error_rate: f64,
 }
 
 #[bon]
@@ -51,12 +55,27 @@ impl SimProcessor {
         processing_latency: LatencyProfile,
         metrics: Arc<Mutex<MetricsCollector>>,
         pool: Option<Arc<ConnectionPool>>,
+        #[builder(default = 0.0)]
+        acquire_error_rate: f64,
+        #[builder(default = 0.0)]
+        process_error_rate: f64,
     ) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&acquire_error_rate),
+            "acquire_error_rate must be between 0.0 and 1.0"
+        );
+        assert!(
+            (0.0..=1.0).contains(&process_error_rate),
+            "process_error_rate must be between 0.0 and 1.0"
+        );
+
         Self {
             batch_counter: Arc::new(AtomicUsize::new(0)),
             processing_latency: Arc::new(Mutex::new(processing_latency)),
             metrics,
             pool,
+            acquire_error_rate,
+            process_error_rate,
         }
     }
 }
@@ -70,7 +89,15 @@ impl Processor for SimProcessor {
 
     async fn acquire_resources(&self, _key: Self::Key) -> Result<Self::Resources, Self::Error> {
         if let Some(pool) = &self.pool {
-            Ok(Some(pool.acquire().await))
+            let conn = pool.acquire().await;
+            if self.acquire_error_rate > 0.0 {
+                let mut rng = rand::rng();
+                let roll: f64 = rng.random_range(0.0..1.0);
+                if roll < self.acquire_error_rate {
+                    return Err("simulated acquire error".to_string());
+                }
+            }
+            Ok(Some(conn))
         } else {
             Ok(None)
         }
@@ -96,6 +123,14 @@ impl Processor for SimProcessor {
             .sample();
 
         tokio::time::sleep(latency).await;
+
+        if self.process_error_rate > 0.0 {
+            let mut rng = rand::rng();
+            let roll: f64 = rng.random_range(0.0..1.0);
+            if roll < self.process_error_rate {
+                return Err("simulated process error".to_string());
+            }
+        }
 
         let completed_at = tokio::time::Instant::now();
 

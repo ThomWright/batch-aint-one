@@ -37,6 +37,8 @@ enum ItemOutcome {
     Success { completed_at: Instant },
     /// Item was rejected (e.g., queue full, policy rejection)
     Rejected { rejected_at: Instant },
+    /// Item processing resulted in an error
+    Errored { errored_at: Instant },
 }
 
 /// Metrics for a single processed item
@@ -63,6 +65,15 @@ impl ItemMetrics {
         }
     }
 
+    pub fn failure(input: SimulatedInput, errored_at: Instant) -> Self {
+        Self {
+            submitted_at: input.submitted_at,
+            outcome: ItemOutcome::Errored {
+                errored_at,
+            },
+        }
+    }
+
     /// Total end-to-end latency from submission to outcome
     pub fn total_latency(&self) -> Duration {
         self.end_time() - self.submitted_at
@@ -73,6 +84,7 @@ impl ItemMetrics {
         match &self.outcome {
             ItemOutcome::Success { completed_at, .. } => *completed_at,
             ItemOutcome::Rejected { rejected_at, .. } => *rejected_at,
+            ItemOutcome::Errored { errored_at, .. } => *errored_at,
         }
     }
 
@@ -145,6 +157,10 @@ impl MetricsCollector {
 
     pub fn items(&self) -> &[ItemMetrics] {
         &self.items
+    }
+
+    pub fn error_count(&self) -> usize {
+        self.items.iter().filter(|item| !item.is_success()).count()
     }
 
     /// Calculate the total simulated duration from first item submission to last outcome
@@ -303,6 +319,24 @@ impl MetricsCollector {
 
         let total: Duration = self.items.iter().map(|item| item.total_latency()).sum();
         total / self.items.len() as u32
+    }
+
+    /// Calculate mean error latency.
+    ///
+    /// Returns Duration::ZERO if no items have been processed.
+    pub fn mean_error_latency(&self) -> Duration {
+        let error_items: Vec<&ItemMetrics> = self
+            .items
+            .iter()
+            .filter(|item| !item.is_success())
+            .collect();
+
+        if error_items.is_empty() {
+            return Duration::ZERO;
+        }
+
+        let total: Duration = error_items.iter().map(|item| item.total_latency()).sum();
+        total / error_items.len() as u32
     }
 
     /// Calculate mean requests per second (RPS) across all time buckets.
