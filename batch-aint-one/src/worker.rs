@@ -83,9 +83,10 @@ impl<P: Processor> Worker<P> {
         limits: Limits,
         batching_policy: BatchingPolicy,
     ) -> (WorkerHandle, WorkerDropGuard, mpsc::Sender<BatchItem<P>>) {
-        let (item_tx, item_rx) = mpsc::channel(10);
-
-        let (timeout_tx, timeout_rx) = mpsc::channel(10);
+        // These channel sizes are somewhat arbitrary - they just need to be big enough to avoid
+        // backpressure in normal operation.
+        let (item_tx, item_rx) = mpsc::channel(limits.max_items_in_system_per_key());
+        let (msg_tx, msg_rx) = mpsc::channel(limits.max_items_in_system_per_key());
 
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
@@ -95,8 +96,8 @@ impl<P: Processor> Worker<P> {
             item_rx,
             processor,
 
-            msg_tx: timeout_tx,
-            msg_rx: timeout_rx,
+            msg_tx,
+            msg_rx,
 
             shutdown_notifier_rx: shutdown_rx,
             shutdown_notifiers: Vec::new(),

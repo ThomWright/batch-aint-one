@@ -122,15 +122,20 @@ impl Limits {
         /// Limits the maximum number of batches that can be processed concurrently for a key.
         #[builder(default = 10)]
         max_key_concurrency: usize,
-        /// Limits the maximum number of batches that can be queued for processing.
+        /// Limits the maximum number of batches that can be queued for processing for a key.
         max_batch_queue_size: Option<usize>,
     ) -> Self {
         Self {
             max_batch_size,
             max_key_concurrency,
-            max_batch_queue_size: max_batch_queue_size
-                .unwrap_or(max_key_concurrency * max_batch_size),
+            max_batch_queue_size: max_batch_queue_size.unwrap_or(max_key_concurrency),
         }
+    }
+
+    /// The maximum number of items that can be in the system for a given key.
+    pub(crate) fn max_items_in_system_per_key(&self) -> usize {
+        self.max_batch_size * self.max_key_concurrency
+            + self.max_batch_size * self.max_batch_queue_size
     }
 }
 
