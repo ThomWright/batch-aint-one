@@ -183,9 +183,10 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     pub(crate) fn take_generation(&mut self, generation: Generation) -> Option<Batch<P>> {
-        if self.processing.load(Ordering::Acquire) >= self.limits.max_key_concurrency {
-            return None;
-        }
+        debug_assert!(
+            self.processing.load(Ordering::Acquire) < self.limits.max_key_concurrency,
+            "Attempting to take generation {:?} from batch queue '{}' while at max key concurrency", generation, self.batcher_name
+        );
 
         for (index, batch) in self.queue.iter().enumerate() {
             if batch.is_generation(generation) {
@@ -202,6 +203,10 @@ impl<P: Processor> BatchQueue<P> {
             }
         }
 
+        debug_assert!(
+            false,
+            "Generation {:?} not found in batch queue '{}'", generation, self.batcher_name
+        );
         None
     }
 
