@@ -33,26 +33,22 @@ impl Processor for VariableTimingProcessor {
     type Error = String;
     type Resources = ();
 
-    async fn acquire_resources(&self, key: String) -> Result<(), String> {
+    async fn acquire_resources(&self, _key: String) -> Result<(), String> {
         let delay = Self::random_duration(self.resource_delay_range_ms);
         sleep(delay).await;
-        println!("Acquired resources for key '{key}' after {delay:?}");
         Ok(())
     }
 
     async fn process(
         &self,
-        key: String,
+        _key: String,
         inputs: impl Iterator<Item = i32> + Send,
         _resources: (),
     ) -> Result<Vec<i32>, String> {
         let items: Vec<_> = inputs.collect();
-        let batch_size = items.len();
 
         let delay = Self::random_duration(self.processing_delay_range_ms);
         sleep(delay).await;
-
-        println!("Processed batch of {batch_size} items for key '{key}' after {delay:?}",);
 
         Ok(items.into_iter().map(|x| x * 2).collect())
     }
@@ -83,6 +79,7 @@ async fn variable_timing(
             Limits::builder()
                 .max_batch_size(batch_size)
                 .max_key_concurrency(key_concurrency)
+                .max_batch_queue_size(10)
                 .build(),
         )
         .batching_policy(policy)
@@ -108,13 +105,7 @@ async fn variable_timing(
                 sleep(delay).await;
 
                 let key = format!("key_{}", i_key);
-                let result = batcher.add(key, j_item).await;
-                match result {
-                    Ok(output) => {
-                        println!("Item {j_item} for key_{i_key} processed successfully: {output}")
-                    }
-                    Err(e) => println!("Item {j_item} for key_{i_key} failed: {e}"),
-                };
+                batcher.add(key, j_item).await.expect("task should succeed");
             });
             tasks.push(task);
         }
@@ -130,52 +121,3 @@ async fn variable_timing(
     worker.shut_down().await;
     worker.wait_for_shutdown().await;
 }
-
-// #[tokio::test]
-// async fn variable_timing_size_policy() {
-//     let processor = VariableTimingProcessor::new(
-//         (5, 25),  // resource acquisition: 5-25ms
-//         (30, 80), // processing: 30-80ms
-//     );
-
-//     let batcher = Batcher::builder()
-//         .name("variable_timing_size")
-//         .processor(processor)
-//         .limits(
-//             Limits::default()
-//                 .with_max_batch_size(4)
-//                 .with_max_key_concurrency(2),
-//         )
-//         .batching_policy(BatchingPolicy::Size)
-//         .build();
-
-//     let mut tasks = Vec::new();
-
-//     // Spawn tasks with variable arrival times
-//     for i in 1..=16 {
-//         let batcher = batcher.clone();
-//         let task = tokio::spawn(async move {
-//             // Variable arrival time between items
-//             random_arrival_delay((5, 20)).await;
-
-//             let key = format!("batch_{}", i % 4); // 4 different keys
-//             let result = batcher.add(key, i * 10).await;
-
-//             match result {
-//                 Ok(output) => println!("Item {} processed successfully: {}", i, output),
-//                 Err(e) => println!("Item {} failed: {}", i, e),
-//             }
-//         });
-//         tasks.push(task);
-//     }
-
-//     // Wait for all tasks to complete
-//     for task in tasks {
-//         task.await.expect("Task should complete");
-//     }
-
-//     // Shutdown
-//     let worker = batcher.worker_handle();
-//     worker.shut_down().await;
-//     worker.wait_for_shutdown().await;
-// }
