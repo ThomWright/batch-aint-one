@@ -63,15 +63,14 @@ impl<P: Processor> BatchQueue<P> {
         next.is_full(self.limits.max_batch_size)
     }
 
-    /// Check if the next batch has reached the specified size.
-    pub(crate) fn has_next_batch_reached_size(&self, size: usize) -> bool {
-        let back = self.queue.front().expect("Should always be non-empty");
-        back.len() >= size
+    pub(crate) fn has_last_batch_reached_size(&self, size: usize) -> bool {
+        let last = self.queue.back().expect("Should always be non-empty");
+        last.len() >= size
     }
 
-    pub(crate) fn is_next_batch_acquiring_resources(&self) -> bool {
-        let next = self.queue.front().expect("Should always be non-empty");
-        next.has_started_acquiring()
+    pub(crate) fn is_last_batch_acquiring_resources(&self) -> bool {
+        let last = self.queue.back().expect("Should always be non-empty");
+        last.has_started_acquiring()
     }
 
     pub(crate) fn has_next_batch_timeout_expired(&self) -> bool {
@@ -119,11 +118,13 @@ impl<P: Processor> BatchQueue<P> {
     /// Are we currently at maximum total capacity for this key?
     ///
     /// Includes both processing and pre-acquiring batches.
-    pub(crate) fn at_max_total_capacity(&self) -> bool {
-        self.pre_acquiring
-            .load(std::sync::atomic::Ordering::Acquire)
-            + self.processing.load(std::sync::atomic::Ordering::Acquire)
-            >= self.limits.max_key_concurrency
+    pub(crate) fn at_max_total_processing_capacity(&self) -> bool {
+        let pre_acquiring = self
+            .pre_acquiring
+            .load(std::sync::atomic::Ordering::Acquire);
+        let processing = self.processing.load(std::sync::atomic::Ordering::Acquire);
+
+        pre_acquiring + processing >= self.limits.max_key_concurrency
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<P>) {

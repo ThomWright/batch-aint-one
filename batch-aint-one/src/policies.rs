@@ -208,7 +208,7 @@ impl BatchingPolicy {
     /// Check if the item should be rejected due to capacity constraints.
     fn should_reject<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> Option<RejectionReason> {
         if batch_queue.is_full() {
-            if batch_queue.at_max_total_capacity() {
+            if batch_queue.at_max_total_processing_capacity() {
                 Some(RejectionReason::BatchQueueFull(ConcurrencyStatus::MaxedOut))
             } else {
                 Some(RejectionReason::BatchQueueFull(
@@ -238,9 +238,9 @@ impl BatchingPolicy {
             }
 
             Self::Immediate => {
-                if batch_queue.at_max_total_capacity() {
+                if batch_queue.at_max_total_processing_capacity() {
                     OnAdd::Add
-                } else if batch_queue.adding_to_new_batch() {
+                } else if batch_queue.adding_to_new_batch() || !batch_queue.is_last_batch_acquiring_resources() {
                     OnAdd::AddAndAcquireResources
                 } else {
                     OnAdd::Add
@@ -248,13 +248,13 @@ impl BatchingPolicy {
             }
 
             Self::Balanced { min_size_hint } => {
-                if batch_queue.at_max_total_capacity() {
+                if batch_queue.at_max_total_processing_capacity() {
                     OnAdd::Add
                 } else if batch_queue.adding_to_new_batch() && !batch_queue.is_processing() {
                     // First item, nothing else processing
                     OnAdd::AddAndAcquireResources
-                } else if batch_queue.has_next_batch_reached_size(min_size_hint.saturating_sub(1))
-                    && !batch_queue.is_next_batch_acquiring_resources()
+                } else if batch_queue.has_last_batch_reached_size(min_size_hint.saturating_sub(1))
+                    && !batch_queue.is_last_batch_acquiring_resources()
                 {
                     OnAdd::AddAndAcquireResources
                 } else {
@@ -268,7 +268,7 @@ impl BatchingPolicy {
 
     /// Decide between Add and AddAndProcess based on processing capacity.
     fn add_or_process<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
-        if batch_queue.at_max_total_capacity() {
+        if batch_queue.at_max_total_processing_capacity() {
             // We can't process the batch yet, so just add to it.
             OnAdd::Add
         } else {
@@ -281,7 +281,7 @@ impl BatchingPolicy {
         generation: Generation,
         batch_queue: &BatchQueue<P>,
     ) -> ProcessAction {
-        if batch_queue.at_max_total_capacity() {
+        if batch_queue.at_max_total_processing_capacity() {
             ProcessAction::DoNothing
         } else {
             Self::process_generation_if_ready(generation, batch_queue)
@@ -293,7 +293,7 @@ impl BatchingPolicy {
         generation: Generation,
         batch_queue: &BatchQueue<P>,
     ) -> ProcessAction {
-        if batch_queue.at_max_total_capacity() {
+        if batch_queue.at_max_total_processing_capacity() {
             ProcessAction::DoNothing
         } else {
             Self::process_generation_if_ready(generation, batch_queue)
@@ -301,7 +301,7 @@ impl BatchingPolicy {
     }
 
     pub(crate) fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> ProcessAction {
-        if batch_queue.at_max_total_capacity() {
+        if batch_queue.at_max_total_processing_capacity() {
             return ProcessAction::DoNothing;
         }
         match self {
