@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// A policy controlling when batches get processed.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum BatchingPolicy {
     /// Immediately process the batch if possible.
@@ -85,7 +85,7 @@ pub struct Limits {
 }
 
 /// What to do when a batch becomes full.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum OnFull {
     /// Immediately attempt process the batch. If the maximum concurrency has been reached for the
