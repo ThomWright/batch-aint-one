@@ -259,7 +259,7 @@ async fn test_longer_simulation() {
     let config = ScenarioConfig {
         name: "longer-test".to_string(),
         termination: TerminationCondition::ItemCount(num_items),
-        key_distribution: KeyDistributionConfig::Single,
+        key_distribution: KeyDistributionConfig::Zipf { num_keys: 20, s: 1.0 },
         arrival_rate,
         seed: Some(seed),
         processing_latency: latency_profile.clone(),
