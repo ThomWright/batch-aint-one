@@ -278,18 +278,8 @@ impl MetricsCollector {
         let sum: usize = batch_sizes.iter().sum();
         let mean = sum as f64 / total_batches as f64;
 
-        let median = if total_batches % 2 == 0 {
-            let mid = total_batches / 2;
-            (batch_sizes[mid - 1] + batch_sizes[mid]) as f64 / 2.0
-        } else {
-            batch_sizes[total_batches / 2] as f64
-        };
-
-        // Build histogram
-        let mut size_distribution: HashMap<usize, usize> = HashMap::new();
-        for size in &batch_sizes {
-            *size_distribution.entry(*size).or_insert(0) += 1;
-        }
+        let median = calculate_median(&batch_sizes);
+        let size_distribution = build_frequency_map(&batch_sizes);
 
         BatchEfficiency {
             total_batches,
@@ -396,6 +386,30 @@ fn duration_percentile(sorted_data: &[Duration], p: f64) -> Duration {
     Duration::from_secs_f64(lower * (1.0 - weight) + upper * weight)
 }
 
+/// Calculate median from sorted values
+fn calculate_median(sorted_values: &[usize]) -> f64 {
+    if sorted_values.is_empty() {
+        return 0.0;
+    }
+
+    let len = sorted_values.len();
+    if len % 2 == 0 {
+        let mid = len / 2;
+        (sorted_values[mid - 1] + sorted_values[mid]) as f64 / 2.0
+    } else {
+        sorted_values[len / 2] as f64
+    }
+}
+
+/// Build a frequency map counting occurrences of each value
+fn build_frequency_map<T: Eq + std::hash::Hash + Copy>(values: &[T]) -> HashMap<T, usize> {
+    let mut map = HashMap::new();
+    for value in values {
+        *map.entry(*value).or_insert(0) += 1;
+    }
+    map
+}
+
 /// Analysis of batch efficiency
 #[derive(Debug, Default)]
 pub struct BatchEfficiency {
@@ -442,6 +456,60 @@ impl BatchEfficiency {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_calculate_median_empty() {
+        assert_eq!(calculate_median(&[]), 0.0);
+    }
+
+    #[test]
+    fn test_calculate_median_single() {
+        assert_eq!(calculate_median(&[5]), 5.0);
+    }
+
+    #[test]
+    fn test_calculate_median_two_values() {
+        assert_eq!(calculate_median(&[3, 7]), 5.0);
+    }
+
+    #[test]
+    fn test_calculate_median_odd_count() {
+        assert_eq!(calculate_median(&[1, 2, 3, 4, 5]), 3.0);
+    }
+
+    #[test]
+    fn test_calculate_median_even_count() {
+        assert_eq!(calculate_median(&[1, 2, 3, 4]), 2.5);
+    }
+
+    #[test]
+    fn test_build_frequency_map_empty() {
+        let map: HashMap<usize, usize> = build_frequency_map(&[]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_build_frequency_map_single() {
+        let map = build_frequency_map(&[5]);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&5), Some(&1));
+    }
+
+    #[test]
+    fn test_build_frequency_map_all_same() {
+        let map = build_frequency_map(&[7, 7, 7, 7]);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&7), Some(&4));
+    }
+
+    #[test]
+    fn test_build_frequency_map_varied() {
+        let map = build_frequency_map(&[1, 2, 2, 3, 3, 3]);
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get(&1), Some(&1));
+        assert_eq!(map.get(&2), Some(&2));
+        assert_eq!(map.get(&3), Some(&3));
+    }
 
     #[test]
     fn test_rps_calculation() {
