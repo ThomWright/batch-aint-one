@@ -147,6 +147,31 @@ impl Default for Limits {
     }
 }
 
+impl Display for Limits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "batch_size: {}, key_concurrency: {}, queue_size: {}",
+            self.max_batch_size, self.max_key_concurrency, self.max_batch_queue_size
+        )
+    }
+}
+
+impl Display for BatchingPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BatchingPolicy::Immediate => write!(f, "Immediate"),
+            BatchingPolicy::Size => write!(f, "Size"),
+            BatchingPolicy::Duration(duration, on_full) => {
+                write!(f, "Duration({}ms, {:?})", duration.as_millis(), on_full)
+            }
+            BatchingPolicy::Balanced { min_size_hint } => {
+                write!(f, "Balanced(min_size: {})", min_size_hint)
+            }
+        }
+    }
+}
+
 impl BatchingPolicy {
     /// Normalise the policy to ensure it's valid for the given limits.
     pub(crate) fn normalise(self, limits: Limits) -> Self {
