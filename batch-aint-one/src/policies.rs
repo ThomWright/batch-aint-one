@@ -68,14 +68,9 @@ pub enum BatchingPolicy {
 ///
 /// New items will be rejected when both the limits have been reached.
 ///
-/// `max_key_concurrency * max_batch_size` is both:
+/// `max_key_concurrency * max_batch_size` is the number of items that can be processed concurrently.
 ///
-/// - The number of items that can be processed concurrently.
-/// - By default, the number of items that can be queued.
-///
-/// So when using the default `max_batch_queue_size` the total number of items in the system for a
-/// given key can be up to `2 * max_key_concurrency
-/// * max_batch_size`.
+/// `max_batch_queue_size * max_batch_size` is the number of items that can be queued.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Limits {
