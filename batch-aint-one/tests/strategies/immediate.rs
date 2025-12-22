@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use batch_aint_one::{Batcher, BatchingPolicy, Limits};
+use assert_matches::assert_matches;
+use batch_aint_one::{
+    BatchError, Batcher, BatchingPolicy, Limits,
+    error::{ConcurrencyStatus, RejectionReason},
+};
 use futures::{FutureExt, future::join_all};
 use tokio::{join, time::Instant};
 
@@ -134,11 +138,11 @@ async fn single_concurrency_with_wait() {
     assert_duration!(d1, processing_dur, std::time::Duration::from_millis(2));
 }
 
-/// Given we use a Immediate strategy with max concurrency = 1
-/// When we submit the maximum size + 1 at once (first batch of 1, then a full batch)
+/// Given we use a Immediate strategy with max concurrency = 1 and default queue size
+/// When we submit the maximum batch size + 1 at once (first batch of 1, then a full batch)
 /// Then they should all succeed
 #[tokio::test]
-async fn single_concurrency_full() {
+async fn single_concurrency_default_queue_size() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
@@ -148,43 +152,7 @@ async fn single_concurrency_full() {
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
             Limits::builder()
-                .max_batch_size(100)
-                .max_key_concurrency(1)
-                .build(),
-        )
-        .batching_policy(BatchingPolicy::Immediate)
-        .build();
-
-    let handler = |i: i32| {
-        let f = batcher.add("key".to_string(), i.to_string());
-        async move { f.await.unwrap() }
-    };
-
-    let mut tasks = vec![];
-    for i in 1..=101 {
-        tasks.push(tokio_test::task::spawn(handler(i)));
-    }
-
-    let outputs = join_all(tasks.into_iter()).await;
-
-    assert_eq!(outputs.last().unwrap(), "101 processed for key");
-}
-
-/// Given we use a Immediate strategy with max concurrency = 1
-/// When we submit > the maximum size + 1 at once
-/// Then they should all succeed except one
-#[tokio::test]
-async fn single_concurrency_reject() {
-    tokio::time::pause();
-
-    let processing_dur = Duration::from_millis(500);
-
-    let batcher = Batcher::builder()
-        .name("test_single_concurrency_reject")
-        .processor(SimpleBatchProcessor(processing_dur))
-        .limits(
-            Limits::builder()
-                .max_batch_size(100)
+                .max_batch_size(10)
                 .max_key_concurrency(1)
                 .build(),
         )
@@ -197,7 +165,7 @@ async fn single_concurrency_reject() {
     };
 
     let mut tasks = vec![];
-    for i in 1..=102 {
+    for i in 1..=11 {
         tasks.push(tokio_test::task::spawn(
             tokio::time::sleep(Duration::from_millis(i)).then(move |_| handler(i)),
         ));
@@ -207,8 +175,54 @@ async fn single_concurrency_reject() {
 
     let (ok, err): (Vec<_>, Vec<_>) = outputs.into_iter().partition(|item| item.is_ok());
 
-    assert_eq!(ok.len(), 101);
-    assert_eq!(err.len(), 1);
+    assert_eq!(ok.len(), 11, "All items should succeed");
+    assert_eq!(err.len(), 0, "No items should fail");
+}
+
+/// Given we use a Immediate strategy with max concurrency = 1 and max queue size = 1
+/// When we submit > the maximum size + 1 at once
+/// Then they should all succeed except one
+#[tokio::test]
+async fn single_concurrency_reject_when_exceeding_queue_size() {
+    tokio::time::pause();
+
+    let processing_dur = Duration::from_millis(500);
+
+    let batcher = Batcher::builder()
+        .name("test_single_concurrency_reject")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(
+            Limits::builder()
+                .max_batch_size(10)
+                .max_key_concurrency(1)
+                .max_batch_queue_size(1)
+                .build(),
+        )
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
+
+    let handler = |i: u64| {
+        let f = batcher.add("key".to_string(), i.to_string());
+        f
+    };
+
+    let mut tasks = vec![];
+    for i in 1..=12 {
+        tasks.push(tokio_test::task::spawn(
+            tokio::time::sleep(Duration::from_millis(i)).then(move |_| handler(i)),
+        ));
+    }
+
+    let outputs = join_all(tasks.into_iter()).await;
+
+    let (ok, err): (Vec<_>, Vec<_>) = outputs.into_iter().partition(|item| item.is_ok());
+
+    assert_eq!(ok.len(), 11, "All items except one should succeed");
+    assert_eq!(err.len(), 1, "One item should fail");
+    assert_matches!(
+        err.first().unwrap().as_ref().err().unwrap(),
+        BatchError::Rejected(RejectionReason::BatchQueueFull(ConcurrencyStatus::MaxedOut))
+    );
 }
 
 /// Given we use a Immediate strategy with max concurrency = 2

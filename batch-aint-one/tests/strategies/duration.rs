@@ -76,7 +76,7 @@ async fn loaded_process_on_full() {
 }
 
 /// Given we use a Duration strategy
-/// When we submit more items at once than the maximum batch size
+/// When we submit more items at once than the maximum queue size
 ///  And we reject when full
 /// Then only one batch should succeed, the rest should get rejected
 #[tokio::test]
@@ -92,6 +92,7 @@ async fn loaded_reject_on_full() {
             Limits::builder()
                 .max_key_concurrency(1)
                 .max_batch_size(10)
+                .max_batch_queue_size(1)
                 .build(),
         )
         .batching_policy(BatchingPolicy::Duration(

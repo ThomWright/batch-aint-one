@@ -287,10 +287,10 @@ async fn multiple_concurrent_batches() {
 }
 
 /// Given we use Balanced strategy
-/// When we exceed max capacity (max_concurrency * max_batch_size * 2)
+/// When we exceed max queue size
 /// Then additional items should be rejected
 #[tokio::test]
-async fn rejects_when_over_capacity() {
+async fn rejects_when_exceeding_queue_size() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(500);
@@ -303,6 +303,7 @@ async fn rejects_when_over_capacity() {
                 Limits::builder()
                     .max_batch_size(10)
                     .max_key_concurrency(1)
+                    .max_batch_queue_size(2)
                     .build(),
             )
             .batching_policy(BatchingPolicy::Balanced { min_size_hint: 5 })

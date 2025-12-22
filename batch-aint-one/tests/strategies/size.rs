@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use batch_aint_one::{Batcher, BatchingPolicy, Limits};
+use assert_matches::assert_matches;
+use batch_aint_one::{
+    BatchError, Batcher, BatchingPolicy, Limits,
+    error::{ConcurrencyStatus, RejectionReason},
+};
 use futures::future::join_all;
 use tokio::join;
 
@@ -69,6 +73,7 @@ async fn max_concurrency_limit() {
             Limits::builder()
                 .max_batch_size(1)
                 .max_key_concurrency(2)
+                .max_batch_queue_size(2)
                 .build(),
         )
         .batching_policy(BatchingPolicy::Size)
@@ -94,9 +99,9 @@ async fn max_concurrency_limit() {
     assert_eq!(o2.unwrap(), "2 processed for A".to_string());
     assert_eq!(o3.unwrap(), "3 processed for A".to_string());
     assert_eq!(o4.unwrap(), "4 processed for A".to_string());
-    assert_eq!(
-        o5.unwrap_err().to_string(),
-        "Batch item rejected: the batch queue is full and maximum concurrency reached",
+    assert_matches!(
+        o5.unwrap_err(),
+        BatchError::Rejected(RejectionReason::BatchQueueFull(ConcurrencyStatus::MaxedOut))
     );
     assert_eq!(o6.unwrap(), "1 processed for B".to_string());
 }

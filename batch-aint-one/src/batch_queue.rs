@@ -57,6 +57,7 @@ impl<P: Processor> BatchQueue<P> {
         }
     }
 
+    /// Is the next batch – the one at the front of the queue – full?
     pub(crate) fn is_next_batch_full(&self) -> bool {
         let next = self.queue.front().expect("Should always be non-empty");
         next.is_full(self.limits.max_batch_size)
@@ -78,10 +79,11 @@ impl<P: Processor> BatchQueue<P> {
         next.has_timeout_expired()
     }
 
+    /// Is this batch queue full?
     pub(crate) fn is_full(&self) -> bool {
         let back = self.queue.back().expect("Should always be non-empty");
-        self.queue.len() == self.limits.max_key_concurrency
-            && back.len() == self.limits.max_batch_size
+        self.queue.len() >= self.limits.max_batch_queue_size
+            && back.len() >= self.limits.max_batch_size
     }
 
     pub(crate) fn is_empty(&self) -> bool {
