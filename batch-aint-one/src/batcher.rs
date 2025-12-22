@@ -74,6 +74,7 @@ impl<P: Processor> Batcher<P> {
             .send(BatchItem {
                 key,
                 input,
+                submitted_at: tokio::time::Instant::now(),
                 tx,
                 requesting_span,
             })

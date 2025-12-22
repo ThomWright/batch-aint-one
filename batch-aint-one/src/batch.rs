@@ -28,6 +28,7 @@ use crate::{
 pub(crate) struct BatchItem<P: Processor> {
     pub key: P::Key,
     pub input: P::Input,
+    pub submitted_at: tokio::time::Instant,
     /// Used to send the output back.
     pub tx: SendOutput<P::Output, P::Error>,
     /// This item was added to the batch as part of this span.
@@ -348,11 +349,18 @@ impl<P: Processor> Batch<P> {
         let name = self.inner.name();
         let key = self.inner.key();
 
+        let delay_since_first_submission = self.first_submission()
+            .map(|input| {
+                input.elapsed().as_secs()
+            })
+            .unwrap_or(0);
+
         let outer_span = span!(Level::INFO, "process batch",
             batch.name = &name,
             batch.key = ?key,
             // Convert to u64 so tracing will treat this as an integer instead of a string.
-            batch.size = batch_size as u64
+            batch.size = batch_size as u64,
+            batch.first_item_wait_time_secs = delay_since_first_submission,
         );
 
         // Extract the inputs and response channels from the batch items.
@@ -375,7 +383,7 @@ impl<P: Processor> Batch<P> {
             .await;
 
         // Send the outputs back to the requesters.
-        Self::send_outputs(response_channels, outputs, Some(outer_span)).await;
+        Self::send_outputs(response_channels, outputs, Some(outer_span));
 
         drop(processing_count_guard);
 
@@ -397,12 +405,12 @@ impl<P: Processor> Batch<P> {
             .collect();
 
         tokio::spawn(async move {
-            Self::send_outputs(response_channels, outputs, None).await;
+            Self::send_outputs(response_channels, outputs, None);
             Self::finalise(self.inner.key().clone(), on_finished).await;
         });
     }
 
-    async fn send_outputs(
+    fn send_outputs(
         response_channels: Vec<SendOutput<P::Output, P::Error>>,
         outputs: Vec<Result<P::Output, BatchError<P::Error>>>,
         process_span: Option<Span>,
@@ -437,6 +445,10 @@ impl<P: Processor> Batch<P> {
         self.resources_state
             .lock()
             .expect("Resources mutex should not be poisoned")
+    }
+
+    fn first_submission(&self) -> Option<tokio::time::Instant> {
+        self.items.first().map(|item| item.submitted_at)
     }
 }
 
@@ -499,31 +511,29 @@ mod tests {
 
     use super::{Batch, BatchItem};
 
-    #[tokio::test]
-    async fn is_processable_timeout() {
-        time::pause();
-
-        #[derive(Clone)]
-        struct DummyProcessor;
-        impl crate::Processor for DummyProcessor {
-            type Key = String;
-            type Input = String;
-            type Output = String;
-            type Error = String;
-            type Resources = ();
-            async fn acquire_resources(&self, _key: String) -> Result<(), String> {
-                Ok(())
-            }
-            async fn process(
-                &self,
-                _key: String,
-                _inputs: impl Iterator<Item = String> + Send,
-                _resources: (),
-            ) -> Result<Vec<String>, String> {
-                Ok(vec![])
-            }
+    #[derive(Clone)]
+    struct DummyProcessor;
+    impl crate::Processor for DummyProcessor {
+        type Key = String;
+        type Input = String;
+        type Output = String;
+        type Error = String;
+        type Resources = ();
+        async fn acquire_resources(&self, _key: String) -> Result<(), String> {
+            Ok(())
         }
+        async fn process(
+            &self,
+            _key: String,
+            _inputs: impl Iterator<Item = String> + Send,
+            _resources: (),
+        ) -> Result<Vec<String>, String> {
+            Ok(vec![])
+        }
+    }
 
+    #[tokio::test(start_paused = true)]
+    async fn is_processable_timeout() {
         let mut batch: Batch<DummyProcessor> = Batch::new(
             "test batcher".to_string(),
             "key".to_string(),
@@ -536,6 +546,7 @@ mod tests {
         batch.push(BatchItem {
             key: "key".to_string(),
             input: "item".to_string(),
+            submitted_at: tokio::time::Instant::now(),
             tx,
             requesting_span: Span::none(),
         });
@@ -552,5 +563,46 @@ mod tests {
         time::advance(Duration::from_millis(1)).await;
 
         assert!(batch.is_ready(), "should be processable after 50ms");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_submission() {
+        let mut batch: Batch<DummyProcessor> = Batch::new(
+            "test batcher".to_string(),
+            "key".to_string(),
+            Arc::default(),
+            Arc::default(),
+        );
+
+        let (tx, _rx) = oneshot::channel();
+        batch.push(BatchItem {
+            key: "key".to_string(),
+            input: "item".to_string(),
+            submitted_at: tokio::time::Instant::now(),
+            tx,
+            requesting_span: Span::none(),
+        });
+
+        time::advance(Duration::from_millis(50)).await;
+
+        let (tx, _rx) = oneshot::channel();
+        batch.push(BatchItem {
+            key: "key".to_string(),
+            input: "item".to_string(),
+            submitted_at: tokio::time::Instant::now(),
+            tx,
+            requesting_span: Span::none(),
+        });
+
+        assert!(batch.len() == 2, "batch should have 2 items");
+        assert!(
+            batch.first_submission().is_some(),
+            "first submission should be set"
+        );
+        assert_eq!(
+            batch.first_submission().unwrap().elapsed().as_millis(),
+            50,
+            "first submission elapsed time should be 50 ms ago"
+        );
     }
 }

@@ -1,4 +1,7 @@
-use std::{fmt::Debug, time::Duration};
+use std::{
+    fmt::{self, Debug, Display},
+    time::Duration,
+};
 
 use bon::bon;
 
@@ -382,6 +385,7 @@ mod tests {
         BatchItem {
             key,
             input,
+            submitted_at: tokio::time::Instant::now(),
             tx,
             requesting_span: Span::none(),
         }
