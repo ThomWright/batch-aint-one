@@ -480,7 +480,9 @@ impl<R> ResourcesState<R> {
     }
 
     fn acquiring(&mut self, handle: JoinHandle<()>) {
-        *self = ResourcesState::Acquiring(handle);
+        if matches!(*self, ResourcesState::StartedAcquiring) {
+            *self = ResourcesState::Acquiring(handle);
+        }
     }
 
     fn is_acquiring(&self) -> bool {
