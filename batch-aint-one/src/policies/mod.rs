@@ -70,21 +70,6 @@ pub enum BatchingPolicy {
     },
 }
 
-// trait PolicyImpl {
-//     fn on_add<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd;
-//     fn on_timeout<P: Processor>(
-//         &self,
-//         generation: Generation,
-//         batch_queue: &BatchQueue<P>,
-//     ) -> ProcessGenerationAction;
-//     fn on_resources_acquired<P: Processor>(
-//         &self,
-//         generation: Generation,
-//         batch_queue: &BatchQueue<P>,
-//     ) -> ProcessGenerationAction;
-//     fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> ProcessNextAction;
-// }
-
 /// What to do when a batch becomes full.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
@@ -175,46 +160,12 @@ impl BatchingPolicy {
     /// Determine the appropriate action based on policy and batch state.
     fn on_add_inner<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
         match self {
-            Self::Size if batch_queue.last_space_in_batch() => self.add_or_process(batch_queue),
-
-            Self::Duration(_dur, on_full) if batch_queue.last_space_in_batch() => {
-                if matches!(on_full, OnFull::Process) {
-                    self.add_or_process(batch_queue)
-                } else {
-                    OnAdd::Add
-                }
-            }
-
-            Self::Duration(dur, _on_full) if batch_queue.adding_to_new_batch() => {
-                OnAdd::AddAndProcessAfter(*dur)
-            }
-
-            Self::Immediate => {
-                if batch_queue.at_max_total_processing_capacity() {
-                    OnAdd::Add
-                } else if batch_queue.adding_to_new_batch() {
-                    OnAdd::AddAndAcquireResources
-                } else {
-                    OnAdd::Add
-                }
-            }
-
+            Self::Immediate => Self::immediate_on_add_inner(batch_queue),
+            Self::Size => self.size_on_add_inner(batch_queue),
+            Self::Duration(dur, on_full) => self.duration_on_add_inner(*dur, *on_full, batch_queue),
             Self::Balanced { min_size_hint } => {
-                if batch_queue.at_max_total_processing_capacity() {
-                    OnAdd::Add
-                } else if batch_queue.adding_to_new_batch() && !batch_queue.is_processing() {
-                    // First item, nothing else processing
-                    OnAdd::AddAndAcquireResources
-                } else if batch_queue.has_last_batch_reached_size(min_size_hint.saturating_sub(1))
-                    && !batch_queue.is_last_batch_acquiring_resources()
-                {
-                    OnAdd::AddAndAcquireResources
-                } else {
-                    OnAdd::Add
-                }
+                Self::balanced_on_add_inner(*min_size_hint, batch_queue)
             }
-
-            BatchingPolicy::Size | BatchingPolicy::Duration(_, _) => OnAdd::Add,
         }
     }
 
@@ -257,24 +208,97 @@ impl BatchingPolicy {
             return ProcessNextAction::DoNothing;
         }
         match self {
-            BatchingPolicy::Immediate => Self::process_if_any_ready(batch_queue),
-
-            BatchingPolicy::Balanced { .. } => Self::process_if_any_ready(batch_queue),
-
-            BatchingPolicy::Duration(_, _) if batch_queue.has_next_batch_timeout_expired() => {
-                ProcessNextAction::ProcessNext
-            }
-
-            BatchingPolicy::Duration(_, _) | BatchingPolicy::Size => {
-                if batch_queue.is_next_batch_full() {
-                    ProcessNextAction::ProcessNext
-                } else {
-                    ProcessNextAction::DoNothing
-                }
-            }
+            BatchingPolicy::Immediate => Self::immediate_on_finish(batch_queue),
+            BatchingPolicy::Size => Self::size_on_finish(batch_queue),
+            BatchingPolicy::Duration(_, _) => Self::duration_on_finish(batch_queue),
+            BatchingPolicy::Balanced { .. } => Self::balanced_on_finish(batch_queue),
         }
     }
 
+    // Immediate policy functions
+    fn immediate_on_add_inner<P: Processor>(batch_queue: &BatchQueue<P>) -> OnAdd {
+        if batch_queue.at_max_total_processing_capacity() {
+            OnAdd::Add
+        } else if batch_queue.adding_to_new_batch() {
+            OnAdd::AddAndAcquireResources
+        } else {
+            OnAdd::Add
+        }
+    }
+
+    fn immediate_on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessNextAction {
+        Self::process_if_any_ready(batch_queue)
+    }
+
+    // Size policy functions
+    fn size_on_add_inner<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
+        if batch_queue.last_space_in_batch() {
+            self.add_or_process(batch_queue)
+        } else {
+            OnAdd::Add
+        }
+    }
+
+    fn size_on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessNextAction {
+        if batch_queue.is_next_batch_full() {
+            ProcessNextAction::ProcessNext
+        } else {
+            ProcessNextAction::DoNothing
+        }
+    }
+
+    // Duration policy functions
+    fn duration_on_add_inner<P: Processor>(
+        &self,
+        duration: Duration,
+        on_full: OnFull,
+        batch_queue: &BatchQueue<P>,
+    ) -> OnAdd {
+        if batch_queue.last_space_in_batch() {
+            if matches!(on_full, OnFull::Process) {
+                self.add_or_process(batch_queue)
+            } else {
+                OnAdd::Add
+            }
+        } else if batch_queue.adding_to_new_batch() {
+            OnAdd::AddAndProcessAfter(duration)
+        } else {
+            OnAdd::Add
+        }
+    }
+
+    fn duration_on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessNextAction {
+        if batch_queue.has_next_batch_timeout_expired() {
+            ProcessNextAction::ProcessNext
+        } else {
+            Self::size_on_finish(batch_queue)
+        }
+    }
+
+    // Balanced policy functions
+    fn balanced_on_add_inner<P: Processor>(
+        min_size_hint: usize,
+        batch_queue: &BatchQueue<P>,
+    ) -> OnAdd {
+        if batch_queue.at_max_total_processing_capacity() {
+            OnAdd::Add
+        } else if batch_queue.adding_to_new_batch() && !batch_queue.is_processing() {
+            // First item, nothing else processing
+            OnAdd::AddAndAcquireResources
+        } else if batch_queue.has_last_batch_reached_size(min_size_hint.saturating_sub(1))
+            && !batch_queue.is_last_batch_acquiring_resources()
+        {
+            OnAdd::AddAndAcquireResources
+        } else {
+            OnAdd::Add
+        }
+    }
+
+    fn balanced_on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessNextAction {
+        Self::process_if_any_ready(batch_queue)
+    }
+
+    // Common helper functions
     fn process_generation_if_ready<P: Processor>(
         generation: Generation,
         batch_queue: &BatchQueue<P>,
