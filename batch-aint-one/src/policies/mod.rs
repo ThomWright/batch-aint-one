@@ -189,7 +189,10 @@ impl BatchingPolicy {
         batch_queue: &BatchQueue<P>,
     ) -> OnGenerationEvent {
         if batch_queue.at_max_total_processing_capacity() {
-            debug_assert!(false, "on_resources_acquired called when at max processing capacity");
+            debug_assert!(
+                false,
+                "on_resources_acquired called when at max processing capacity"
+            );
             OnGenerationEvent::DoNothing
         } else {
             Self::process_generation_if_ready(generation, batch_queue)
