@@ -7,15 +7,10 @@ use crate::{Processor, batch_queue::BatchQueue};
 use super::{OnAdd, OnFinish};
 
 pub(super) fn on_add<P: Processor>(batch_queue: &BatchQueue<P>) -> OnAdd {
-    if batch_queue.last_space_in_batch() {
-        if batch_queue.at_max_total_processing_capacity() {
-            OnAdd::Add
-        } else {
-            OnAdd::AddAndProcess
-        }
-    } else {
-        OnAdd::Add
+    if !batch_queue.last_space_in_batch() || batch_queue.at_max_total_processing_capacity() {
+        return OnAdd::Add;
     }
+    OnAdd::AddAndProcess
 }
 
 pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> OnFinish {

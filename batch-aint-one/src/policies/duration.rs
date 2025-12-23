@@ -13,20 +13,18 @@ pub(super) fn on_add<P: Processor>(
     on_full: OnFull,
     batch_queue: &BatchQueue<P>,
 ) -> OnAdd {
-    if batch_queue.last_space_in_batch() {
-        if matches!(on_full, OnFull::Process) {
-            if batch_queue.at_max_total_processing_capacity() {
-                OnAdd::Add
-            } else {
-                OnAdd::AddAndProcess
-            }
-        } else {
-            OnAdd::Add
-        }
-    } else if batch_queue.adding_to_new_batch() {
-        OnAdd::AddAndProcessAfter(duration)
-    } else {
-        OnAdd::Add
+    if batch_queue.adding_to_new_batch() {
+        return OnAdd::AddAndProcessAfter(duration);
+    }
+
+    if !batch_queue.last_space_in_batch() {
+        return OnAdd::Add;
+    }
+
+    // Last space in batch
+    match on_full {
+        OnFull::Process if !batch_queue.at_max_total_processing_capacity() => OnAdd::AddAndProcess,
+        OnFull::Process | OnFull::Reject => OnAdd::Add,
     }
 }
 
@@ -58,7 +56,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schedules_timeout_when_empty() {
+    fn schedules_timeout_when_adding_to_empty() {
         let limits = Limits::builder().max_batch_size(2).build();
         let queue = BatchQueue::<TestProcessor>::new("test".to_string(), "key".to_string(), limits);
 
