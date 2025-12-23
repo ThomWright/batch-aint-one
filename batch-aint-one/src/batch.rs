@@ -9,7 +9,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
-use tracing::{Level, Span, debug, instrument::WithSubscriber, span};
+use tracing::{Level, Span, info, instrument::WithSubscriber, span};
 
 use crate::{
     BatchError,
@@ -234,7 +234,7 @@ impl<P: Processor> Batch<P> {
                 }
 
                 if tx.send(msg).await.is_err() {
-                    debug!(
+                    info!(
                         "Tried to signal resources acquisition failure but the worker has shut down. Batcher: {}",
                         name
                     );
@@ -356,7 +356,7 @@ impl<P: Processor> Batch<P> {
                 // Whatever was waiting for the output must have shut down. Presumably it
                 // doesn't care anymore, but we log here anyway. There's not much else we can do
                 // here.
-                debug!("Unable to send output over oneshot channel. Receiver deallocated.");
+                info!("Unable to send output over oneshot channel. Receiver deallocated.");
             }
         }
     }
@@ -373,7 +373,7 @@ impl<P: Processor> Batch<P> {
         {
             // The worker must have shut down. In this case, we don't want to process any more
             // batches anyway.
-            debug!("Tried to signal a batch had finished but the worker has shut down");
+            info!("Tried to signal a batch had finished but the worker has shut down");
         }
     }
 
