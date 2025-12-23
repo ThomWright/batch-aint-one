@@ -223,6 +223,7 @@ impl ScenarioRunner {
     }
 
     /// Wait for all item processing tasks to complete and record all outcomes
+    #[expect(clippy::type_complexity)]
     async fn await_all_items(
         &self,
         tasks: Vec<
