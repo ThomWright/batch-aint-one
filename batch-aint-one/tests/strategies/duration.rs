@@ -101,10 +101,7 @@ async fn loaded_reject_on_full() {
         ))
         .build();
 
-    let handler = |i: i32| {
-        let f = batcher.add("key".to_string(), i.to_string());
-        f
-    };
+    let handler = |i: i32| batcher.add("key".to_string(), i.to_string());
 
     let mut tasks = vec![];
     for i in 1..=100 {

@@ -235,9 +235,9 @@ impl ScenarioRunner {
     ) -> Result<(), ScenarioError> {
         // Collect all results and record metrics for each outcome
         // let mut tasks: FuturesOrdered<_> = tasks.into_iter().collect();
-        let mut tasks = tasks.into_iter();
+        let tasks = tasks.into_iter();
 
-        while let Some(result) = tasks.next() {
+        for result in tasks {
             let result = result
                 .await
                 .map_err(|e| ScenarioError::ProcessingError(format!("Item task failed: {}", e)))?;

@@ -126,19 +126,14 @@ where
     temp_script.flush()?;
 
     // Run gnuplot (temp file will be automatically deleted when dropped)
-    let output = Command::new("gnuplot")
-        .arg(temp_script.path())
-        .output()?;
+    let output = Command::new("gnuplot").arg(temp_script.path()).output()?;
 
     if !output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "gnuplot failed for {}: {}",
-                chart_name,
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "gnuplot failed for {}: {}",
+            chart_name,
+            String::from_utf8_lossy(&output.stderr)
+        )));
     }
 
     Ok(output_path.to_path_buf())
@@ -234,7 +229,13 @@ fn generate_resource_usage_chart(
     generate_gnuplot_chart("resource usage chart", output_path, template_path, |file| {
         writeln!(file, "# time_seconds in_use available")?;
         for point in data {
-            writeln!(file, "{} {} {}", point.time.as_secs_f64(), point.in_use, point.available)?;
+            writeln!(
+                file,
+                "{} {} {}",
+                point.time.as_secs_f64(),
+                point.in_use,
+                point.available
+            )?;
         }
         Ok(())
     })?;
@@ -258,17 +259,22 @@ fn generate_latency_over_time_chart(
         ));
     }
 
-    generate_gnuplot_chart("latency over time chart", output_path, template_path, |file| {
-        writeln!(file, "# time_seconds mean_ms p50_ms p99_ms")?;
-        for stats in data {
-            let time_secs = stats.time.as_secs_f64();
-            let mean_ms = stats.mean.as_secs_f64() * 1000.0;
-            let p50_ms = stats.p50.as_secs_f64() * 1000.0;
-            let p99_ms = stats.p99.as_secs_f64() * 1000.0;
-            writeln!(file, "{} {} {} {}", time_secs, mean_ms, p50_ms, p99_ms)?;
-        }
-        Ok(())
-    })?;
+    generate_gnuplot_chart(
+        "latency over time chart",
+        output_path,
+        template_path,
+        |file| {
+            writeln!(file, "# time_seconds mean_ms p50_ms p99_ms")?;
+            for stats in data {
+                let time_secs = stats.time.as_secs_f64();
+                let mean_ms = stats.mean.as_secs_f64() * 1000.0;
+                let p50_ms = stats.p50.as_secs_f64() * 1000.0;
+                let p99_ms = stats.p99.as_secs_f64() * 1000.0;
+                writeln!(file, "{} {} {} {}", time_secs, mean_ms, p50_ms, p99_ms)?;
+            }
+            Ok(())
+        },
+    )?;
 
     Ok(())
 }

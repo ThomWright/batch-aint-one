@@ -68,9 +68,7 @@ impl ItemMetrics {
     pub fn failure(input: SimulatedInput, errored_at: Instant) -> Self {
         Self {
             submitted_at: input.submitted_at,
-            outcome: ItemOutcome::Errored {
-                errored_at,
-            },
+            outcome: ItemOutcome::Errored { errored_at },
         }
     }
 
@@ -427,7 +425,7 @@ fn calculate_median(sorted_values: &[usize]) -> f64 {
     }
 
     let len = sorted_values.len();
-    if len % 2 == 0 {
+    if len.is_multiple_of(2) {
         let mid = len / 2;
         (sorted_values[mid - 1] + sorted_values[mid]) as f64 / 2.0
     } else {
@@ -589,7 +587,7 @@ mod tests {
         // Last bucket starts at 9.0
         let last_time_secs = last_point.time.as_secs_f64();
         assert!(
-            last_time_secs >= 9.0 && last_time_secs < 10.0,
+            (9.0..10.0).contains(&last_time_secs),
             "Last bucket should start around 9s, got {}s",
             last_time_secs
         );

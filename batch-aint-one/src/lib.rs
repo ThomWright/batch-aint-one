@@ -35,8 +35,8 @@ mod worker;
 
 pub use batcher::Batcher;
 pub use error::BatchError;
-pub use policies::{BatchingPolicy, OnFull};
 pub use limits::Limits;
+pub use policies::{BatchingPolicy, OnFull};
 pub use processor::Processor;
 pub use worker::WorkerHandle;
 

@@ -67,8 +67,14 @@ impl<'a> SimulationReporter<'a> {
         }
 
         println!("Mean RPS:           {:.2}", mean_rps);
-        println!("Mean Latency:       {:.2} ms", mean_latency.as_secs_f64() * 1000.0);
-        println!("Mean Error Latency: {:.2} ms", mean_error_latency.as_secs_f64() * 1000.0);
+        println!(
+            "Mean Latency:       {:.2} ms",
+            mean_latency.as_secs_f64() * 1000.0
+        );
+        println!(
+            "Mean Error Latency: {:.2} ms",
+            mean_error_latency.as_secs_f64() * 1000.0
+        );
 
         println!("\nBatch Efficiency:");
         println!("  Total batches: {}", efficiency.total_batches);
@@ -95,11 +101,35 @@ impl<'a> SimulationReporter<'a> {
 
         // Print generated chart paths
         println!("\n=== Charts ===");
-        println!("Batch size histogram: {}", self.config.output_dir.join("batch_size_histogram.png").display());
-        println!("RPS chart:            {}", self.config.output_dir.join("arrival_rate.png").display());
-        println!("Latency histogram:    {}", self.config.output_dir.join("latency_histogram.png").display());
-        println!("Latency over time:    {}", self.config.output_dir.join("latency_over_time.png").display());
-        println!("Resource usage:       {}", self.config.output_dir.join("resource_usage.png").display());
+        println!(
+            "Batch size histogram: {}",
+            self.config
+                .output_dir
+                .join("batch_size_histogram.png")
+                .display()
+        );
+        println!(
+            "RPS chart:            {}",
+            self.config.output_dir.join("arrival_rate.png").display()
+        );
+        println!(
+            "Latency histogram:    {}",
+            self.config
+                .output_dir
+                .join("latency_histogram.png")
+                .display()
+        );
+        println!(
+            "Latency over time:    {}",
+            self.config
+                .output_dir
+                .join("latency_over_time.png")
+                .display()
+        );
+        println!(
+            "Resource usage:       {}",
+            self.config.output_dir.join("resource_usage.png").display()
+        );
 
         Ok(())
     }

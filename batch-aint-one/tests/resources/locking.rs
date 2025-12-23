@@ -101,10 +101,7 @@ async fn immediate_resource_locking(
         .batching_policy(policy)
         .build();
 
-    let handler = |i: i32| {
-        let f = batcher.add("key".to_string(), i.to_string());
-        async move { f.await }
-    };
+    let handler = |i: i32| batcher.add("key".to_string(), i.to_string());
 
     let mut tasks = vec![];
     for i in 1..=10 {

@@ -14,8 +14,8 @@ use crate::{
     batch::BatchItem,
     batch_inner::Generation,
     batch_queue::BatchQueue,
-    policies::{BatchingPolicy, OnAdd, OnGenerationEvent, OnFinish},
     limits::Limits,
+    policies::{BatchingPolicy, OnAdd, OnFinish, OnGenerationEvent},
     processor::Processor,
 };
 

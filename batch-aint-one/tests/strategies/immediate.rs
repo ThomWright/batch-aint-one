@@ -159,10 +159,7 @@ async fn single_concurrency_default_queue_size() {
         .batching_policy(BatchingPolicy::Immediate)
         .build();
 
-    let handler = |i: u64| {
-        let f = batcher.add("key".to_string(), i.to_string());
-        f
-    };
+    let handler = |i: u64| batcher.add("key".to_string(), i.to_string());
 
     let mut tasks = vec![];
     for i in 1..=11 {
@@ -201,10 +198,7 @@ async fn single_concurrency_reject_when_exceeding_queue_size() {
         .batching_policy(BatchingPolicy::Immediate)
         .build();
 
-    let handler = |i: u64| {
-        let f = batcher.add("key".to_string(), i.to_string());
-        f
-    };
+    let handler = |i: u64| batcher.add("key".to_string(), i.to_string());
 
     let mut tasks = vec![];
     for i in 1..=12 {

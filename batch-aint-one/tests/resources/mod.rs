@@ -172,10 +172,7 @@ async fn size_when_acquisition_fails() {
         .batching_policy(BatchingPolicy::Size)
         .build();
 
-    let handler = |i: i32| {
-        let f = batcher.add("key".to_string(), i.to_string());
-        async move { f.await }
-    };
+    let handler = |i: i32| batcher.add("key".to_string(), i.to_string());
 
     let mut tasks = vec![];
     for i in 1..=20 {
@@ -225,10 +222,7 @@ async fn immediate_when_acquisition_fails() {
         .batching_policy(BatchingPolicy::Immediate)
         .build();
 
-    let handler = |i: i32| {
-        let f = batcher.add("key".to_string(), i.to_string());
-        async move { f.await }
-    };
+    let handler = |i: i32| batcher.add("key".to_string(), i.to_string());
 
     let mut tasks = vec![];
     for i in 1..=20 {

@@ -93,8 +93,10 @@ mod tests {
     #[test]
     fn test_uniform_distribution() {
         let num_keys = 10;
-        let mut key_gen =
-            KeyGenerator::new(KeyDistributionConfig::Uniform { num_keys }, Some(*TEST_SEED));
+        let mut key_gen = KeyGenerator::new(
+            KeyDistributionConfig::Uniform { num_keys },
+            Some(*TEST_SEED),
+        );
 
         let mut counts: HashMap<String, usize> = HashMap::new();
         let samples = 10_000;
@@ -120,10 +122,7 @@ mod tests {
     fn test_zipf_distribution() {
         let num_keys = 10;
         let mut key_gen = KeyGenerator::new(
-            KeyDistributionConfig::Zipf {
-                num_keys,
-                s: 1.0,
-            },
+            KeyDistributionConfig::Zipf { num_keys, s: 1.0 },
             Some(*TEST_SEED),
         );
 

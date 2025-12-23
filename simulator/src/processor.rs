@@ -55,10 +55,8 @@ impl SimProcessor {
         processing_latency: LatencyProfile,
         metrics: Arc<Mutex<MetricsCollector>>,
         pool: Option<Arc<ConnectionPool>>,
-        #[builder(default = 0.0)]
-        acquire_error_rate: f64,
-        #[builder(default = 0.0)]
-        process_error_rate: f64,
+        #[builder(default = 0.0)] acquire_error_rate: f64,
+        #[builder(default = 0.0)] process_error_rate: f64,
     ) -> Self {
         assert!(
             (0.0..=1.0).contains(&acquire_error_rate),
