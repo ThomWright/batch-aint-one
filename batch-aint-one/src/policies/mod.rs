@@ -1,3 +1,12 @@
+//! Batching policies that control when batches get processed.
+//!
+//! This module provides different batching strategies, each optimised for different use cases:
+//!
+//! - [`Immediate`](BatchingPolicy::Immediate): Prioritises low latency
+//! - [`Size`](BatchingPolicy::Size): Prioritises high batch utilisation
+//! - [`Duration`](BatchingPolicy::Duration): Prioritises regularity
+//! - [`Balanced`](BatchingPolicy::Balanced): Balances resource efficiency and latency
+
 use std::{
     fmt::{self, Debug, Display},
     time::Duration,
@@ -94,14 +103,14 @@ pub(crate) enum OnAdd {
 
 /// Action to take when a specific generation times out or acquires resources.
 #[derive(Debug)]
-pub(crate) enum ProcessGenerationAction {
+pub(crate) enum OnGenerationEvent {
     Process,
     DoNothing,
 }
 
 /// Action to take when a batch finishes processing.
 #[derive(Debug)]
-pub(crate) enum ProcessNextAction {
+pub(crate) enum OnFinish {
     ProcessNext,
     ProcessNextReady,
     DoNothing,
@@ -178,9 +187,9 @@ impl BatchingPolicy {
         &self,
         generation: Generation,
         batch_queue: &BatchQueue<P>,
-    ) -> ProcessGenerationAction {
+    ) -> OnGenerationEvent {
         if batch_queue.at_max_total_processing_capacity() {
-            ProcessGenerationAction::DoNothing
+            OnGenerationEvent::DoNothing
         } else {
             Self::process_generation_if_ready(generation, batch_queue)
         }
@@ -190,17 +199,17 @@ impl BatchingPolicy {
         &self,
         generation: Generation,
         batch_queue: &BatchQueue<P>,
-    ) -> ProcessGenerationAction {
+    ) -> OnGenerationEvent {
         if batch_queue.at_max_total_processing_capacity() {
-            ProcessGenerationAction::DoNothing
+            OnGenerationEvent::DoNothing
         } else {
             Self::process_generation_if_ready(generation, batch_queue)
         }
     }
 
-    pub(crate) fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> ProcessNextAction {
+    pub(crate) fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnFinish {
         if batch_queue.at_max_total_processing_capacity() {
-            return ProcessNextAction::DoNothing;
+            return OnFinish::DoNothing;
         }
         match self {
             BatchingPolicy::Immediate => immediate::on_finish(batch_queue),
@@ -214,11 +223,11 @@ impl BatchingPolicy {
     fn process_generation_if_ready<P: Processor>(
         generation: Generation,
         batch_queue: &BatchQueue<P>,
-    ) -> ProcessGenerationAction {
+    ) -> OnGenerationEvent {
         if batch_queue.is_generation_ready(generation) {
-            ProcessGenerationAction::Process
+            OnGenerationEvent::Process
         } else {
-            ProcessGenerationAction::DoNothing
+            OnGenerationEvent::DoNothing
         }
     }
 }

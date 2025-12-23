@@ -4,7 +4,7 @@
 
 use crate::{Processor, batch_queue::BatchQueue};
 
-use super::{OnAdd, ProcessNextAction};
+use super::{OnAdd, OnFinish};
 
 pub(super) fn on_add<P: Processor>(batch_queue: &BatchQueue<P>) -> OnAdd {
     if batch_queue.at_max_total_processing_capacity() {
@@ -16,11 +16,11 @@ pub(super) fn on_add<P: Processor>(batch_queue: &BatchQueue<P>) -> OnAdd {
     }
 }
 
-pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessNextAction {
+pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> OnFinish {
     if batch_queue.has_batch_ready() {
-        ProcessNextAction::ProcessNextReady
+        OnFinish::ProcessNextReady
     } else {
-        ProcessNextAction::DoNothing
+        OnFinish::DoNothing
     }
 }
 
@@ -153,7 +153,7 @@ mod tests {
         queue.mark_processed();
 
         let result = policy.on_finish(&queue);
-        assert_matches!(result, ProcessNextAction::ProcessNextReady); // Should process second batch
+        assert_matches!(result, OnFinish::ProcessNextReady); // Should process second batch
     }
 
     #[tokio::test]
@@ -209,7 +209,7 @@ mod tests {
         queue.mark_resource_acquisition_finished();
 
         let result = policy.on_resources_acquired(second_gen, &queue);
-        assert_matches!(result, super::super::ProcessGenerationAction::Process); // Should process now
+        assert_matches!(result, super::super::OnGenerationEvent::Process); // Should process now
 
         // Now release first acquire
         drop(lock_guard1);
@@ -221,6 +221,6 @@ mod tests {
         });
 
         let result = policy.on_resources_acquired(first_gen, &queue);
-        assert_matches!(result, super::super::ProcessGenerationAction::Process);
+        assert_matches!(result, super::super::OnGenerationEvent::Process);
     }
 }

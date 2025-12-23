@@ -14,7 +14,7 @@ use crate::{
     batch::BatchItem,
     batch_inner::Generation,
     batch_queue::BatchQueue,
-    policies::{BatchingPolicy, OnAdd, ProcessGenerationAction, ProcessNextAction},
+    policies::{BatchingPolicy, OnAdd, OnGenerationEvent, OnFinish},
     limits::Limits,
     processor::Processor,
 };
@@ -203,10 +203,10 @@ impl<P: Processor> Worker<P> {
             .expect("batch queue should exist");
 
         match self.batching_policy.on_timeout(generation, batch_queue) {
-            ProcessGenerationAction::Process => {
+            OnGenerationEvent::Process => {
                 self.process_generation(key, generation);
             }
-            ProcessGenerationAction::DoNothing => {}
+            OnGenerationEvent::DoNothing => {}
         }
     }
 
@@ -222,10 +222,10 @@ impl<P: Processor> Worker<P> {
             .batching_policy
             .on_resources_acquired(generation, batch_queue)
         {
-            ProcessGenerationAction::Process => {
+            OnGenerationEvent::Process => {
                 self.process_generation(key, generation);
             }
-            ProcessGenerationAction::DoNothing => {}
+            OnGenerationEvent::DoNothing => {}
         }
     }
 
@@ -245,13 +245,13 @@ impl<P: Processor> Worker<P> {
         }
 
         match self.batching_policy.on_finish(batch_queue) {
-            ProcessNextAction::ProcessNextReady => {
+            OnFinish::ProcessNextReady => {
                 self.process_next_ready_batch(key);
             }
-            ProcessNextAction::ProcessNext => {
+            OnFinish::ProcessNext => {
                 self.process_next_batch(key);
             }
-            ProcessNextAction::DoNothing => {}
+            OnFinish::DoNothing => {}
         }
     }
 

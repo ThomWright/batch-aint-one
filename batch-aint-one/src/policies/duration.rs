@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::{Processor, batch_queue::BatchQueue};
 
-use super::{OnAdd, OnFull, ProcessNextAction};
+use super::{OnAdd, OnFinish, OnFull};
 
 pub(super) fn on_add<P: Processor>(
     duration: Duration,
@@ -27,13 +27,11 @@ pub(super) fn on_add<P: Processor>(
     }
 }
 
-pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessNextAction {
-    if batch_queue.has_next_batch_timeout_expired() {
-        ProcessNextAction::ProcessNext
-    } else if batch_queue.is_next_batch_full() {
-        ProcessNextAction::ProcessNext
+pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> OnFinish {
+    if batch_queue.has_next_batch_timeout_expired() || batch_queue.is_next_batch_full() {
+        OnFinish::ProcessNext
     } else {
-        ProcessNextAction::DoNothing
+        OnFinish::DoNothing
     }
 }
 
@@ -138,7 +136,7 @@ mod tests {
             assert_eq!(generation, second_gen);
         });
         let result = policy.on_timeout(second_gen, &queue);
-        assert_matches!(result, super::super::ProcessGenerationAction::DoNothing); // Can't process, at max capacity
+        assert_matches!(result, super::super::OnGenerationEvent::DoNothing); // Can't process, at max capacity
 
         // Step 4: First batch finishes
         notify1.notify_waiters(); // Let first batch complete
@@ -148,6 +146,6 @@ mod tests {
         queue.mark_processed();
 
         let result = policy.on_finish(&queue);
-        assert_matches!(result, ProcessNextAction::ProcessNext); // Should process second batch
+        assert_matches!(result, OnFinish::ProcessNext); // Should process second batch
     }
 }

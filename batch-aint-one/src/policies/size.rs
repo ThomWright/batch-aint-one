@@ -4,7 +4,7 @@
 
 use crate::{Processor, batch_queue::BatchQueue};
 
-use super::{OnAdd, ProcessNextAction};
+use super::{OnAdd, OnFinish};
 
 pub(super) fn on_add<P: Processor>(
     batch_queue: &BatchQueue<P>,
@@ -17,11 +17,11 @@ pub(super) fn on_add<P: Processor>(
     }
 }
 
-pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessNextAction {
+pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> OnFinish {
     if batch_queue.is_next_batch_full() {
-        ProcessNextAction::ProcessNext
+        OnFinish::ProcessNext
     } else {
-        ProcessNextAction::DoNothing
+        OnFinish::DoNothing
     }
 }
 
@@ -135,7 +135,7 @@ mod tests {
         assert_matches!(msg, Message::Finished(_, _));
 
         let result = policy.on_finish(&queue);
-        assert_matches!(result, ProcessNextAction::DoNothing); // Second batch not full yet
+        assert_matches!(result, OnFinish::DoNothing); // Second batch not full yet
 
         // Add third item to complete second batch
         let result = policy.on_add(&queue);

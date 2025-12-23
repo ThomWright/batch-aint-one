@@ -4,7 +4,7 @@
 
 use crate::{Processor, batch_queue::BatchQueue};
 
-use super::{OnAdd, ProcessNextAction};
+use super::{OnAdd, OnFinish};
 
 pub(super) fn on_add<P: Processor>(min_size_hint: usize, batch_queue: &BatchQueue<P>) -> OnAdd {
     if batch_queue.at_max_total_processing_capacity() {
@@ -21,11 +21,11 @@ pub(super) fn on_add<P: Processor>(min_size_hint: usize, batch_queue: &BatchQueu
     }
 }
 
-pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessNextAction {
+pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> OnFinish {
     if batch_queue.has_batch_ready() {
-        ProcessNextAction::ProcessNextReady
+        OnFinish::ProcessNextReady
     } else {
-        ProcessNextAction::DoNothing
+        OnFinish::DoNothing
     }
 }
 
@@ -154,7 +154,7 @@ mod tests {
         let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
         let result = policy.on_finish(&queue);
 
-        assert_matches!(result, ProcessNextAction::ProcessNextReady);
+        assert_matches!(result, OnFinish::ProcessNextReady);
     }
 
     #[test]
@@ -166,6 +166,6 @@ mod tests {
         let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
         let result = policy.on_finish(&queue);
 
-        assert_matches!(result, ProcessNextAction::DoNothing);
+        assert_matches!(result, OnFinish::DoNothing);
     }
 }

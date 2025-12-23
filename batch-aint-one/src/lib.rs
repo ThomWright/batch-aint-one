@@ -142,7 +142,7 @@ mod tests {
             1,
             "should be a single outer span for processing the batch"
         );
-        let process_span = outer_process_spans.first().unwrap().clone();
+        let process_span = *outer_process_spans.first().unwrap();
 
         assert_eq!(
             process_span["batch.size"], 2u64,
