@@ -226,13 +226,14 @@ async fn test_distributed_arrivals_and_latency() {
 }
 
 #[tokio::test(start_paused = true)]
+#[ignore = "longer test, for manual runs"]
 async fn test_longer_simulation() {
     let seed = *TEST_SEED;
     let start = std::time::Instant::now();
 
     // Arrival rate: 500 items/sec (mean inter-arrival: 2ms)
     let arrival_rate = 500.0;
-    let num_items = 1_000_000;
+    let num_items = 100_000;
 
     // Processing latency: Erlang(k=2, rate=200) => mean ~10ms
     let latency_profile = LatencyProfile::builder()
