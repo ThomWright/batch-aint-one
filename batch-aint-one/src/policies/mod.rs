@@ -12,6 +12,8 @@ use std::{
     time::Duration,
 };
 
+use tracing::warn;
+
 use crate::{
     Limits, Processor,
     batch_inner::Generation,
@@ -189,6 +191,7 @@ impl BatchingPolicy {
         batch_queue: &BatchQueue<P>,
     ) -> OnGenerationEvent {
         if batch_queue.at_max_total_processing_capacity() {
+            warn!("on_resources_acquired called when at max processing capacity");
             debug_assert!(
                 false,
                 "on_resources_acquired called when at max processing capacity"
@@ -201,6 +204,7 @@ impl BatchingPolicy {
 
     pub(crate) fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnFinish {
         if batch_queue.at_max_total_processing_capacity() {
+            warn!("on_finish called when at max processing capacity");
             debug_assert!(false, "on_finish called when at max processing capacity");
             return OnFinish::DoNothing;
         }

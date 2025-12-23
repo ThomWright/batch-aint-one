@@ -1,6 +1,7 @@
 use std::{collections::VecDeque, fmt::Debug, time::Duration};
 
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use crate::{
     BatchError, Limits,
@@ -98,6 +99,9 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     pub(crate) fn mark_processed(&mut self) {
+        if self.processing == 0 {
+            warn!("processing count should never go below zero");
+        }
         debug_assert!(
             self.processing > 0,
             "processing count should never go below zero"
@@ -105,12 +109,39 @@ impl<P: Processor> BatchQueue<P> {
         self.processing = self.processing.saturating_sub(1);
     }
 
+    fn increment_processing_count(&mut self) {
+        self.processing += 1;
+
+        if self.processing > self.limits.max_key_concurrency {
+            warn!("Processing count should not exceed max key concurrency");
+        }
+        debug_assert!(
+            self.processing <= self.limits.max_key_concurrency,
+            "Processing count should not exceed max key concurrency"
+        );
+    }
+
     pub(crate) fn mark_resource_acquisition_finished(&mut self) {
+        if self.pre_acquiring == 0 {
+            warn!("pre-acquiring count should never go below zero");
+        }
         debug_assert!(
             self.pre_acquiring > 0,
             "pre-acquiring count should never go below zero"
         );
         self.pre_acquiring = self.pre_acquiring.saturating_sub(1);
+    }
+
+    fn increment_resource_acquisition_count(&mut self) {
+        self.pre_acquiring += 1;
+
+        if self.pre_acquiring > self.limits.max_key_concurrency {
+            warn!("pre-acquiring count should not exceed max key concurrency");
+        }
+        debug_assert!(
+            self.pre_acquiring <= self.limits.max_key_concurrency,
+            "pre-acquiring count should not exceed max key concurrency"
+        );
     }
 
     /// Are we currently at maximum total capacity for this key?
@@ -186,13 +217,11 @@ impl<P: Processor> BatchQueue<P> {
         processor: P,
         on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        debug_assert!(
-            self.processing < self.limits.max_key_concurrency,
-            "Attempting to process next ready batch from batch queue '{}' while at max key concurrency",
-            self.batcher_name
-        );
-
         let Some(batch) = self.take_next_ready_batch() else {
+            warn!(
+                "No ready batch found in batch queue '{}'",
+                self.batcher_name
+            );
             debug_assert!(
                 false,
                 "No ready batch found in batch queue '{}'",
@@ -201,12 +230,7 @@ impl<P: Processor> BatchQueue<P> {
             return;
         };
 
-        self.processing += 1;
-
-        debug_assert!(
-            self.processing <= self.limits.max_key_concurrency,
-            "Processing count should not exceed max key concurrency"
-        );
+        self.increment_processing_count();
 
         batch.process(processor, on_finished);
     }
@@ -216,13 +240,8 @@ impl<P: Processor> BatchQueue<P> {
         processor: P,
         on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        debug_assert!(
-            self.processing < self.limits.max_key_concurrency,
-            "Attempting to process next batch from batch queue '{}' while at max key concurrency",
-            self.batcher_name
-        );
-
         let Some(batch) = self.take_next_batch() else {
+            warn!("No next batch found in batch queue '{}'", self.batcher_name);
             debug_assert!(
                 false,
                 "No next batch found in batch queue '{}'",
@@ -231,12 +250,7 @@ impl<P: Processor> BatchQueue<P> {
             return;
         };
 
-        self.processing += 1;
-
-        debug_assert!(
-            self.processing <= self.limits.max_key_concurrency,
-            "Processing count should not exceed max key concurrency"
-        );
+        self.increment_processing_count();
 
         batch.process(processor, on_finished);
     }
@@ -266,14 +280,11 @@ impl<P: Processor> BatchQueue<P> {
         processor: P,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        debug_assert!(
-            self.processing < self.limits.max_key_concurrency,
-            "Attempting to process generation {:?} from batch queue '{}' while at max key concurrency",
-            generation,
-            self.batcher_name
-        );
-
         let Some(batch) = self.take_generation(generation) else {
+            warn!(
+                "No batch found for generation {:?} in batch queue '{}'",
+                generation, self.batcher_name
+            );
             debug_assert!(
                 false,
                 "No batch found for generation {:?} in batch queue '{}'",
@@ -282,7 +293,7 @@ impl<P: Processor> BatchQueue<P> {
             return;
         };
 
-        self.processing += 1;
+        self.increment_processing_count();
 
         batch.process(processor, tx);
     }
@@ -294,6 +305,10 @@ impl<P: Processor> BatchQueue<P> {
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
         let Some(batch) = self.take_generation(generation) else {
+            warn!(
+                "No batch found for generation {:?} in batch queue '{}'",
+                generation, self.batcher_name
+            );
             debug_assert!(
                 false,
                 "No batch found for generation {:?} in batch queue '{}'",
@@ -311,19 +326,27 @@ impl<P: Processor> BatchQueue<P> {
         processor: P,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        for batch in self.queue.iter_mut() {
-            if !batch.has_started_acquiring() {
-                self.pre_acquiring += 1;
-                batch.pre_acquire_resources(processor, tx);
+        self.increment_resource_acquisition_count();
 
-                debug_assert!(
-                    self.pre_acquiring <= self.limits.max_key_concurrency,
-                    "pre-acquiring count should not exceed max key concurrency"
-                );
+        let Some(batch) = self
+            .queue
+            .iter_mut()
+            .find(|batch| !batch.has_started_acquiring())
+        else {
+            self.pre_acquiring -= 1;
+            warn!(
+                "No batch found needing resource acquisition in batch queue '{}'",
+                self.batcher_name
+            );
+            debug_assert!(
+                false,
+                "No batch found needing resource acquisition in batch queue '{}'",
+                self.batcher_name
+            );
+            return;
+        };
 
-                break;
-            }
-        }
+        batch.pre_acquire_resources(processor, tx);
     }
 
     /// Process the last batch after a delay.

@@ -9,7 +9,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
-use tracing::{Level, Span, info, instrument::WithSubscriber, span};
+use tracing::{Level, Span, info, instrument::WithSubscriber, span, warn};
 
 use crate::{
     BatchError,
@@ -184,14 +184,17 @@ impl<P: Processor> Batch<P> {
         self.state.is_acquiring()
     }
 
-    /// Acquire resources for this batch, if we are not doing so already.
+    /// Acquire resources for this batch.
     ///
-    /// Once acquired, a message will be sent to process the batch.
+    /// Once acquired, a message will be sent back to the worker.
     pub(crate) fn pre_acquire_resources(
         &mut self,
         processor: P,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
+        if self.has_started_acquiring() {
+            warn!("should not try to acquire resources if already started acquiring");
+        }
         debug_assert!(
             !self.has_started_acquiring(),
             "should not try to acquire resources if already started acquiring"
@@ -250,16 +253,17 @@ impl<P: Processor> Batch<P> {
         processor: P,
         on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
+        if !self.state.is_processable() {
+            warn!(
+                "should not try to process a batch that in state {:?}",
+                self.state
+            );
+        }
         debug_assert!(
-            !self.state.is_acquiring(),
-            "should not try to acquire resources if already acquiring"
+            self.state.is_processable(),
+            "should not try to process a batch that in state {:?}",
+            self.state
         );
-        debug_assert!(
-            !self.state.has_acquisition_failed(),
-            "should not try to process if resource acquisition failed"
-        );
-
-        // let processing_count_guard = self.started_processing();
 
         self.cancel_timeout();
 
@@ -402,7 +406,7 @@ trait LockedBatchState<P: Processor> {
     fn has_started(&self) -> bool;
     fn set_acquiring(&self, handle: JoinHandle<()>);
     fn is_acquiring(&self) -> bool;
-    fn has_acquisition_failed(&self) -> bool;
+    fn is_processable(&self) -> bool;
     fn take_resources(&self) -> Option<(P::Resources, Span)>;
     fn processed(&self);
     fn cancel_acquisition(&self);
@@ -434,12 +438,6 @@ impl<P: Processor> LockedBatchState<P> for Mutex<BatchState<P>> {
         !matches!(*state, BatchState::New)
     }
 
-    fn has_acquisition_failed(&self) -> bool {
-        let state = self.lock().expect("Resources mutex should not be poisoned");
-
-        matches!(*state, BatchState::FailedToAcquireResources)
-    }
-
     fn set_acquiring(&self, handle: JoinHandle<()>) {
         let mut state = self.lock().expect("Resources mutex should not be poisoned");
 
@@ -454,6 +452,15 @@ impl<P: Processor> LockedBatchState<P> for Mutex<BatchState<P>> {
         matches!(
             *state,
             BatchState::StartedAcquiring | BatchState::Acquiring(_)
+        )
+    }
+
+    fn is_processable(&self) -> bool {
+        let state = self.lock().expect("Resources mutex should not be poisoned");
+
+        matches!(
+            *state,
+            BatchState::ReadyForProcessing { .. } | BatchState::New
         )
     }
 

@@ -229,6 +229,20 @@ impl<P: Processor> Worker<P> {
         }
     }
 
+    fn on_resource_acquisition_failed(
+        &mut self,
+        key: P::Key,
+        generation: Generation,
+        err: BatchError<P::Error>,
+    ) {
+        let batch_queue = self
+            .batch_queues
+            .get_mut(&key)
+            .expect("batch queue should exist");
+
+        batch_queue.fail_generation(generation, err.clone(), self.msg_tx.clone());
+    }
+
     fn on_batch_finished(&mut self, key: &P::Key, terminal_state: BatchTerminalState) {
         let batch_queue = self
             .batch_queues
@@ -253,20 +267,6 @@ impl<P: Processor> Worker<P> {
             }
             OnFinish::DoNothing => {}
         }
-    }
-
-    fn on_resource_acquisition_failed(
-        &mut self,
-        key: P::Key,
-        generation: Generation,
-        err: BatchError<P::Error>,
-    ) {
-        let batch_queue = self
-            .batch_queues
-            .get_mut(&key)
-            .expect("batch queue should exist");
-
-        batch_queue.fail_generation(generation, err.clone(), self.msg_tx.clone());
     }
 
     fn ready_to_shut_down(&self) -> bool {
