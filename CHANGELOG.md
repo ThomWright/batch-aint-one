@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `BatchingPolicy` now implements `Display` for human-readable output
+- `Limits` now implements `Display` for human-readable output
+- `BatchingPolicy` now implements `Clone`
+
+### Changed
+
+- Improved logging: changed some debug logs to info level
+- Improved documentation for `Limits`
+- Internal: replaced atomic-based concurrency tracking with simpler counter variables, reducing potential for race conditions
+- Internal refactoring: policy implementations moved to separate modules for better code organization
+
+### Fixed
+
+- Fixed bugs in policy logic
+- Improved accuracy of limit checking
+
 ## 0.10.0
 
 ### Changed
