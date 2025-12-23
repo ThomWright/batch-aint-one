@@ -27,6 +27,7 @@ mod batch_inner;
 mod batch_queue;
 mod batcher;
 pub mod error;
+mod limits;
 mod policies;
 mod processor;
 mod timeout;
@@ -34,7 +35,8 @@ mod worker;
 
 pub use batcher::Batcher;
 pub use error::BatchError;
-pub use policies::{BatchingPolicy, Limits, OnFull};
+pub use policies::{BatchingPolicy, OnFull};
+pub use limits::Limits;
 pub use processor::Processor;
 pub use worker::WorkerHandle;
 

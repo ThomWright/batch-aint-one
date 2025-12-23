@@ -7,7 +7,8 @@ use tracing::{Level, Span, span};
 use crate::{
     batch::BatchItem,
     error::BatchResult,
-    policies::{BatchingPolicy, Limits},
+    policies::{BatchingPolicy},
+    limits::Limits,
     processor::Processor,
     worker::{Worker, WorkerDropGuard, WorkerHandle},
 };

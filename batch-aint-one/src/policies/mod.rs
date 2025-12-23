@@ -3,14 +3,20 @@ use std::{
     time::Duration,
 };
 
-use bon::bon;
-
 use crate::{
-    Processor,
+    Limits, Processor,
     batch_inner::Generation,
     batch_queue::BatchQueue,
     error::{ConcurrencyStatus, RejectionReason},
 };
+
+mod immediate;
+mod size;
+mod duration;
+mod balanced;
+
+#[cfg(test)]
+mod test_utils;
 
 /// A policy controlling when batches get processed.
 #[derive(Debug, Clone)]
@@ -64,20 +70,20 @@ pub enum BatchingPolicy {
     },
 }
 
-/// A policy controlling limits on batch sizes and concurrency.
-///
-/// New items will be rejected when both the limits have been reached.
-///
-/// `max_key_concurrency * max_batch_size` is the number of items that can be processed concurrently.
-///
-/// `max_batch_queue_size * max_batch_size` is the number of items that can be queued.
-#[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
-pub struct Limits {
-    pub(crate) max_batch_size: usize,
-    pub(crate) max_key_concurrency: usize,
-    pub(crate) max_batch_queue_size: usize,
-}
+// trait PolicyImpl {
+//     fn on_add<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd;
+//     fn on_timeout<P: Processor>(
+//         &self,
+//         generation: Generation,
+//         batch_queue: &BatchQueue<P>,
+//     ) -> ProcessGenerationAction;
+//     fn on_resources_acquired<P: Processor>(
+//         &self,
+//         generation: Generation,
+//         batch_queue: &BatchQueue<P>,
+//     ) -> ProcessGenerationAction;
+//     fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> ProcessNextAction;
+// }
 
 /// What to do when a batch becomes full.
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +97,7 @@ pub enum OnFull {
     Reject,
 }
 
+/// Action to take when adding an item to a batch.
 #[derive(Debug)]
 pub(crate) enum OnAdd {
     AddAndProcess,
@@ -100,76 +107,19 @@ pub(crate) enum OnAdd {
     Add,
 }
 
+/// Action to take when a specific generation times out or acquires resources.
 #[derive(Debug)]
 pub(crate) enum ProcessGenerationAction {
     Process,
     DoNothing,
 }
 
+/// Action to take when a batch finishes processing.
 #[derive(Debug)]
 pub(crate) enum ProcessNextAction {
     ProcessNext,
     ProcessNextReady,
     DoNothing,
-}
-
-#[bon]
-impl Limits {
-    #[allow(missing_docs)]
-    #[builder]
-    pub fn new(
-        /// Limits the maximum size of a batch.
-        #[builder(default = 100)]
-        max_batch_size: usize,
-        /// Limits the maximum number of batches that can be processed concurrently for a key,
-        /// including resource acquisition.
-        #[builder(default = 10)]
-        max_key_concurrency: usize,
-        /// Limits the maximum number of batches that can be queued concurrently for a key.
-        max_batch_queue_size: Option<usize>,
-    ) -> Self {
-        Self {
-            max_batch_size,
-            max_key_concurrency,
-            max_batch_queue_size: max_batch_queue_size.unwrap_or(max_key_concurrency * 2),
-        }
-    }
-
-    fn max_items_processing_per_key(&self) -> usize {
-        self.max_batch_size * self.max_key_concurrency
-    }
-
-    fn max_items_queued_per_key(&self) -> usize {
-        self.max_batch_size * self.max_batch_queue_size
-    }
-
-    /// The maximum number of items that can be in the system for a given key.
-    pub(crate) fn max_items_in_system_per_key(&self) -> usize {
-        self.max_items_processing_per_key() + self.max_items_queued_per_key()
-    }
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        let max_batch_size = 100;
-        let max_key_concurrency = 10;
-        let max_batch_queue_size = max_key_concurrency;
-        Self {
-            max_batch_size,
-            max_key_concurrency,
-            max_batch_queue_size,
-        }
-    }
-}
-
-impl Display for Limits {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "batch_size: {}, key_concurrency: {}, queue_size: {}",
-            self.max_batch_size, self.max_key_concurrency, self.max_batch_queue_size
-        )
-    }
 }
 
 impl Display for BatchingPolicy {
@@ -347,89 +297,15 @@ impl BatchingPolicy {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, atomic::AtomicUsize};
+    use std::sync::Arc;
 
     use assert_matches::assert_matches;
-    use tokio::sync::{Mutex, Notify, futures::OwnedNotified, mpsc};
-    use tracing::Span;
+    use tokio::sync::{Mutex, Notify, mpsc};
 
-    use crate::{Processor, batch::BatchItem, batch_queue::BatchQueue, worker::Message};
+    use crate::{batch_queue::BatchQueue, worker::Message};
 
     use super::*;
-
-    #[derive(Clone)]
-    struct TestProcessor;
-
-    impl Processor for TestProcessor {
-        type Key = String;
-        type Input = String;
-        type Output = String;
-        type Error = String;
-        type Resources = ();
-
-        async fn acquire_resources(&self, _key: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        async fn process(
-            &self,
-            _key: String,
-            inputs: impl Iterator<Item = String> + Send,
-            _resources: (),
-        ) -> Result<Vec<String>, String> {
-            Ok(inputs.collect())
-        }
-    }
-
-    #[derive(Default, Clone)]
-    struct ControlledProcessor {
-        // We control when acquire_resources completes by holding locks.
-        acquire_locks: Vec<Arc<Mutex<()>>>,
-        acquire_counter: Arc<AtomicUsize>,
-    }
-
-    impl Processor for ControlledProcessor {
-        type Key = ();
-        type Input = OwnedNotified;
-        type Output = ();
-        type Error = String;
-        type Resources = ();
-
-        async fn acquire_resources(&self, _key: ()) -> Result<(), String> {
-            let n = self
-                .acquire_counter
-                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            if let Some(lock) = self.acquire_locks.get(n) {
-                let _guard = lock.lock().await;
-            }
-            Ok(())
-        }
-
-        async fn process(
-            &self,
-            _key: (),
-            inputs: impl Iterator<Item = OwnedNotified> + Send,
-            _resources: (),
-        ) -> Result<Vec<()>, String> {
-            let mut outputs = vec![];
-            for item in inputs {
-                item.await;
-                outputs.push(());
-            }
-            Ok(outputs)
-        }
-    }
-
-    fn new_item<P: Processor>(key: P::Key, input: P::Input) -> BatchItem<P> {
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        BatchItem {
-            key,
-            input,
-            submitted_at: tokio::time::Instant::now(),
-            tx,
-            requesting_span: Span::none(),
-        }
-    }
+    use super::test_utils::*;
 
     #[test]
     fn limits_builder_methods() {
