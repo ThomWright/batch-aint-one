@@ -268,8 +268,8 @@ async fn test_longer_simulation() {
         arrival_rate,
         seed: Some(seed),
         processing_latency: latency_profile.clone(),
-        processing_error_rate: 0.001,
-        resource_acquisition_error_rate: 0.001,
+        processing_error_rate: 0.1,
+        resource_acquisition_error_rate: 0.1,
         pool_config: Some(PoolConfig {
             initial_size: 1,
             acquire_latency,

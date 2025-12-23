@@ -1,17 +1,42 @@
-use std::time::Duration;
+use std::{fmt::Debug, time::Duration};
 
 use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 use tracing::debug;
 
 use crate::{batch_inner::Generation, processor::Processor, worker::Message};
 
-#[derive(Debug)]
 pub(crate) struct TimeoutHandle<P: Processor> {
     key: P::Key,
     generation: Generation,
     deadline: Option<Instant>,
     handle: Option<JoinHandle<()>>,
     _phantom: std::marker::PhantomData<P>,
+}
+
+impl<P: Processor> Debug for TimeoutHandle<P>
+where
+    P: Processor,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let TimeoutHandle {
+            key,
+            generation,
+            deadline,
+            handle,
+            _phantom: _,
+        } = self;
+        f.debug_struct("TimeoutHandle")
+            .field("key", &key)
+            .field("generation", &generation)
+            .field("deadline", &deadline)
+            .field("handle", &handle.is_some())
+            .field("[derived] is_expired", &self.is_expired())
+            .field(
+                "[derived] is_ready_for_processing",
+                &self.is_ready_for_processing(),
+            )
+            .finish()
+    }
 }
 
 impl<P: Processor> TimeoutHandle<P> {

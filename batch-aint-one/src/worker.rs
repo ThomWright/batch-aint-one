@@ -14,7 +14,7 @@ use crate::{
     batch::BatchItem,
     batch_inner::Generation,
     batch_queue::BatchQueue,
-    policies::{BatchingPolicy, Limits, OnAdd, ProcessAction},
+    policies::{BatchingPolicy, Limits, OnAdd, ProcessGenerationAction, ProcessNextAction},
     processor::Processor,
 };
 
@@ -52,7 +52,13 @@ pub(crate) enum Message<K, E: Display + Debug> {
     TimedOut(K, Generation),
     ResourcesAcquired(K, Generation),
     ResourceAcquisitionFailed(K, Generation, BatchError<E>),
-    Finished(K),
+    Finished(K, BatchTerminalState),
+}
+
+#[derive(Debug)]
+pub(crate) enum BatchTerminalState {
+    Processed,
+    FailedAcquiring,
 }
 
 pub(crate) enum ShutdownMessage {
@@ -168,11 +174,16 @@ impl<P: Processor> Worker<P> {
     fn process_generation(&mut self, key: P::Key, generation: Generation) {
         let batch_queue = self.batch_queues.get_mut(&key).expect("batch should exist");
 
-        if let Some(batch) = batch_queue.take_generation(generation) {
-            let on_finished = self.msg_tx.clone();
+        batch_queue.process_generation(generation, self.processor.clone(), self.msg_tx.clone());
+    }
 
-            batch.process(self.processor.clone(), on_finished);
-        }
+    fn process_next_ready_batch(&mut self, key: &P::Key) {
+        let batch_queue = self
+            .batch_queues
+            .get_mut(key)
+            .expect("batch queue should exist");
+
+        batch_queue.process_next_ready_batch(self.processor.clone(), self.msg_tx.clone());
     }
 
     fn process_next_batch(&mut self, key: &P::Key) {
@@ -181,16 +192,7 @@ impl<P: Processor> Worker<P> {
             .get_mut(key)
             .expect("batch queue should exist");
 
-        if let Some(batch) = batch_queue.take_next_ready_batch() {
-            let on_finished = self.msg_tx.clone();
-
-            batch.process(self.processor.clone(), on_finished);
-
-            debug_assert!(
-                batch_queue.within_processing_capacity(),
-                "processing count should not exceed max key concurrency"
-            );
-        }
+        batch_queue.process_next_batch(self.processor.clone(), self.msg_tx.clone());
     }
 
     fn on_timeout(&mut self, key: P::Key, generation: Generation) {
@@ -200,10 +202,10 @@ impl<P: Processor> Worker<P> {
             .expect("batch queue should exist");
 
         match self.batching_policy.on_timeout(generation, batch_queue) {
-            ProcessAction::Process => {
+            ProcessGenerationAction::Process => {
                 self.process_generation(key, generation);
             }
-            ProcessAction::DoNothing => {}
+            ProcessGenerationAction::DoNothing => {}
         }
     }
 
@@ -213,41 +215,57 @@ impl<P: Processor> Worker<P> {
             .get_mut(&key)
             .expect("batch queue should exist");
 
+        batch_queue.mark_resource_acquisition_finished();
+
         match self
             .batching_policy
             .on_resources_acquired(generation, batch_queue)
         {
-            ProcessAction::Process => {
+            ProcessGenerationAction::Process => {
                 self.process_generation(key, generation);
             }
-            ProcessAction::DoNothing => {}
+            ProcessGenerationAction::DoNothing => {}
         }
     }
 
-    fn on_batch_finished(&mut self, key: &P::Key) {
+    fn on_batch_finished(&mut self, key: &P::Key, terminal_state: BatchTerminalState) {
         let batch_queue = self
             .batch_queues
             .get_mut(key)
             .expect("batch queue should exist");
 
+        match terminal_state {
+            BatchTerminalState::Processed => {
+                batch_queue.mark_processed();
+            }
+            BatchTerminalState::FailedAcquiring => {
+                batch_queue.mark_resource_acquisition_finished();
+            }
+        }
+
         match self.batching_policy.on_finish(batch_queue) {
-            ProcessAction::Process => {
+            ProcessNextAction::ProcessNextReady => {
+                self.process_next_ready_batch(key);
+            }
+            ProcessNextAction::ProcessNext => {
                 self.process_next_batch(key);
             }
-            ProcessAction::DoNothing => {}
+            ProcessNextAction::DoNothing => {}
         }
     }
 
-    fn fail_batch(&mut self, key: P::Key, generation: Generation, err: BatchError<P::Error>) {
+    fn on_resource_acquisition_failed(
+        &mut self,
+        key: P::Key,
+        generation: Generation,
+        err: BatchError<P::Error>,
+    ) {
         let batch_queue = self
             .batch_queues
             .get_mut(&key)
             .expect("batch queue should exist");
 
-        if let Some(batch) = batch_queue.take_generation(generation) {
-            let on_finished = self.msg_tx.clone();
-            batch.fail(err, on_finished)
-        }
+        batch_queue.fail_generation(generation, err.clone(), self.msg_tx.clone());
     }
 
     fn ready_to_shut_down(&self) -> bool {
@@ -281,13 +299,13 @@ impl<P: Processor> Worker<P> {
                             self.on_resource_acquired(key, generation);
                         }
                         Message::ResourceAcquisitionFailed(key, generation, err) => {
-                            self.fail_batch(key, generation, err);
+                            self.on_resource_acquisition_failed(key, generation, err);
                         }
                         Message::TimedOut(key, generation) => {
                             self.on_timeout(key, generation);
                         }
-                        Message::Finished(key) => {
-                            self.on_batch_finished(&key);
+                        Message::Finished(key, terminal_state) => {
+                            self.on_batch_finished(&key, terminal_state);
                         }
                     }
                 }

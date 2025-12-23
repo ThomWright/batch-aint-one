@@ -101,8 +101,15 @@ pub(crate) enum OnAdd {
 }
 
 #[derive(Debug)]
-pub(crate) enum ProcessAction {
+pub(crate) enum ProcessGenerationAction {
     Process,
+    DoNothing,
+}
+
+#[derive(Debug)]
+pub(crate) enum ProcessNextAction {
+    ProcessNext,
+    ProcessNextReady,
     DoNothing,
 }
 
@@ -235,7 +242,7 @@ impl BatchingPolicy {
             Self::Immediate => {
                 if batch_queue.at_max_total_processing_capacity() {
                     OnAdd::Add
-                } else if batch_queue.adding_to_new_batch() || !batch_queue.is_last_batch_acquiring_resources() {
+                } else if batch_queue.adding_to_new_batch() {
                     OnAdd::AddAndAcquireResources
                 } else {
                     OnAdd::Add
@@ -275,9 +282,9 @@ impl BatchingPolicy {
         &self,
         generation: Generation,
         batch_queue: &BatchQueue<P>,
-    ) -> ProcessAction {
+    ) -> ProcessGenerationAction {
         if batch_queue.at_max_total_processing_capacity() {
-            ProcessAction::DoNothing
+            ProcessGenerationAction::DoNothing
         } else {
             Self::process_generation_if_ready(generation, batch_queue)
         }
@@ -287,17 +294,17 @@ impl BatchingPolicy {
         &self,
         generation: Generation,
         batch_queue: &BatchQueue<P>,
-    ) -> ProcessAction {
+    ) -> ProcessGenerationAction {
         if batch_queue.at_max_total_processing_capacity() {
-            ProcessAction::DoNothing
+            ProcessGenerationAction::DoNothing
         } else {
             Self::process_generation_if_ready(generation, batch_queue)
         }
     }
 
-    pub(crate) fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> ProcessAction {
+    pub(crate) fn on_finish<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> ProcessNextAction {
         if batch_queue.at_max_total_processing_capacity() {
-            return ProcessAction::DoNothing;
+            return ProcessNextAction::DoNothing;
         }
         match self {
             BatchingPolicy::Immediate => Self::process_if_any_ready(batch_queue),
@@ -305,14 +312,14 @@ impl BatchingPolicy {
             BatchingPolicy::Balanced { .. } => Self::process_if_any_ready(batch_queue),
 
             BatchingPolicy::Duration(_, _) if batch_queue.has_next_batch_timeout_expired() => {
-                ProcessAction::Process
+                ProcessNextAction::ProcessNext
             }
 
             BatchingPolicy::Duration(_, _) | BatchingPolicy::Size => {
                 if batch_queue.is_next_batch_full() {
-                    ProcessAction::Process
+                    ProcessNextAction::ProcessNext
                 } else {
-                    ProcessAction::DoNothing
+                    ProcessNextAction::DoNothing
                 }
             }
         }
@@ -321,19 +328,19 @@ impl BatchingPolicy {
     fn process_generation_if_ready<P: Processor>(
         generation: Generation,
         batch_queue: &BatchQueue<P>,
-    ) -> ProcessAction {
+    ) -> ProcessGenerationAction {
         if batch_queue.is_generation_ready(generation) {
-            ProcessAction::Process
+            ProcessGenerationAction::Process
         } else {
-            ProcessAction::DoNothing
+            ProcessGenerationAction::DoNothing
         }
     }
 
-    fn process_if_any_ready<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessAction {
+    fn process_if_any_ready<P: Processor>(batch_queue: &BatchQueue<P>) -> ProcessNextAction {
         if batch_queue.has_batch_ready() {
-            ProcessAction::Process
+            ProcessNextAction::ProcessNextReady
         } else {
-            ProcessAction::DoNothing
+            ProcessNextAction::DoNothing
         }
     }
 }
@@ -483,9 +490,8 @@ mod tests {
             queue.push(new_item("key".to_string(), "item1".to_string()));
 
             // Start processing to reach max processing capacity
-            let batch = queue.take_next_ready_batch().unwrap();
             let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
-            batch.process(TestProcessor, on_finished);
+            queue.process_next_ready_batch(TestProcessor, on_finished);
 
             // Fill the next batch to reach max queueing capacity
             queue.push(new_item("key".to_string(), "item2".to_string()));
@@ -518,9 +524,8 @@ mod tests {
             queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
             queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
-            let first_batch = queue.take_next_ready_batch().unwrap();
             let (on_finished, mut rx) = mpsc::channel(1);
-            first_batch.process(processor, on_finished);
+            queue.process_next_ready_batch(processor, on_finished);
 
             // Add partial second batch
             let notify2 = Arc::new(Notify::new());
@@ -530,10 +535,10 @@ mod tests {
             // First batch finishes
             notify1.notify_waiters(); // Let first batch complete
             let msg = rx.recv().await.unwrap();
-            assert_matches!(msg, Message::Finished(_));
+            assert_matches!(msg, Message::Finished(_, _));
 
             let result = policy.on_finish(&queue);
-            assert_matches!(result, ProcessAction::DoNothing); // Second batch not full yet
+            assert_matches!(result, ProcessNextAction::DoNothing); // Second batch not full yet
 
             // Add third item to complete second batch
             let result = policy.on_add(&queue);
@@ -581,18 +586,16 @@ mod tests {
             queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
             // Start processing first batch
-            let first_batch = queue.take_next_ready_batch().unwrap();
             let (on_finished, _rx) = mpsc::channel(1);
-            first_batch.process(processor.clone(), on_finished);
+            queue.process_next_ready_batch(processor.clone(), on_finished);
 
             // Add items to fill second batch (acquiring resources)
             let notify2 = Arc::new(Notify::new());
             queue.push(new_item((), Arc::clone(&notify2).notified_owned()));
             queue.push(new_item((), Arc::clone(&notify2).notified_owned())); // Only 2 items, not full yet
 
-            let mut second_batch = queue.take_next_ready_batch().unwrap();
             let (on_finished, _rx) = mpsc::channel(1);
-            second_batch.pre_acquire_resources(processor, on_finished);
+            queue.process_next_ready_batch(processor, on_finished);
 
             // Act
             // Now add the first item to the third batch
@@ -617,10 +620,8 @@ mod tests {
 
             queue.push(new_item("key".to_string(), "item1".to_string()));
 
-            let batch = queue.take_next_ready_batch().unwrap();
-
             let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
-            batch.process(TestProcessor, on_finished);
+            queue.process_next_ready_batch(TestProcessor, on_finished);
 
             let policy = BatchingPolicy::Immediate;
 
@@ -646,9 +647,8 @@ mod tests {
             queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
             // Start processing first batch
-            let first_batch = queue.take_next_ready_batch().unwrap();
-            let (on_finished, mut rx) = mpsc::channel(1);
-            first_batch.process(processor, on_finished);
+            let (on_finished, mut finished_rx) = mpsc::channel(1);
+            queue.process_next_ready_batch(processor, on_finished);
 
             // Add item to second batch
             let result = policy.on_add(&queue);
@@ -658,11 +658,13 @@ mod tests {
 
             // First batch finishes
             notify1.notify_waiters(); // Let first batch complete
-            let msg = rx.recv().await.unwrap();
-            assert_matches!(msg, Message::Finished(_));
+            let msg = finished_rx.recv().await.unwrap();
+            assert_matches!(msg, Message::Finished(_, _));
+
+            queue.mark_processed();
 
             let result = policy.on_finish(&queue);
-            assert_matches!(result, ProcessAction::Process); // Should process second batch
+            assert_matches!(result, ProcessNextAction::ProcessNextReady); // Should process second batch
         }
 
         #[tokio::test]
@@ -715,8 +717,10 @@ mod tests {
                 assert_eq!(generation, second_gen);
             });
 
+            queue.mark_resource_acquisition_finished();
+
             let result = policy.on_resources_acquired(second_gen, &queue);
-            assert_matches!(result, ProcessAction::Process); // Should process now
+            assert_matches!(result, ProcessGenerationAction::Process); // Should process now
 
             // Now release first acquire
             drop(lock_guard1);
@@ -728,7 +732,7 @@ mod tests {
             });
 
             let result = policy.on_resources_acquired(first_gen, &queue);
-            assert_matches!(result, ProcessAction::Process);
+            assert_matches!(result, ProcessGenerationAction::Process);
         }
     }
 
@@ -800,9 +804,8 @@ mod tests {
             queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
             // Start processing first batch
-            let first_batch = queue.take_next_ready_batch().unwrap();
             let (on_finished, mut rx) = mpsc::channel(1);
-            first_batch.process(processor, on_finished);
+            queue.process_next_ready_batch(processor, on_finished);
 
             // Step 2: Add third item (goes to second batch)
             let result = policy.on_add(&queue);
@@ -819,15 +822,17 @@ mod tests {
                 assert_eq!(generation, second_gen);
             });
             let result = policy.on_timeout(second_gen, &queue);
-            assert_matches!(result, ProcessAction::DoNothing); // Can't process, at max capacity
+            assert_matches!(result, ProcessGenerationAction::DoNothing); // Can't process, at max capacity
 
             // Step 4: First batch finishes
             notify1.notify_waiters(); // Let first batch complete
             let msg = rx.recv().await.unwrap();
-            assert_matches!(msg, Message::Finished(_));
+            assert_matches!(msg, Message::Finished(_, _));
+
+            queue.mark_processed();
 
             let result = policy.on_finish(&queue);
-            assert_matches!(result, ProcessAction::Process); // Should process second batch
+            assert_matches!(result, ProcessNextAction::ProcessNext); // Should process second batch
         }
     }
 
@@ -860,9 +865,8 @@ mod tests {
 
             // Add one item and start processing
             queue.push(new_item("key".to_string(), "item1".to_string()));
-            let batch = queue.take_next_ready_batch().unwrap();
             let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
-            batch.process(TestProcessor, on_finished);
+            queue.process_next_ready_batch(TestProcessor, on_finished);
 
             // Now add another item - should wait (size=1 < hint=5, processing=true)
             let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
@@ -882,9 +886,8 @@ mod tests {
 
             // Add one item and start processing
             queue.push(new_item("key".to_string(), "item1".to_string()));
-            let batch = queue.take_next_ready_batch().unwrap();
             let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
-            batch.process(TestProcessor, on_finished);
+            queue.process_next_ready_batch(TestProcessor, on_finished);
 
             // Add 4 more items (total=5, reaching hint)
             for i in 2..=5 {
@@ -912,9 +915,8 @@ mod tests {
             for i in 1..=5 {
                 queue.push(new_item("key".to_string(), format!("item{}", i)));
             }
-            let batch = queue.take_next_ready_batch().unwrap();
             let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
-            batch.process(TestProcessor, on_finished);
+            queue.process_next_ready_batch(TestProcessor, on_finished);
 
             // Fill second batch
             for i in 6..=10 {
@@ -949,7 +951,7 @@ mod tests {
             let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
             let result = policy.on_finish(&queue);
 
-            assert_matches!(result, ProcessAction::Process);
+            assert_matches!(result, ProcessNextAction::ProcessNextReady);
         }
 
         #[test]
@@ -962,7 +964,7 @@ mod tests {
             let policy = BatchingPolicy::Balanced { min_size_hint: 5 };
             let result = policy.on_finish(&queue);
 
-            assert_matches!(result, ProcessAction::DoNothing);
+            assert_matches!(result, ProcessNextAction::DoNothing);
         }
     }
 }
