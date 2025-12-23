@@ -6,12 +6,13 @@ use crate::{Processor, batch_queue::BatchQueue};
 
 use super::{OnAdd, OnFinish};
 
-pub(super) fn on_add<P: Processor>(
-    batch_queue: &BatchQueue<P>,
-    add_or_process: impl FnOnce(&BatchQueue<P>) -> OnAdd,
-) -> OnAdd {
+pub(super) fn on_add<P: Processor>(batch_queue: &BatchQueue<P>) -> OnAdd {
     if batch_queue.last_space_in_batch() {
-        add_or_process(batch_queue)
+        if batch_queue.at_max_total_processing_capacity() {
+            OnAdd::Add
+        } else {
+            OnAdd::AddAndProcess
+        }
     } else {
         OnAdd::Add
     }

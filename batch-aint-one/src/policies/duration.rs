@@ -12,11 +12,14 @@ pub(super) fn on_add<P: Processor>(
     duration: Duration,
     on_full: OnFull,
     batch_queue: &BatchQueue<P>,
-    add_or_process: impl FnOnce(&BatchQueue<P>) -> OnAdd,
 ) -> OnAdd {
     if batch_queue.last_space_in_batch() {
         if matches!(on_full, OnFull::Process) {
-            add_or_process(batch_queue)
+            if batch_queue.at_max_total_processing_capacity() {
+                OnAdd::Add
+            } else {
+                OnAdd::AddAndProcess
+            }
         } else {
             OnAdd::Add
         }

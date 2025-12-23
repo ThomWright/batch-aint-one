@@ -150,10 +150,8 @@ impl BatchingPolicy {
 
         match self {
             Self::Immediate => immediate::on_add(batch_queue),
-            Self::Size => size::on_add(batch_queue, |q| self.add_or_process(q)),
-            Self::Duration(dur, on_full) => {
-                duration::on_add(*dur, *on_full, batch_queue, |q| self.add_or_process(q))
-            }
+            Self::Size => size::on_add(batch_queue),
+            Self::Duration(dur, on_full) => duration::on_add(*dur, *on_full, batch_queue),
             Self::Balanced { min_size_hint } => balanced::on_add(*min_size_hint, batch_queue),
         }
     }
@@ -170,16 +168,6 @@ impl BatchingPolicy {
             }
         } else {
             None
-        }
-    }
-
-    /// Decide between Add and AddAndProcess based on processing capacity.
-    fn add_or_process<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnAdd {
-        if batch_queue.at_max_total_processing_capacity() {
-            // We can't process the batch yet, so just add to it.
-            OnAdd::Add
-        } else {
-            OnAdd::AddAndProcess
         }
     }
 
@@ -219,7 +207,6 @@ impl BatchingPolicy {
         }
     }
 
-    // Common helper functions
     fn process_generation_if_ready<P: Processor>(
         generation: Generation,
         batch_queue: &BatchQueue<P>,
