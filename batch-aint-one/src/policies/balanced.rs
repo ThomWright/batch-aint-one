@@ -8,17 +8,22 @@ use super::{OnAdd, OnFinish};
 
 pub(super) fn on_add<P: Processor>(min_size_hint: usize, batch_queue: &BatchQueue<P>) -> OnAdd {
     if batch_queue.at_max_total_processing_capacity() {
-        OnAdd::Add
-    } else if batch_queue.adding_to_new_batch() && !batch_queue.is_processing() {
-        // First item, nothing else processing
-        OnAdd::AddAndAcquireResources
-    } else if batch_queue.has_last_batch_reached_size(min_size_hint.saturating_sub(1))
+        return OnAdd::Add;
+    }
+
+    if batch_queue.adding_to_new_batch() && !batch_queue.is_processing() {
+        // First item, nothing else processing. If we're processing another batch, we want to wait
+        // until we reach the min_size_hint or a batch finishes before acquiring more resources.
+        return OnAdd::AddAndAcquireResources;
+    }
+
+    if batch_queue.has_last_batch_reached_size(min_size_hint.saturating_sub(1))
         && !batch_queue.is_last_batch_acquiring_resources()
     {
-        OnAdd::AddAndAcquireResources
-    } else {
-        OnAdd::Add
+        return OnAdd::AddAndAcquireResources;
     }
+
+    OnAdd::Add
 }
 
 pub(super) fn on_finish<P: Processor>(batch_queue: &BatchQueue<P>) -> OnFinish {
