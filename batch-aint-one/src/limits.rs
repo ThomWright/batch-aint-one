@@ -75,3 +75,19 @@ impl Display for Limits {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits_builder_methods() {
+        let limits = Limits::builder()
+            .max_batch_size(50)
+            .max_key_concurrency(5)
+            .build();
+
+        assert_eq!(limits.max_batch_size, 50);
+        assert_eq!(limits.max_key_concurrency, 5);
+    }
+}
