@@ -255,13 +255,13 @@ impl<P: Processor> Batch<P> {
     ) {
         if !self.state.is_processable() {
             warn!(
-                "should not try to process a batch that in state {:?}",
+                "should not try to process a batch that is in state {:?}",
                 self.state
             );
         }
         debug_assert!(
             self.state.is_processable(),
-            "should not try to process a batch that in state {:?}",
+            "should not try to process a batch that is in state {:?}",
             self.state
         );
 
