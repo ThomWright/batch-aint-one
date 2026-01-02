@@ -256,7 +256,7 @@ async fn test_longer_simulation() {
 
     // Configure batcher with Balanced policy
     let limits = Limits::builder()
-        .max_batch_size(15)
+        .max_batch_size(5)
         .max_key_concurrency(1)
         .build();
     let policy = BatchingPolicy::Immediate;

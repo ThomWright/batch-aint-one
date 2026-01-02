@@ -1,5 +1,8 @@
 //! Connection pool simulation
 
+use bon::bon;
+use rand::{Rng, SeedableRng};
+
 use crate::latency::LatencyProfile;
 use crate::metrics::{MetricsCollector, ResourceSnapshot};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,27 +15,35 @@ pub struct ConnectionPool {
     acquire_latency: Arc<Mutex<LatencyProfile>>,
     connect_latency: Arc<Mutex<LatencyProfile>>,
     metrics: Arc<Mutex<MetricsCollector>>,
+    rng: Arc<Mutex<rand::rngs::StdRng>>,
 }
 
+#[bon]
 impl ConnectionPool {
-    /// Create a new connection pool
-    ///
-    /// # Arguments
-    /// * `initial_size` - Initial number of connections in the pool
-    /// * `connect_latency` - Latency profile for opening new connections
-    /// * `metrics` - Metrics collector for recording pool state changes
+    #[builder]
     pub fn new(
+        /// Initial number of connections in the pool
         initial_size: usize,
+        /// Latency profile for acquiring a connection from the pool
         acquire_latency: LatencyProfile,
+        /// Latency profile for opening new connections
         connect_latency: LatencyProfile,
         metrics: Arc<Mutex<MetricsCollector>>,
+        /// Optional seed for reproducibility
+        seed: Option<u64>,
     ) -> Self {
+        let rng = Arc::new(Mutex::new(match seed {
+            Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+            None => rand::rngs::StdRng::from_os_rng(),
+        }));
+
         let pool = Self {
             total: AtomicUsize::new(initial_size),
             available: AtomicUsize::new(initial_size),
             acquire_latency: Arc::new(Mutex::new(acquire_latency)),
             connect_latency: Arc::new(Mutex::new(connect_latency)),
             metrics,
+            rng,
         };
 
         // Record initial state
@@ -90,6 +101,23 @@ impl ConnectionPool {
         }
     }
 
+    fn return_connection(&self) {
+        // Destroy the connection 1% of the time to simulate churn
+        if self
+            .rng
+            .lock()
+            .expect("should not panic while holding lock")
+            .random_bool(0.01)
+        {
+            self.total.fetch_sub(1, Ordering::SeqCst);
+        } else {
+            self.available.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // Record snapshot after state change
+        self.record_snapshot();
+    }
+
     /// Get the number of connections currently available (idle)
     pub fn available(&self) -> usize {
         self.available.load(Ordering::Relaxed)
@@ -115,10 +143,7 @@ pub struct Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        self.pool.available.fetch_add(1, Ordering::SeqCst);
-
-        // Record snapshot after state change
-        self.pool.record_snapshot();
+        self.pool.return_connection();
     }
 }
 
@@ -142,12 +167,15 @@ mod tests {
 
         let start_time = tokio::time::Instant::now();
         let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
-        let pool = Arc::new(ConnectionPool::new(
-            2,
-            acquire_latency,
-            connect_latency,
-            metrics.clone(),
-        ));
+        let pool = Arc::new(
+            ConnectionPool::builder()
+                .initial_size(2)
+                .acquire_latency(acquire_latency)
+                .connect_latency(connect_latency)
+                .metrics(metrics.clone())
+                .seed(*TEST_SEED)
+                .build(),
+        );
 
         // Initially: 2 total, 2 available, 0 in use
         assert_eq!(pool.total(), 2);
@@ -204,12 +232,15 @@ mod tests {
             .build(); // ~1s mean
         let start_time = tokio::time::Instant::now();
         let metrics = Arc::new(Mutex::new(MetricsCollector::new(start_time)));
-        let pool = Arc::new(ConnectionPool::new(
-            0,
-            acquire_latency,
-            connect_latency,
-            metrics,
-        ));
+        let pool = Arc::new(
+            ConnectionPool::builder()
+                .initial_size(0)
+                .acquire_latency(acquire_latency)
+                .connect_latency(connect_latency)
+                .metrics(metrics.clone())
+                .seed(*TEST_SEED)
+                .build(),
+        );
 
         let start = tokio::time::Instant::now();
         let _conn = pool.acquire().await;

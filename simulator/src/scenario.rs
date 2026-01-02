@@ -116,12 +116,14 @@ impl ScenarioRunner {
     ) -> Result<Batcher<SimProcessor>, ScenarioError> {
         // Create connection pool if configured
         let pool = self.config.pool_config.as_ref().map(|pool_config| {
-            Arc::new(ConnectionPool::new(
-                pool_config.initial_size,
-                pool_config.acquire_latency.clone(),
-                pool_config.connect_latency.clone(),
-                metrics.clone(),
-            ))
+            Arc::new(
+                ConnectionPool::builder()
+                    .initial_size(pool_config.initial_size)
+                    .acquire_latency(pool_config.acquire_latency.clone())
+                    .connect_latency(pool_config.connect_latency.clone())
+                    .metrics(metrics.clone())
+                    .build(),
+            )
         });
 
         // Create processor
