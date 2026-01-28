@@ -60,7 +60,6 @@ struct CanDeriveClone {
     batcher: Cloneable,
 }
 
-
 /// The BatchError type should implement Error when E does.
 #[test]
 fn assert_batch_error_impls_error() {
