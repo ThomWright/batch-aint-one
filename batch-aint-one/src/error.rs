@@ -19,7 +19,7 @@ pub enum BatchError<E: Display> {
     ///
     /// Unrecoverable.
     #[error("Error while waiting for batch results: channel closed. {0}")]
-    Rx(RecvError),
+    Rx(#[from] RecvError),
 
     /// The current batch is full so the item was rejected.
     ///
@@ -29,11 +29,11 @@ pub enum BatchError<E: Display> {
 
     /// Something went wrong while processing a batch.
     #[error("The entire batch failed: {0}")]
-    BatchFailed(E),
+    BatchFailed(#[source] E),
 
     /// Something went wrong while acquiring resources for processing.
     #[error("Resource acquisition failed: {0}")]
-    ResourceAcquisitionFailed(E),
+    ResourceAcquisitionFailed(#[source] E),
 
     /// The batch was cancelled before completion.
     #[error("The batch was cancelled")]
@@ -80,12 +80,6 @@ impl Display for RejectionReason {
 /// Result type for batch operations.
 pub type BatchResult<T, E> = std::result::Result<T, BatchError<E>>;
 
-impl<E: Display> From<RecvError> for BatchError<E> {
-    fn from(rx_err: RecvError) -> Self {
-        BatchError::Rx(rx_err)
-    }
-}
-
 impl<T, E: Display> From<SendError<T>> for BatchError<E> {
     fn from(_tx_err: SendError<T>) -> Self {
         BatchError::Tx
@@ -100,6 +94,7 @@ where
     pub fn inner(self) -> BatchResult<E, E> {
         match self {
             BatchError::BatchFailed(source) => Ok(source),
+            BatchError::ResourceAcquisitionFailed(source) => Ok(source),
             _ => Err(self),
         }
     }

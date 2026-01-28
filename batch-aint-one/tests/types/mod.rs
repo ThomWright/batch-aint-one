@@ -59,3 +59,13 @@ type Cloneable = Batcher<ProcessorWithNonCloneableIO>;
 struct CanDeriveClone {
     batcher: Cloneable,
 }
+
+
+/// The BatchError type should implement Error when E does.
+#[test]
+fn assert_batch_error_impls_error() {
+    use batch_aint_one::error::BatchError;
+    use std::error::Error;
+    let e = BatchError::<std::io::Error>::Cancelled;
+    let _ = e.source();
+}
