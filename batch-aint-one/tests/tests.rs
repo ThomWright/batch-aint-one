@@ -1,3 +1,4 @@
+mod errors;
 mod panic;
 mod resources;
 mod shutdown;
