@@ -28,11 +28,11 @@ pub enum BatchError<E: Display> {
     Rejected(RejectionReason),
 
     /// Something went wrong while processing a batch.
-    #[error("The entire batch failed: {0}")]
+    #[error("The entire batch failed")]
     BatchFailed(#[source] E),
 
     /// Something went wrong while acquiring resources for processing.
-    #[error("Resource acquisition failed: {0}")]
+    #[error("Resource acquisition failed")]
     ResourceAcquisitionFailed(#[source] E),
 
     /// The batch was cancelled before completion.

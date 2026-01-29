@@ -6,6 +6,8 @@ fn inner_error_reported_as_source() {
         std::io::ErrorKind::Other,
         "underlying error",
     ));
+    let display = format!("{}", e);
+    assert_eq!(display, "The entire batch failed");
     let source = e.source().unwrap();
     assert_eq!(source.to_string(), "underlying error");
 }
