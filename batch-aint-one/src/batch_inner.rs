@@ -7,7 +7,7 @@ use futures::FutureExt;
 use tokio::task::JoinError;
 use tracing::{Instrument, Level, Span, instrument::WithSubscriber, span};
 
-use crate::{BatchError, processor::Processor};
+use crate::{BatchError, error::ProcessorInvariantViolation, processor::Processor};
 
 /// Core batch data.
 ///
@@ -123,11 +123,23 @@ impl<P: Processor> BatchInner<P> {
             batch.key = ?key,
             batch.size = batch_size as u64
         );
-        processor
+
+        let outputs = processor
             .process(key.clone(), inputs.into_iter(), resources)
             .instrument(inner_span.clone())
             .map(|r| r.map_err(BatchError::BatchFailed))
-            .await
+            .await?;
+
+        if outputs.len() != batch_size {
+            Err(BatchError::ProcessorInvariantViolation(
+                ProcessorInvariantViolation::WrongNumberOfOutputs {
+                    expected: batch_size,
+                    actual: outputs.len(),
+                },
+            ))
+        } else {
+            Ok(outputs)
+        }
     }
 
     pub async fn pre_acquire(

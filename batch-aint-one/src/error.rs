@@ -31,6 +31,10 @@ pub enum BatchError<E: Display> {
     #[error("The entire batch failed")]
     BatchFailed(#[source] E),
 
+    /// The processor violated its invariants.
+    #[error("The processor violated its invariants")]
+    ProcessorInvariantViolation(#[source] ProcessorInvariantViolation),
+
     /// Something went wrong while acquiring resources for processing.
     #[error("Resource acquisition failed")]
     ResourceAcquisitionFailed(#[source] E),
@@ -42,6 +46,20 @@ pub enum BatchError<E: Display> {
     /// The batch processing (or resource acquisition) panicked.
     #[error("The batch processing panicked")]
     Panic,
+}
+
+/// A processor implementation violated its invariants.
+#[derive(Error, Debug, Clone)]
+#[non_exhaustive]
+pub enum ProcessorInvariantViolation {
+    /// The processor returned the wrong number of outputs for the inputs given.
+    #[error("The processor returned the wrong number of outputs: expected {expected}, got {actual}")]
+    WrongNumberOfOutputs {
+        /// The number of inputs given.
+        expected: usize,
+        /// The number of outputs returned.
+        actual: usize,
+    },
 }
 
 /// Reason for rejecting a batch item.

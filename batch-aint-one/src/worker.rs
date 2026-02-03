@@ -325,6 +325,7 @@ impl WorkerHandle {
     ///
     /// Note that when using the Size policy this may wait indefinitely if no new items are added.
     pub async fn shut_down(&self) {
+        info!("Sending shut down signal to batch worker");
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.
         let _ = self.shutdown_tx.send(ShutdownMessage::ShutDown).await;
     }
@@ -344,6 +345,7 @@ impl WorkerHandle {
 
 impl Drop for WorkerDropGuard {
     fn drop(&mut self) {
+        info!("Aborting batch worker");
         self.handle.abort();
     }
 }
