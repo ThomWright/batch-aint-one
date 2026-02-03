@@ -53,7 +53,9 @@ pub enum BatchError<E: Display> {
 #[non_exhaustive]
 pub enum ProcessorInvariantViolation {
     /// The processor returned the wrong number of outputs for the inputs given.
-    #[error("The processor returned the wrong number of outputs: expected {expected}, got {actual}")]
+    #[error(
+        "The processor returned the wrong number of outputs: expected {expected}, got {actual}"
+    )]
     WrongNumberOfOutputs {
         /// The number of inputs given.
         expected: usize,
