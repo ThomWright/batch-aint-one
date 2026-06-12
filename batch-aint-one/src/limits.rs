@@ -19,7 +19,11 @@ pub struct Limits {
 
 #[bon]
 impl Limits {
-    #[allow(missing_docs)]
+    /// Create new limits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of the limits are zero.
     #[builder]
     pub fn new(
         /// Limits the maximum size of a batch.
@@ -30,12 +34,28 @@ impl Limits {
         #[builder(default = 10)]
         max_key_concurrency: usize,
         /// Limits the maximum number of batches that can be queued concurrently for a key.
+        ///
+        /// Defaults to `max_key_concurrency * 2`.
         max_batch_queue_size: Option<usize>,
     ) -> Self {
+        assert!(
+            max_batch_size > 0,
+            "max_batch_size must be greater than zero"
+        );
+        assert!(
+            max_key_concurrency > 0,
+            "max_key_concurrency must be greater than zero"
+        );
+        let max_batch_queue_size = max_batch_queue_size.unwrap_or(max_key_concurrency * 2);
+        assert!(
+            max_batch_queue_size > 0,
+            "max_batch_queue_size must be greater than zero"
+        );
+
         Self {
             max_batch_size,
             max_key_concurrency,
-            max_batch_queue_size: max_batch_queue_size.unwrap_or(max_key_concurrency * 2),
+            max_batch_queue_size,
         }
     }
 
@@ -79,6 +99,24 @@ impl Display for Limits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "max_batch_size must be greater than zero")]
+    fn rejects_zero_max_batch_size() {
+        Limits::builder().max_batch_size(0).build();
+    }
+
+    #[test]
+    #[should_panic(expected = "max_key_concurrency must be greater than zero")]
+    fn rejects_zero_max_key_concurrency() {
+        Limits::builder().max_key_concurrency(0).build();
+    }
+
+    #[test]
+    #[should_panic(expected = "max_batch_queue_size must be greater than zero")]
+    fn rejects_zero_max_batch_queue_size() {
+        Limits::builder().max_batch_queue_size(0).build();
+    }
 
     #[test]
     fn limits_builder_methods() {
