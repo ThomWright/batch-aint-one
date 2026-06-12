@@ -160,8 +160,9 @@ impl<P: Processor> Batch<P> {
         !self.is_empty()
             // ... and if there is a timeout deadline, it must be in the past
             && self.timeout.is_ready_for_processing()
-            // ... and we must not be acquiring resources
-            && !self.is_acquiring()
+            // ... and we must be in a processable state, i.e. not acquiring resources, and not
+            // failed
+            && self.state.is_processable()
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<P>) {
@@ -178,10 +179,6 @@ impl<P: Processor> Batch<P> {
 
     pub(crate) fn has_started_acquiring(&self) -> bool {
         self.state.has_started()
-    }
-
-    fn is_acquiring(&self) -> bool {
-        self.state.is_acquiring()
     }
 
     /// Acquire resources for this batch.
@@ -405,7 +402,6 @@ trait LockedBatchState<P: Processor> {
     fn started_pre_acquiring(&self);
     fn has_started(&self) -> bool;
     fn set_acquiring(&self, handle: JoinHandle<()>);
-    fn is_acquiring(&self) -> bool;
     fn is_processable(&self) -> bool;
     fn take_resources(&self) -> Option<(P::Resources, Span)>;
     fn processed(&self);
@@ -444,15 +440,6 @@ impl<P: Processor> LockedBatchState<P> for Mutex<BatchState<P>> {
         if matches!(*state, BatchState::StartedAcquiring) {
             *state = BatchState::Acquiring(handle);
         }
-    }
-
-    fn is_acquiring(&self) -> bool {
-        let state = self.lock().expect("Resources mutex should not be poisoned");
-
-        matches!(
-            *state,
-            BatchState::StartedAcquiring | BatchState::Acquiring(_)
-        )
     }
 
     fn is_processable(&self) -> bool {

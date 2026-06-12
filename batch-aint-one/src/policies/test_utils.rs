@@ -34,6 +34,8 @@ pub(super) struct ControlledProcessor {
     // We control when acquire_resources completes by holding locks.
     pub(super) acquire_locks: Vec<Arc<Mutex<()>>>,
     pub(super) acquire_counter: Arc<AtomicUsize>,
+    // If set, acquire_resources fails with this error.
+    pub(super) acquire_error: Option<String>,
 }
 
 impl Processor for ControlledProcessor {
@@ -50,7 +52,10 @@ impl Processor for ControlledProcessor {
         if let Some(lock) = self.acquire_locks.get(n) {
             let _guard = lock.lock().await;
         }
-        Ok(())
+        match &self.acquire_error {
+            Some(err) => Err(err.clone()),
+            None => Ok(()),
+        }
     }
 
     async fn process(

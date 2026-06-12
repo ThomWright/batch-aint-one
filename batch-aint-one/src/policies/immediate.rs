@@ -157,6 +157,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn does_not_process_batch_whose_acquisition_failed() {
+        // Regression test: a batch in the FailedToAcquireResources state used to be considered
+        // "ready", so it could be picked up and processed despite the failure.
+        //
+        // Scenario: batch B's resource acquisition fails. The acquisition task updates the batch
+        // state _before_ the worker handles the ResourceAcquisitionFailed message. If another
+        // batch (A) finishes in that window, the failed batch must not be picked up for
+        // processing by on_finish.
+
+        let limits = Limits::builder()
+            .max_batch_size(1)
+            .max_key_concurrency(2)
+            .build();
+        let mut queue = BatchQueue::<ControlledProcessor>::new("test".to_string(), (), limits);
+        let policy = BatchingPolicy::Immediate;
+
+        // Batch A: filled and processing.
+        let notify_a = Arc::new(Notify::new());
+        queue.push(new_item((), Arc::clone(&notify_a).notified_owned()));
+        let (finished_tx, mut finished_rx) = mpsc::channel(1);
+        queue.process_next_ready_batch(ControlledProcessor::default(), finished_tx);
+
+        // Batch B: pre-acquiring resources, and the acquisition fails.
+        queue.push(new_item((), Arc::new(Notify::new()).notified_owned()));
+        let failing_processor = ControlledProcessor {
+            acquire_error: Some("no resources".to_string()),
+            ..Default::default()
+        };
+        let (acquire_tx, mut acquire_rx) = mpsc::channel(1);
+        queue.pre_acquire_resources(failing_processor, acquire_tx);
+
+        // Wait for B's acquisition to fail. The batch state is now FailedToAcquireResources,
+        // but the worker hasn't handled the failure message yet.
+        let msg = acquire_rx.recv().await.unwrap();
+        assert_matches!(msg, Message::ResourceAcquisitionFailed(_, _, _));
+
+        // Batch A finishes, and the worker handles this before the failure message.
+        notify_a.notify_waiters();
+        let msg = finished_rx.recv().await.unwrap();
+        assert_matches!(msg, Message::Finished(_, _));
+        queue.mark_processed();
+
+        let result = policy.on_finish(&queue);
+        assert_matches!(
+            result,
+            OnFinish::DoNothing,
+            "a batch whose resource acquisition failed should not be processed"
+        );
+    }
+
+    #[tokio::test]
     async fn out_of_order_acquisition() {
         // Scenario: Resources are acquired out of order
 
