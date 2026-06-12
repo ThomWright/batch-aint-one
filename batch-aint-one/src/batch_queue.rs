@@ -199,8 +199,13 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     pub(crate) fn take_next_ready_batch(&mut self) -> Option<Batch<P>> {
+        self.take_first(|batch| batch.is_ready())
+    }
+
+    /// Take the first batch matching the predicate, ensuring the queue remains non-empty.
+    fn take_first(&mut self, predicate: impl Fn(&Batch<P>) -> bool) -> Option<Batch<P>> {
         for (index, batch) in self.queue.iter().enumerate() {
-            if batch.is_ready() {
+            if predicate(batch) {
                 let batch = self
                     .queue
                     .remove(index)
@@ -261,22 +266,7 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     fn take_generation(&mut self, generation: Generation) -> Option<Batch<P>> {
-        for (index, batch) in self.queue.iter().enumerate() {
-            if batch.is_generation(generation) {
-                let batch = self
-                    .queue
-                    .remove(index)
-                    .expect("Should exist, we just found it");
-
-                if self.queue.is_empty() {
-                    self.queue.push_back(batch.new_generation())
-                }
-
-                return Some(batch);
-            }
-        }
-
-        None
+        self.take_first(|batch| batch.is_generation(generation))
     }
 
     pub(crate) fn process_generation(
