@@ -21,7 +21,7 @@ pub enum BatchError<E: Display> {
     #[error("Error while waiting for batch results: channel closed. {0}")]
     Rx(#[from] RecvError),
 
-    /// The current batch is full so the item was rejected.
+    /// The batch queue for this key is full, so the item was rejected.
     ///
     /// Recoverable.
     #[error("Batch item rejected: {0}")]

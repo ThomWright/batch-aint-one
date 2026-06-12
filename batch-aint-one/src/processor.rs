@@ -24,8 +24,9 @@ pub trait Processor: 'static + Send + Clone {
     ///
     /// This method is called before processing each batch.
     ///
-    /// For `BatchingPolicy::Immediate`, the batch will keep accumulating items until the resources
-    /// are acquired.
+    /// For the `Immediate` and `Balanced` batching policies, resources can be acquired before the
+    /// batch is processed, and the batch will keep accumulating items until the resources are
+    /// acquired.
     ///
     /// Can be used to e.g. acquire a database connection from a pool.
     fn acquire_resources(
@@ -35,8 +36,9 @@ pub trait Processor: 'static + Send + Clone {
 
     /// Process the batch.
     ///
-    /// The order of the outputs in the returned `Vec` must be the same as the order of the inputs
-    /// in the given iterator.
+    /// Must return exactly one output per input, in the same order as the inputs in the given
+    /// iterator. If the number of outputs is wrong, every item in the batch receives a
+    /// `BatchError::ProcessorInvariantViolation` error.
     fn process(
         &self,
         key: Self::Key,

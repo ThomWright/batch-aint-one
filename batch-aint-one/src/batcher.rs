@@ -24,7 +24,8 @@ use crate::{
 /// ## Drop
 ///
 /// When the last instance of a `Batcher` is dropped, the worker task will be aborted (ungracefully
-/// shut down).
+/// shut down). Any callers still awaiting [`Batcher::add()`] will receive a
+/// [`BatchError::Rx`](crate::BatchError::Rx) error.
 ///
 /// If you want to shut down the worker gracefully, call [`WorkerHandle::shut_down()`].
 #[derive(Debug)]

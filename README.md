@@ -53,9 +53,7 @@ use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
 #[derive(Debug, Clone)]
 struct SleepyBatchProcessor;
 
-impl
-    Processor for SleepyBatchProcessor
-{
+impl Processor for SleepyBatchProcessor {
     type Key = String;
     type Input = String;
     type Output = String;

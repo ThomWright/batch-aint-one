@@ -1,11 +1,4 @@
 //! Batching policies that control when batches get processed.
-//!
-//! This module provides different batching strategies, each optimised for different use cases:
-//!
-//! - [`Immediate`](BatchingPolicy::Immediate): Prioritises low latency
-//! - [`Size`](BatchingPolicy::Size): Prioritises high batch utilisation
-//! - [`Duration`](BatchingPolicy::Duration): Prioritises regularity
-//! - [`Balanced`](BatchingPolicy::Balanced): Balances resource efficiency and latency
 
 use std::{
     fmt::{self, Debug, Display},
@@ -28,6 +21,13 @@ mod size;
 mod test_utils;
 
 /// A policy controlling when batches get processed.
+///
+/// Each policy is optimised for a different use case:
+///
+/// - [`Immediate`](Self::Immediate): Prioritises low latency
+/// - [`Size`](Self::Size): Prioritises high batch utilisation
+/// - [`Duration`](Self::Duration): Prioritises regularity
+/// - [`Balanced`](Self::Balanced): Balances resource efficiency and latency
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum BatchingPolicy {

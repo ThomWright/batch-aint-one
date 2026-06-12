@@ -2,13 +2,14 @@ use std::fmt::{self, Display};
 
 use bon::bon;
 
-/// A policy controlling limits on batch sizes and concurrency.
+/// Limits on batch sizes, queueing and concurrency, applied per key.
 ///
-/// New items will be rejected when both the limits have been reached.
+/// New items are rejected when the batch queue for their key is full: `max_batch_queue_size`
+/// batches are queued, and the newest batch already contains `max_batch_size` items.
 ///
-/// `max_key_concurrency * max_batch_size` is the number of items that can be processed concurrently.
-///
-/// `max_batch_queue_size * max_batch_size` is the number of items that can be queued.
+/// `max_key_concurrency * max_batch_size` is the maximum number of items that can be processed
+/// concurrently for a key, and `max_batch_queue_size * max_batch_size` is the maximum number of
+/// items that can be queued for a key.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Limits {
@@ -27,10 +28,14 @@ impl Limits {
     #[builder]
     pub fn new(
         /// Limits the maximum size of a batch.
+        ///
+        /// Defaults to 100.
         #[builder(default = 100)]
         max_batch_size: usize,
         /// Limits the maximum number of batches that can be processed concurrently for a key,
         /// including resource acquisition.
+        ///
+        /// Defaults to 10.
         #[builder(default = 10)]
         max_key_concurrency: usize,
         /// Limits the maximum number of batches that can be queued concurrently for a key.
