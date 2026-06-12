@@ -75,14 +75,7 @@ impl Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        let max_batch_size = 100;
-        let max_key_concurrency = 10;
-        let max_batch_queue_size = max_key_concurrency;
-        Self {
-            max_batch_size,
-            max_key_concurrency,
-            max_batch_queue_size,
-        }
+        Self::builder().build()
     }
 }
 
@@ -99,6 +92,16 @@ impl Display for Limits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_matches_builder_defaults() {
+        let default = Limits::default();
+        let built = Limits::builder().build();
+
+        assert_eq!(default.max_batch_size, built.max_batch_size);
+        assert_eq!(default.max_key_concurrency, built.max_key_concurrency);
+        assert_eq!(default.max_batch_queue_size, built.max_batch_queue_size);
+    }
 
     #[test]
     #[should_panic(expected = "max_batch_size must be greater than zero")]
