@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- `Limits` now panics on construction if any limit is zero, instead of panicking obscurely or
+  stalling later
+- `Limits::default()` now matches the builder defaults: `max_batch_queue_size` defaults to
+  `max_key_concurrency * 2` (was `max_key_concurrency`)
+
+### Fixed
+
+- Fixed a race condition where a batch whose resource acquisition failed could be processed
+  anyway, leaking concurrency capacity and eventually stalling the key
+- Batch queues for idle keys are now removed, fixing unbounded memory growth when batching over
+  many distinct keys
+- The `batch.first_item_wait_time_secs` span attribute now has sub-second precision (was
+  truncated to whole seconds, so almost always `0`)
+
+### Documentation
+
+- The batching policy comparison is now on `BatchingPolicy` itself, so it is visible on docs.rs
+- Documented `shut_down()` semantics: new items are still accepted while shutting down, and
+  shutdown may never complete under sustained traffic
+- Documented `Limits` builder defaults and clarified when items are rejected
+- Documented the `Processor::process` output invariant: exactly one output per input, in order
+- Various smaller documentation fixes
+
 ## 0.12.0
 
 ### Changed
