@@ -36,7 +36,6 @@ impl Generation {
     }
 }
 
-/// Core batch data and
 impl<P: Processor> BatchInner<P> {
     pub fn new(batcher_name: String, key: P::Key) -> Self {
         Self {

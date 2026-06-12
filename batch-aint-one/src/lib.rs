@@ -22,6 +22,17 @@ use doc_comment::doctest;
 #[cfg(doctest)]
 doctest!("../../README.md");
 
+/// Check an invariant which should never be violated: panic in debug builds (and tests), but
+/// only log a warning in release builds rather than bringing the process down.
+macro_rules! soft_assert {
+    ($cond:expr, $($arg:tt)+) => {
+        if !$cond {
+            tracing::warn!($($arg)+);
+            debug_assert!(false, $($arg)+);
+        }
+    };
+}
+
 mod batch;
 mod batch_inner;
 mod batch_queue;

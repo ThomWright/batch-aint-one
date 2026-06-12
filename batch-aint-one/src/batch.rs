@@ -9,7 +9,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
-use tracing::{Level, Span, info, instrument::WithSubscriber, span, warn};
+use tracing::{Level, Span, info, instrument::WithSubscriber, span};
 
 use crate::{
     BatchError,
@@ -189,10 +189,7 @@ impl<P: Processor> Batch<P> {
         processor: P,
         tx: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        if self.has_started_acquiring() {
-            warn!("should not try to acquire resources if already started acquiring");
-        }
-        debug_assert!(
+        soft_assert!(
             !self.has_started_acquiring(),
             "should not try to acquire resources if already started acquiring"
         );
@@ -250,13 +247,7 @@ impl<P: Processor> Batch<P> {
         processor: P,
         on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
     ) {
-        if !self.state.is_processable() {
-            warn!(
-                "should not try to process a batch that is in state {:?}",
-                self.state
-            );
-        }
-        debug_assert!(
+        soft_assert!(
             self.state.is_processable(),
             "should not try to process a batch that is in state {:?}",
             self.state

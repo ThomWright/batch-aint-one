@@ -10,20 +10,15 @@ pub(crate) struct TimeoutHandle<P: Processor> {
     generation: Generation,
     deadline: Option<Instant>,
     handle: Option<JoinHandle<()>>,
-    _phantom: std::marker::PhantomData<P>,
 }
 
-impl<P: Processor> Debug for TimeoutHandle<P>
-where
-    P: Processor,
-{
+impl<P: Processor> Debug for TimeoutHandle<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let TimeoutHandle {
             key,
             generation,
             deadline,
             handle,
-            _phantom: _,
         } = self;
         f.debug_struct("TimeoutHandle")
             .field("key", &key)
@@ -46,7 +41,6 @@ impl<P: Processor> TimeoutHandle<P> {
             generation,
             deadline: None,
             handle: None,
-            _phantom: std::marker::PhantomData,
         }
     }
 

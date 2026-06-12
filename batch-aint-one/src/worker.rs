@@ -172,26 +172,29 @@ impl<P: Processor> Worker<P> {
         }
     }
 
+    /// Get the batch queue for the given key, which should always exist when handling an event
+    /// for that key.
+    fn queue_mut<'q>(
+        batch_queues: &'q mut HashMap<P::Key, BatchQueue<P>>,
+        key: &P::Key,
+    ) -> &'q mut BatchQueue<P> {
+        batch_queues.get_mut(key).expect("batch queue should exist")
+    }
+
     fn process_generation(&mut self, key: P::Key, generation: Generation) {
-        let batch_queue = self.batch_queues.get_mut(&key).expect("batch should exist");
+        let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
 
         batch_queue.process_generation(generation, self.processor.clone(), self.msg_tx.clone());
     }
 
     fn process_next_ready_batch(&mut self, key: &P::Key) {
-        let batch_queue = self
-            .batch_queues
-            .get_mut(key)
-            .expect("batch queue should exist");
+        let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
 
         batch_queue.process_next_ready_batch(self.processor.clone(), self.msg_tx.clone());
     }
 
     fn process_next_batch(&mut self, key: &P::Key) {
-        let batch_queue = self
-            .batch_queues
-            .get_mut(key)
-            .expect("batch queue should exist");
+        let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
 
         batch_queue.process_next_batch(self.processor.clone(), self.msg_tx.clone());
     }
@@ -213,10 +216,7 @@ impl<P: Processor> Worker<P> {
     }
 
     fn on_resource_acquired(&mut self, key: P::Key, generation: Generation) {
-        let batch_queue = self
-            .batch_queues
-            .get_mut(&key)
-            .expect("batch queue should exist");
+        let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
 
         batch_queue.mark_resource_acquisition_finished();
 
@@ -237,19 +237,13 @@ impl<P: Processor> Worker<P> {
         generation: Generation,
         err: BatchError<P::Error>,
     ) {
-        let batch_queue = self
-            .batch_queues
-            .get_mut(&key)
-            .expect("batch queue should exist");
+        let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
 
         batch_queue.fail_generation(generation, err.clone(), self.msg_tx.clone());
     }
 
     fn on_batch_finished(&mut self, key: &P::Key, terminal_state: BatchTerminalState) {
-        let batch_queue = self
-            .batch_queues
-            .get_mut(key)
-            .expect("batch queue should exist");
+        let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
 
         match terminal_state {
             BatchTerminalState::Processed => {
@@ -273,12 +267,7 @@ impl<P: Processor> Worker<P> {
         // Remove the queue for idle keys, otherwise the map grows unboundedly as new keys are
         // seen. A key can only become idle when a batch finishes, so this is the only place we
         // need to do this.
-        if self
-            .batch_queues
-            .get(key)
-            .expect("batch queue should exist")
-            .is_idle()
-        {
+        if Self::queue_mut(&mut self.batch_queues, key).is_idle() {
             self.batch_queues.remove(key);
         }
     }
