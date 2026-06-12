@@ -337,7 +337,16 @@ impl<P: Processor> Worker<P> {
 impl WorkerHandle {
     /// Signal the worker to shut down after processing any in-flight batches.
     ///
-    /// Note that when using the Size policy this may wait indefinitely if no new items are added.
+    /// New items are still accepted while shutting down, and the worker only shuts down once all
+    /// keys are idle. This means shutdown may never complete if:
+    ///
+    /// - new items keep being added, or
+    /// - a batch never meets its policy's processing condition, e.g. when using the
+    ///   [`Size`](crate::BatchingPolicy::Size) policy, a final partial batch may wait
+    ///   indefinitely for more items.
+    ///
+    /// Stopping the flow of new items is expected to be handled by the caller, e.g. by shutting
+    /// down the message handlers which add items before shutting down the batcher.
     pub async fn shut_down(&self) {
         info!("Sending shut down signal to batch worker");
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.
