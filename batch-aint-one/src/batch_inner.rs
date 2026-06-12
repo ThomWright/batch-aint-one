@@ -21,6 +21,12 @@ pub(crate) struct BatchInner<P: Processor> {
 
 /// Generations are used to handle the case where a timer goes off after the associated batch has
 /// already been processed, and a new batch has already been created with the same key.
+///
+/// Note that generations are not unique across the lifetime of a key: when an idle key's batch
+/// queue is removed and later recreated, the generation counter restarts, so a stale `TimedOut`
+/// message can match an unrelated batch with the same generation. This is safe because timeout
+/// messages are advisory: handlers must re-check whether the batch is actually ready (e.g. via
+/// `is_generation_ready`) rather than act on the message alone.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub(crate) struct Generation(u32);
 

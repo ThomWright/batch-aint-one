@@ -98,6 +98,11 @@ impl<P: Processor> BatchQueue<P> {
         self.processing > 0
     }
 
+    /// Is this key idle, i.e. no queued items and no batches in flight?
+    pub(crate) fn is_idle(&self) -> bool {
+        self.is_empty() && self.processing == 0 && self.pre_acquiring == 0
+    }
+
     pub(crate) fn mark_processed(&mut self) {
         if self.processing == 0 {
             warn!("processing count should never go below zero");

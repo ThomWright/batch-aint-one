@@ -197,10 +197,12 @@ impl<P: Processor> Worker<P> {
     }
 
     fn on_timeout(&mut self, key: P::Key, generation: Generation) {
-        let batch_queue = self
-            .batch_queues
-            .get_mut(&key)
-            .expect("batch queue should exist");
+        // Unlike the other message handlers, the queue may have been removed: timers are not
+        // tracked by the in-flight counters, so a TimedOut message can outlive its queue.
+        let Some(batch_queue) = self.batch_queues.get_mut(&key) else {
+            debug!("Timeout for a batch queue which no longer exists. Ignoring.");
+            return;
+        };
 
         match self.batching_policy.on_timeout(generation, batch_queue) {
             OnGenerationEvent::Process => {
@@ -266,6 +268,18 @@ impl<P: Processor> Worker<P> {
                 self.process_next_batch(key);
             }
             OnFinish::DoNothing => {}
+        }
+
+        // Remove the queue for idle keys, otherwise the map grows unboundedly as new keys are
+        // seen. A key can only become idle when a batch finishes, so this is the only place we
+        // need to do this.
+        if self
+            .batch_queues
+            .get(key)
+            .expect("batch queue should exist")
+            .is_idle()
+        {
+            self.batch_queues.remove(key);
         }
     }
 
@@ -379,6 +393,68 @@ mod test {
         ) -> Result<Vec<String>, String> {
             Ok(inputs.map(|s| s + " processed").collect())
         }
+    }
+
+    /// Construct a worker directly, without spawning the run loop, so tests can drive it
+    /// manually and inspect its state.
+    fn new_worker() -> Worker<SimpleBatchProcessor> {
+        let (_item_tx, item_rx) = mpsc::channel(1);
+        let (msg_tx, msg_rx) = mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = mpsc::channel(1);
+
+        Worker {
+            batcher_name: "test".to_string(),
+            item_rx,
+            processor: SimpleBatchProcessor,
+            msg_tx,
+            msg_rx,
+            shutdown_notifier_rx: shutdown_rx,
+            shutdown_notifiers: Vec::new(),
+            shutting_down: false,
+            limits: Limits::builder().max_batch_size(1).build(),
+            batching_policy: BatchingPolicy::Size,
+            batch_queues: HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn removes_batch_queue_when_key_becomes_idle() {
+        let mut worker = new_worker();
+
+        let (tx, rx) = oneshot::channel();
+        worker.add(BatchItem {
+            key: "K1".to_string(),
+            input: "I1".to_string(),
+            submitted_at: tokio::time::Instant::now(),
+            tx,
+            requesting_span: Span::none(),
+        });
+
+        // max_batch_size is 1, so the batch processes immediately.
+        let output = rx.await.unwrap().0.unwrap();
+        assert_eq!(output, "I1 processed");
+
+        // Handle the Finished message, as the run loop would.
+        let msg = worker.msg_rx.recv().await.unwrap();
+        let Message::Finished(key, terminal_state) = msg else {
+            panic!("expected Finished message, got {:?}", msg);
+        };
+        worker.on_batch_finished(&key, terminal_state);
+
+        assert!(
+            worker.batch_queues.is_empty(),
+            "the batch queue for an idle key should be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn ignores_timeout_for_removed_batch_queue() {
+        // A timer can fire and enqueue a TimedOut message, after which the batch is processed
+        // anyway (e.g. it filled up) and the queue is removed once the key is idle. The stale
+        // TimedOut message must be ignored, not panic the worker.
+        let mut worker = new_worker();
+
+        worker.on_timeout("K1".to_string(), Generation::default());
     }
 
     #[tokio::test]
