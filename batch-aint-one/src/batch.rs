@@ -283,8 +283,8 @@ impl<P: Processor> Batch<P> {
 
         let delay_since_first_submission = self
             .first_submission()
-            .map(|input| input.elapsed().as_secs())
-            .unwrap_or(0);
+            .map(|input| input.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
 
         let outer_span = span!(Level::INFO, "process batch",
             batch.name = &name,
