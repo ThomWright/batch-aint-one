@@ -16,6 +16,9 @@ pub struct ConnectionPool {
     connect_latency: Arc<Mutex<LatencyProfile>>,
     metrics: Arc<Mutex<MetricsCollector>>,
     rng: Arc<Mutex<rand::rngs::StdRng>>,
+    /// Probability that a returned connection is destroyed rather than returned to the pool,
+    /// simulating churn.
+    churn_probability: f64,
 }
 
 #[bon]
@@ -31,6 +34,10 @@ impl ConnectionPool {
         metrics: Arc<Mutex<MetricsCollector>>,
         /// Optional seed for reproducibility
         seed: Option<u64>,
+        /// Probability that a returned connection is destroyed rather than returned to the pool,
+        /// simulating churn. Defaults to 1%.
+        #[builder(default = 0.01)]
+        churn_probability: f64,
     ) -> Self {
         let rng = Arc::new(Mutex::new(match seed {
             Some(s) => rand::rngs::StdRng::seed_from_u64(s),
@@ -44,6 +51,7 @@ impl ConnectionPool {
             connect_latency: Arc::new(Mutex::new(connect_latency)),
             metrics,
             rng,
+            churn_probability,
         };
 
         // Record initial state
@@ -102,12 +110,12 @@ impl ConnectionPool {
     }
 
     fn return_connection(&self) {
-        // Destroy the connection 1% of the time to simulate churn
+        // Destroy the connection some of the time to simulate churn
         if self
             .rng
             .lock()
             .expect("should not panic while holding lock")
-            .random_bool(0.01)
+            .random_bool(self.churn_probability)
         {
             self.total.fetch_sub(1, Ordering::SeqCst);
         } else {
@@ -174,6 +182,9 @@ mod tests {
                 .connect_latency(connect_latency)
                 .metrics(metrics.clone())
                 .seed(*TEST_SEED)
+                // Disable churn so the pool counts are deterministic: this test exercises
+                // growth, not connection destruction.
+                .churn_probability(0.0)
                 .build(),
         );
 
