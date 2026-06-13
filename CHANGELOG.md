@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Internal
+
+- The worker event loop is now the single writer of batch state. Resource-acquisition tasks
+  report their result by message instead of mutating shared state, removing the
+  `Arc<Mutex<…>>` previously shared with those tasks and making the race fixed in 0.13.0
+  structurally impossible. No public API or behaviour change.
+- Resource-acquisition failures are now handled directly on the worker rather than via a spawned
+  task and a round-trip message, keeping the in-flight concurrency counters symmetric.
+
 ## 0.13.0
 
 ### Changed
