@@ -54,7 +54,7 @@ pub(crate) enum Message<P: Processor> {
     TimedOut(P::Key, Generation),
     ResourcesAcquired(P::Key, Generation, P::Resources, Span),
     ResourceAcquisitionFailed(P::Key, Generation, BatchError<P::Error>),
-    Finished(P::Key, BatchTerminalState),
+    Finished(P::Key),
 }
 
 impl<P: Processor> Debug for Message<P> {
@@ -77,19 +77,9 @@ impl<P: Processor> Debug for Message<P> {
                 .field(generation)
                 .field(err)
                 .finish(),
-            Message::Finished(key, terminal_state) => f
-                .debug_tuple("Finished")
-                .field(key)
-                .field(terminal_state)
-                .finish(),
+            Message::Finished(key) => f.debug_tuple("Finished").field(key).finish(),
         }
     }
-}
-
-#[derive(Debug)]
-pub(crate) enum BatchTerminalState {
-    Processed,
-    FailedAcquiring,
 }
 
 pub(crate) enum ShutdownMessage {
@@ -275,20 +265,23 @@ impl<P: Processor> Worker<P> {
     ) {
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
 
-        batch_queue.fail_generation(generation, err.clone(), self.msg_tx.clone());
+        batch_queue.fail_generation(generation, err);
+
+        self.process_next_and_clean_up(&key);
     }
 
-    fn on_batch_finished(&mut self, key: &P::Key, terminal_state: BatchTerminalState) {
+    fn on_batch_finished(&mut self, key: &P::Key) {
         let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
 
-        match terminal_state {
-            BatchTerminalState::Processed => {
-                batch_queue.mark_processed();
-            }
-            BatchTerminalState::FailedAcquiring => {
-                batch_queue.mark_resource_acquisition_finished();
-            }
-        }
+        batch_queue.mark_processed();
+
+        self.process_next_and_clean_up(key);
+    }
+
+    /// After a batch has left the queue (either processed or having failed to acquire resources),
+    /// apply the batching policy's finish action and drop the queue if the key is now idle.
+    fn process_next_and_clean_up(&mut self, key: &P::Key) {
+        let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
 
         match self.batching_policy.on_finish(batch_queue) {
             OnFinish::ProcessNextReady => {
@@ -301,8 +294,8 @@ impl<P: Processor> Worker<P> {
         }
 
         // Remove the queue for idle keys, otherwise the map grows unboundedly as new keys are
-        // seen. A key can only become idle when a batch finishes, so this is the only place we
-        // need to do this.
+        // seen. A key can only become idle once a batch leaves the queue, so these handlers are
+        // the only place we need to do this.
         if Self::queue_mut(&mut self.batch_queues, key).is_idle() {
             self.batch_queues.remove(key);
         }
@@ -344,8 +337,8 @@ impl<P: Processor> Worker<P> {
                         Message::TimedOut(key, generation) => {
                             self.on_timeout(key, generation);
                         }
-                        Message::Finished(key, terminal_state) => {
-                            self.on_batch_finished(&key, terminal_state);
+                        Message::Finished(key) => {
+                            self.on_batch_finished(&key);
                         }
                     }
                 }
@@ -470,10 +463,10 @@ mod test {
 
         // Handle the Finished message, as the run loop would.
         let msg = worker.msg_rx.recv().await.unwrap();
-        let Message::Finished(key, terminal_state) = msg else {
+        let Message::Finished(key) = msg else {
             panic!("expected Finished message, got {:?}", msg);
         };
-        worker.on_batch_finished(&key, terminal_state);
+        worker.on_batch_finished(&key);
 
         assert!(
             worker.batch_queues.is_empty(),

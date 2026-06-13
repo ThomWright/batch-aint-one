@@ -297,12 +297,9 @@ impl<P: Processor> BatchQueue<P> {
         batch.process(processor, tx);
     }
 
-    pub(crate) fn fail_generation(
-        &mut self,
-        generation: Generation,
-        error: BatchError<P::Error>,
-        tx: mpsc::Sender<Message<P>>,
-    ) {
+    pub(crate) fn fail_generation(&mut self, generation: Generation, error: BatchError<P::Error>) {
+        self.mark_resource_acquisition_finished();
+
         let Some(batch) = self.take_generation(generation) else {
             soft_assert!(
                 false,
@@ -313,7 +310,7 @@ impl<P: Processor> BatchQueue<P> {
             return;
         };
 
-        batch.fail(error, tx);
+        batch.fail(error);
     }
 
     /// Acquire resources for the first batch that hasn't yet acquired resources.

@@ -12,7 +12,7 @@ use crate::{
     error::BatchResult,
     processor::Processor,
     timeout::TimeoutHandle,
-    worker::{BatchTerminalState, Message},
+    worker::Message,
 };
 
 #[derive(Debug)]
@@ -299,10 +299,11 @@ impl<P: Processor> Batch<P> {
         Self::send_outputs(response_channels, outputs, Some(outer_span));
 
         // Signal that we're finished with this batch.
-        Self::finalise(key.clone(), on_finished, BatchTerminalState::Processed).await;
+        Self::finalise(key.clone(), on_finished).await;
     }
 
-    pub(crate) fn fail(mut self, err: BatchError<P::Error>, on_finished: mpsc::Sender<Message<P>>) {
+    /// Send a failure result to every item in the batch.
+    pub(crate) fn fail(mut self, err: BatchError<P::Error>) {
         let response_channels: Vec<_> = mem::take(&mut self.items)
             .into_iter()
             .map(|item| item.tx)
@@ -311,15 +312,7 @@ impl<P: Processor> Batch<P> {
             .map(Err)
             .collect();
 
-        tokio::spawn(async move {
-            Self::send_outputs(response_channels, outputs, None);
-            Self::finalise(
-                self.inner.key().clone(),
-                on_finished,
-                BatchTerminalState::FailedAcquiring,
-            )
-            .await;
-        });
+        Self::send_outputs(response_channels, outputs, None);
     }
 
     fn send_outputs(
@@ -337,16 +330,8 @@ impl<P: Processor> Batch<P> {
         }
     }
 
-    async fn finalise(
-        key: P::Key,
-        on_finished: mpsc::Sender<Message<P>>,
-        terminal_state: BatchTerminalState,
-    ) {
-        if on_finished
-            .send(Message::Finished(key, terminal_state))
-            .await
-            .is_err()
-        {
+    async fn finalise(key: P::Key, on_finished: mpsc::Sender<Message<P>>) {
+        if on_finished.send(Message::Finished(key)).await.is_err() {
             // The worker must have shut down. In this case, we don't want to process any more
             // batches anyway.
             info!("Tried to signal a batch had finished but the worker has shut down");

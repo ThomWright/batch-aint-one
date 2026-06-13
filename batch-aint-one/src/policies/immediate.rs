@@ -148,7 +148,7 @@ mod tests {
         // First batch finishes
         notify1.notify_waiters(); // Let first batch complete
         let msg = finished_rx.recv().await.unwrap();
-        assert_matches!(msg, Message::Finished(_, _));
+        assert_matches!(msg, Message::Finished(_));
 
         queue.mark_processed();
 
@@ -184,15 +184,15 @@ mod tests {
         let (acquire_tx, mut acquire_rx) = mpsc::channel(1);
         queue.pre_acquire_resources(failing_processor, acquire_tx);
 
-        // Wait for B's acquisition to fail. The batch state is now FailedToAcquireResources,
-        // but the worker hasn't handled the failure message yet.
+        // Wait for B's acquisition to fail. The failure message has been sent, but the worker
+        // hasn't handled it yet, so B is still in the queue and not yet processable.
         let msg = acquire_rx.recv().await.unwrap();
         assert_matches!(msg, Message::ResourceAcquisitionFailed(_, _, _));
 
         // Batch A finishes, and the worker handles this before the failure message.
         notify_a.notify_waiters();
         let msg = finished_rx.recv().await.unwrap();
-        assert_matches!(msg, Message::Finished(_, _));
+        assert_matches!(msg, Message::Finished(_));
         queue.mark_processed();
 
         let result = policy.on_finish(&queue);
