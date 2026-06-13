@@ -315,14 +315,11 @@ impl<P: Processor> BatchQueue<P> {
 
     /// Acquire resources for the first batch that hasn't yet acquired resources.
     pub(crate) fn pre_acquire_resources(&mut self, processor: P, tx: mpsc::Sender<Message<P>>) {
-        self.increment_resource_acquisition_count();
-
         let Some(batch) = self
             .queue
             .iter_mut()
             .find(|batch| !batch.has_started_acquiring())
         else {
-            self.pre_acquiring -= 1;
             soft_assert!(
                 false,
                 "No batch found needing resource acquisition in batch queue '{}'",
@@ -332,6 +329,8 @@ impl<P: Processor> BatchQueue<P> {
         };
 
         batch.pre_acquire_resources(processor, tx);
+
+        self.increment_resource_acquisition_count();
     }
 
     /// Process the last batch after a delay.
