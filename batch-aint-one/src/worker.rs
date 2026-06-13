@@ -1,13 +1,10 @@
-use std::{
-    collections::HashMap,
-    fmt::{Debug, Display},
-};
+use std::{collections::HashMap, fmt::Debug};
 
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
-use tracing::{debug, info};
+use tracing::{Span, debug, info};
 
 use crate::{
     BatchError,
@@ -28,9 +25,9 @@ pub(crate) struct Worker<P: Processor> {
     processor: P,
 
     /// Used to signal that a batch for key `K` should be processed.
-    msg_tx: mpsc::Sender<Message<P::Key, P::Error>>,
+    msg_tx: mpsc::Sender<Message<P>>,
     /// Receives signals to process a batch for key `K`.
-    msg_rx: mpsc::Receiver<Message<P::Key, P::Error>>,
+    msg_rx: mpsc::Receiver<Message<P>>,
 
     /// Used to send messages to the worker related to shutdown.
     shutdown_notifier_rx: mpsc::Receiver<ShutdownMessage>,
@@ -48,12 +45,45 @@ pub(crate) struct Worker<P: Processor> {
     batch_queues: HashMap<P::Key, BatchQueue<P>>,
 }
 
-#[derive(Debug)]
-pub(crate) enum Message<K, E: Display + Debug> {
-    TimedOut(K, Generation),
-    ResourcesAcquired(K, Generation),
-    ResourceAcquisitionFailed(K, Generation, BatchError<E>),
-    Finished(K, BatchTerminalState),
+/// Events which drive the worker.
+///
+/// Spawned tasks (resource acquisition, timeouts) report their outcomes to the worker by
+/// sending a message, and the worker performs the resulting batch state transitions when
+/// handling them, so it observes all events in message order.
+pub(crate) enum Message<P: Processor> {
+    TimedOut(P::Key, Generation),
+    ResourcesAcquired(P::Key, Generation, P::Resources, Span),
+    ResourceAcquisitionFailed(P::Key, Generation, BatchError<P::Error>),
+    Finished(P::Key, BatchTerminalState),
+}
+
+impl<P: Processor> Debug for Message<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Message::TimedOut(key, generation) => f
+                .debug_tuple("TimedOut")
+                .field(key)
+                .field(generation)
+                .finish(),
+            Message::ResourcesAcquired(key, generation, _, _) => f
+                .debug_tuple("ResourcesAcquired")
+                .field(key)
+                .field(generation)
+                .field(&"<Resources>")
+                .finish(),
+            Message::ResourceAcquisitionFailed(key, generation, err) => f
+                .debug_tuple("ResourceAcquisitionFailed")
+                .field(key)
+                .field(generation)
+                .field(err)
+                .finish(),
+            Message::Finished(key, terminal_state) => f
+                .debug_tuple("Finished")
+                .field(key)
+                .field(terminal_state)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -215,10 +245,16 @@ impl<P: Processor> Worker<P> {
         }
     }
 
-    fn on_resource_acquired(&mut self, key: P::Key, generation: Generation) {
+    fn on_resource_acquired(
+        &mut self,
+        key: P::Key,
+        generation: Generation,
+        resources: P::Resources,
+        span: Span,
+    ) {
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
 
-        batch_queue.mark_resource_acquisition_finished();
+        batch_queue.resources_acquired(generation, resources, span);
 
         match self
             .batching_policy
@@ -299,8 +335,8 @@ impl<P: Processor> Worker<P> {
 
                 Some(msg) = self.msg_rx.recv() => {
                     match msg {
-                        Message::ResourcesAcquired(key, generation) => {
-                            self.on_resource_acquired(key, generation);
+                        Message::ResourcesAcquired(key, generation, resources, span) => {
+                            self.on_resource_acquired(key, generation, resources, span);
                         }
                         Message::ResourceAcquisitionFailed(key, generation, err) => {
                             self.on_resource_acquisition_failed(key, generation, err);

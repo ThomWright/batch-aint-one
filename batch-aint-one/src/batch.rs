@@ -1,9 +1,4 @@
-use std::{
-    fmt::Debug,
-    iter, mem,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{fmt::Debug, iter, mem, sync::Arc, time::Duration};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -41,21 +36,18 @@ pub(crate) struct Batch<P: Processor> {
     inner: Arc<BatchInner<P>>,
     items: Vec<BatchItem<P>>,
     timeout: TimeoutHandle<P>,
-    state: Arc<Mutex<BatchState<P>>>,
+    state: BatchState<P>,
 }
 
 enum BatchState<P: Processor> {
     New,
-    StartedAcquiring,
     Acquiring(JoinHandle<()>),
-    FailedToAcquireResources,
     ReadyForProcessing {
         resources: P::Resources,
         /// The span in which the resources were acquired.
         span: Span,
     },
     Processing,
-    Processed,
 }
 
 impl<P: Processor> Debug for Batch<P> {
@@ -83,23 +75,14 @@ impl<P: Processor> Debug for BatchState<P> {
             BatchState::New => {
                 write!(f, "New")
             }
-            BatchState::StartedAcquiring => {
-                write!(f, "StartedAcquiring")
-            }
             BatchState::Acquiring(_) => {
                 write!(f, "Acquiring(<JoinHandle>)")
-            }
-            BatchState::FailedToAcquireResources => {
-                write!(f, "FailedToAcquireResources")
             }
             BatchState::ReadyForProcessing { .. } => {
                 write!(f, "ReadyForProcessing(<Resources>)")
             }
             BatchState::Processing => {
                 write!(f, "Processing")
-            }
-            BatchState::Processed => {
-                write!(f, "Processed")
             }
         }
     }
@@ -115,7 +98,7 @@ impl<P: Processor> Batch<P> {
             inner: state,
             items: Vec::new(),
             timeout,
-            state: Arc::new(Mutex::new(BatchState::New)),
+            state: BatchState::New,
         }
     }
 
@@ -126,7 +109,7 @@ impl<P: Processor> Batch<P> {
             inner: Arc::new(state),
             items: Vec::new(),
             timeout,
-            state: Arc::new(Mutex::new(BatchState::New)),
+            state: BatchState::New,
         }
     }
 
@@ -160,9 +143,15 @@ impl<P: Processor> Batch<P> {
         !self.is_empty()
             // ... and if there is a timeout deadline, it must be in the past
             && self.timeout.is_ready_for_processing()
-            // ... and we must be in a processable state, i.e. not acquiring resources, and not
-            // failed
-            && self.state.is_processable()
+            // ... and we must be in a processable state, i.e. not acquiring resources
+            && self.is_processable()
+    }
+
+    fn is_processable(&self) -> bool {
+        matches!(
+            self.state,
+            BatchState::New | BatchState::ReadyForProcessing { .. }
+        )
     }
 
     pub(crate) fn push(&mut self, item: BatchItem<P>) {
@@ -178,31 +167,23 @@ impl<P: Processor> Batch<P> {
     }
 
     pub(crate) fn has_started_acquiring(&self) -> bool {
-        self.state.has_started()
+        !matches!(self.state, BatchState::New)
     }
 
     /// Acquire resources for this batch.
     ///
     /// Once acquired, a message will be sent back to the worker.
-    pub(crate) fn pre_acquire_resources(
-        &mut self,
-        processor: P,
-        tx: mpsc::Sender<Message<P::Key, P::Error>>,
-    ) {
+    pub(crate) fn pre_acquire_resources(&mut self, processor: P, tx: mpsc::Sender<Message<P>>) {
         soft_assert!(
             !self.has_started_acquiring(),
             "should not try to acquire resources if already started acquiring"
         );
         if !self.has_started_acquiring() {
-            self.state.started_pre_acquiring();
-
             let name = self.inner.name().to_string();
             let key = self.inner.key().clone();
             let generation = self.inner.generation();
 
             let inner_state = Arc::clone(&self.inner);
-
-            let state = Arc::clone(&self.state);
 
             // Spawn a new task so we can process multiple batches concurrently, without blocking the
             // run loop.
@@ -212,23 +193,12 @@ impl<P: Processor> Batch<P> {
                     .with_current_subscriber()
                     .await;
 
-                let (new_state, msg) = match result {
-                    Ok((resources, span)) => (
-                        BatchState::ReadyForProcessing { resources, span },
-                        Message::ResourcesAcquired(key, generation),
-                    ),
-                    Err(err) => (
-                        BatchState::FailedToAcquireResources,
-                        Message::ResourceAcquisitionFailed(key, generation, err),
-                    ),
+                let msg = match result {
+                    Ok((resources, span)) => {
+                        Message::ResourcesAcquired(key, generation, resources, span)
+                    }
+                    Err(err) => Message::ResourceAcquisitionFailed(key, generation, err),
                 };
-
-                {
-                    let mut state = state
-                        .lock()
-                        .expect("Resources mutex should not be poisoned");
-                    *state = new_state;
-                }
 
                 if tx.send(msg).await.is_err() {
                     info!(
@@ -238,35 +208,58 @@ impl<P: Processor> Batch<P> {
                 }
             });
 
-            self.state.set_acquiring(handle);
+            self.state = BatchState::Acquiring(handle);
         }
     }
 
-    pub(crate) fn process(
-        mut self,
-        processor: P,
-        on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
-    ) {
+    /// Store pre-acquired resources, making the batch ready for processing.
+    pub(crate) fn resources_acquired(&mut self, resources: P::Resources, span: Span) {
         soft_assert!(
-            self.state.is_processable(),
+            matches!(self.state, BatchState::Acquiring(_)),
+            "resources acquired for a batch in state {:?}",
+            self.state
+        );
+        self.state = BatchState::ReadyForProcessing { resources, span };
+    }
+
+    pub(crate) fn process(mut self, processor: P, on_finished: mpsc::Sender<Message<P>>) {
+        soft_assert!(
+            self.is_processable(),
             "should not try to process a batch that is in state {:?}",
             self.state
         );
 
         self.cancel_timeout();
 
+        let resources = self.take_resources();
+
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
         // run loop.
         tokio::spawn(
-            self.process_inner(processor, on_finished)
+            self.process_inner(processor, resources, on_finished)
                 .with_current_subscriber(),
         );
+    }
+
+    fn take_resources(&mut self) -> Option<(P::Resources, Span)> {
+        match mem::replace(&mut self.state, BatchState::Processing) {
+            BatchState::ReadyForProcessing { resources, span } => Some((resources, span)),
+            BatchState::New => None,
+            BatchState::Acquiring(handle) => {
+                // Unreachable when the caller has checked `is_processable`. Keep the handle so
+                // the acquisition task is still aborted when the batch is dropped.
+                self.state = BatchState::Acquiring(handle);
+                None
+            }
+            BatchState::Processing => None,
+        }
     }
 
     async fn process_inner(
         mut self,
         processor: P,
-        on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
+        resources: Option<(P::Resources, Span)>,
+        on_finished: mpsc::Sender<Message<P>>,
     ) {
         let batch_size = self.items.len();
         let name = self.inner.name();
@@ -297,9 +290,6 @@ impl<P: Processor> Batch<P> {
             })
             .unzip();
 
-        // TODO: Always go through resource acquisition before here?
-        let resources = self.state.take_resources();
-
         // Process the batch.
         let outputs = Arc::clone(&self.inner)
             .process(processor, inputs, resources, outer_span.clone())
@@ -308,17 +298,11 @@ impl<P: Processor> Batch<P> {
         // Send the outputs back to the requesters.
         Self::send_outputs(response_channels, outputs, Some(outer_span));
 
-        self.state.processed();
-
         // Signal that we're finished with this batch.
         Self::finalise(key.clone(), on_finished, BatchTerminalState::Processed).await;
     }
 
-    pub(crate) fn fail(
-        mut self,
-        err: BatchError<P::Error>,
-        on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
-    ) {
+    pub(crate) fn fail(mut self, err: BatchError<P::Error>, on_finished: mpsc::Sender<Message<P>>) {
         let response_channels: Vec<_> = mem::take(&mut self.items)
             .into_iter()
             .map(|item| item.tx)
@@ -355,7 +339,7 @@ impl<P: Processor> Batch<P> {
 
     async fn finalise(
         key: P::Key,
-        on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
+        on_finished: mpsc::Sender<Message<P>>,
         terminal_state: BatchTerminalState,
     ) {
         if on_finished
@@ -369,11 +353,7 @@ impl<P: Processor> Batch<P> {
         }
     }
 
-    pub(crate) fn process_after(
-        &mut self,
-        duration: Duration,
-        tx: mpsc::Sender<Message<P::Key, P::Error>>,
-    ) {
+    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<P>>) {
         self.timeout.set_timeout(duration, tx);
     }
 
@@ -385,75 +365,7 @@ impl<P: Processor> Batch<P> {
 impl<P: Processor> Drop for Batch<P> {
     fn drop(&mut self) {
         // Cancel any ongoing resource acquisition
-        self.state.cancel_acquisition();
-    }
-}
-
-trait LockedBatchState<P: Processor> {
-    fn started_pre_acquiring(&self);
-    fn has_started(&self) -> bool;
-    fn set_acquiring(&self, handle: JoinHandle<()>);
-    fn is_processable(&self) -> bool;
-    fn take_resources(&self) -> Option<(P::Resources, Span)>;
-    fn processed(&self);
-    fn cancel_acquisition(&self);
-}
-
-impl<P: Processor> LockedBatchState<P> for Mutex<BatchState<P>> {
-    fn started_pre_acquiring(&self) {
-        let mut state = self.lock().expect("Resources mutex should not be poisoned");
-
-        *state = BatchState::StartedAcquiring;
-    }
-
-    fn take_resources(&self) -> Option<(<P as Processor>::Resources, Span)> {
-        let mut state = self.lock().expect("Resources mutex should not be poisoned");
-
-        if matches!(*state, BatchState::ReadyForProcessing { .. }) {
-            match mem::replace(&mut *state, BatchState::Processing) {
-                BatchState::ReadyForProcessing { resources, span } => Some((resources, span)),
-                _ => None,
-            }
-        } else {
-            None
-        }
-    }
-
-    fn has_started(&self) -> bool {
-        let state = self.lock().expect("Resources mutex should not be poisoned");
-
-        !matches!(*state, BatchState::New)
-    }
-
-    fn set_acquiring(&self, handle: JoinHandle<()>) {
-        let mut state = self.lock().expect("Resources mutex should not be poisoned");
-
-        if matches!(*state, BatchState::StartedAcquiring) {
-            *state = BatchState::Acquiring(handle);
-        }
-    }
-
-    fn is_processable(&self) -> bool {
-        let state = self.lock().expect("Resources mutex should not be poisoned");
-
-        matches!(
-            *state,
-            BatchState::ReadyForProcessing { .. } | BatchState::New
-        )
-    }
-
-    fn processed(&self) {
-        let mut state = self.lock().expect("Resources mutex should not be poisoned");
-
-        *state = BatchState::Processed;
-    }
-
-    fn cancel_acquisition(&self) {
-        let mut state = self.lock().expect("Resources mutex should not be poisoned");
-
-        if let BatchState::Acquiring(handle) =
-            mem::replace(&mut *state, BatchState::FailedToAcquireResources)
-        {
+        if let BatchState::Acquiring(handle) = &self.state {
             handle.abort();
         }
     }

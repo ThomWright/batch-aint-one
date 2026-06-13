@@ -54,7 +54,7 @@ impl<P: Processor> TimeoutHandle<P> {
             .is_some_and(|deadline| deadline <= Instant::now())
     }
 
-    pub fn set_timeout(&mut self, duration: Duration, tx: mpsc::Sender<Message<P::Key, P::Error>>) {
+    pub fn set_timeout(&mut self, duration: Duration, tx: mpsc::Sender<Message<P>>) {
         self.cancel();
 
         let new_deadline = Instant::now() + duration;

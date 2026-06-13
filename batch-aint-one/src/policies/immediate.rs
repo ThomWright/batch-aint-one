@@ -158,13 +158,9 @@ mod tests {
 
     #[tokio::test]
     async fn does_not_process_batch_whose_acquisition_failed() {
-        // Regression test: a batch in the FailedToAcquireResources state used to be considered
-        // "ready", so it could be picked up and processed despite the failure.
-        //
-        // Scenario: batch B's resource acquisition fails. The acquisition task updates the batch
-        // state _before_ the worker handles the ResourceAcquisitionFailed message. If another
-        // batch (A) finishes in that window, the failed batch must not be picked up for
-        // processing by on_finish.
+        // Scenario: batch B's resource acquisition fails, and the failure message has been sent
+        // but not yet handled. If another batch (A) finishes in that window, the failed batch
+        // must not be picked up for processing by on_finish.
 
         let limits = Limits::builder()
             .max_batch_size(1)
@@ -253,11 +249,10 @@ mod tests {
 
         let msg = acquired2.recv().await.unwrap();
         let second_gen = Generation::default().next();
-        assert_matches!(msg, Message::ResourcesAcquired(_, generation) => {
+        assert_matches!(msg, Message::ResourcesAcquired(_, generation, resources, span) => {
             assert_eq!(generation, second_gen);
+            queue.resources_acquired(generation, resources, span);
         });
-
-        queue.mark_resource_acquisition_finished();
 
         let result = policy.on_resources_acquired(second_gen, &queue);
         assert_matches!(result, super::super::OnGenerationEvent::Process); // Should process now
@@ -267,8 +262,9 @@ mod tests {
 
         let msg = acquired1.recv().await.unwrap();
         let first_gen = Generation::default();
-        assert_matches!(msg, Message::ResourcesAcquired(_, generation) => {
+        assert_matches!(msg, Message::ResourcesAcquired(_, generation, resources, span) => {
             assert_eq!(generation, first_gen);
+            queue.resources_acquired(generation, resources, span);
         });
 
         let result = policy.on_resources_acquired(first_gen, &queue);

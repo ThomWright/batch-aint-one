@@ -117,6 +117,33 @@ impl<P: Processor> BatchQueue<P> {
         );
     }
 
+    /// Store pre-acquired resources on the batch for the given generation, making it ready for
+    /// processing.
+    pub(crate) fn resources_acquired(
+        &mut self,
+        generation: Generation,
+        resources: P::Resources,
+        span: tracing::Span,
+    ) {
+        self.mark_resource_acquisition_finished();
+
+        let Some(batch) = self
+            .queue
+            .iter_mut()
+            .find(|batch| batch.is_generation(generation))
+        else {
+            soft_assert!(
+                false,
+                "No batch found for generation {:?} in batch queue '{}'",
+                generation,
+                self.batcher_name
+            );
+            return;
+        };
+
+        batch.resources_acquired(resources, span);
+    }
+
     pub(crate) fn mark_resource_acquisition_finished(&mut self) {
         soft_assert!(
             self.pre_acquiring > 0,
@@ -210,7 +237,7 @@ impl<P: Processor> BatchQueue<P> {
     pub(crate) fn process_next_ready_batch(
         &mut self,
         processor: P,
-        on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
+        on_finished: mpsc::Sender<Message<P>>,
     ) {
         let Some(batch) = self.take_next_ready_batch() else {
             soft_assert!(
@@ -229,7 +256,7 @@ impl<P: Processor> BatchQueue<P> {
     pub(crate) fn process_next_batch(
         &mut self,
         processor: P,
-        on_finished: mpsc::Sender<Message<P::Key, P::Error>>,
+        on_finished: mpsc::Sender<Message<P>>,
     ) {
         let Some(batch) = self.take_next_batch() else {
             soft_assert!(
@@ -253,7 +280,7 @@ impl<P: Processor> BatchQueue<P> {
         &mut self,
         generation: Generation,
         processor: P,
-        tx: mpsc::Sender<Message<P::Key, P::Error>>,
+        tx: mpsc::Sender<Message<P>>,
     ) {
         let Some(batch) = self.take_generation(generation) else {
             soft_assert!(
@@ -274,7 +301,7 @@ impl<P: Processor> BatchQueue<P> {
         &mut self,
         generation: Generation,
         error: BatchError<P::Error>,
-        tx: mpsc::Sender<Message<P::Key, P::Error>>,
+        tx: mpsc::Sender<Message<P>>,
     ) {
         let Some(batch) = self.take_generation(generation) else {
             soft_assert!(
@@ -290,11 +317,7 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     /// Acquire resources for the first batch that hasn't yet acquired resources.
-    pub(crate) fn pre_acquire_resources(
-        &mut self,
-        processor: P,
-        tx: mpsc::Sender<Message<P::Key, P::Error>>,
-    ) {
+    pub(crate) fn pre_acquire_resources(&mut self, processor: P, tx: mpsc::Sender<Message<P>>) {
         self.increment_resource_acquisition_count();
 
         let Some(batch) = self
@@ -315,11 +338,7 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     /// Process the last batch after a delay.
-    pub(crate) fn process_after(
-        &mut self,
-        duration: Duration,
-        tx: mpsc::Sender<Message<P::Key, P::Error>>,
-    ) {
+    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<P>>) {
         let back = self.queue.back_mut().expect("Should always be non-empty");
         back.process_after(duration, tx);
     }
