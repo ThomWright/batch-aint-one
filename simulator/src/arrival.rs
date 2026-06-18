@@ -59,15 +59,16 @@ mod tests {
         let mut arrivals = PoissonArrivals::new(rate, Some(*TEST_SEED));
 
         // Sample many times and check mean is close to expected
-        let samples: Vec<_> = (0..1000)
+        let samples: Vec<_> = (0..10_000)
             .map(|_| arrivals.next_inter_arrival_duration().as_secs_f64())
             .collect();
 
         let mean = samples.iter().sum::<f64>() / samples.len() as f64;
         let expected = 1.0 / rate;
 
-        // Should be within 10% of expected (with 1000 samples)
-        let tolerance = expected * 0.1;
+        // More samples pull the average closer to the true mean, so 10,000 samples let us use a
+        // tight 5% tolerance that's still very unlikely to fail by chance on an unlucky seed.
+        let tolerance = expected * 0.05;
         assert!(
             (mean - expected).abs() < tolerance,
             "Mean {:.4} not within {:.4} of expected {:.4}",
