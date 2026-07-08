@@ -358,11 +358,7 @@ impl<P: Processor> Batch<P> {
         }
     }
 
-    async fn finalise(
-        key: P::Key,
-        metrics: BatchMetrics,
-        on_finished: mpsc::Sender<Message<P>>,
-    ) {
+    async fn finalise(key: P::Key, metrics: BatchMetrics, on_finished: mpsc::Sender<Message<P>>) {
         if on_finished
             .send(Message::Finished { key, metrics })
             .await

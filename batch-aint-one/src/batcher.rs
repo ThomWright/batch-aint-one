@@ -54,8 +54,7 @@ impl<P: Processor> Batcher<P> {
         metrics_recorder: Option<Arc<dyn MetricsRecorder>>,
     ) -> Self {
         let name = name.into();
-        let metrics_recorder =
-            metrics_recorder.unwrap_or_else(|| Arc::new(NoopMetricsRecorder));
+        let metrics_recorder = metrics_recorder.unwrap_or_else(|| Arc::new(NoopMetricsRecorder));
 
         let batching_policy = batching_policy.normalise(limits);
 

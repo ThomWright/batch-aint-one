@@ -332,15 +332,14 @@ impl<P: Processor> Worker<P> {
         self.metrics_recorder
             .active_keys_changed(self.batch_queues.len());
 
-        let (total_processing, max_processing, total_queued, max_queued) =
-            self.batch_queues.values().fold(
-                (0, 0, 0, 0),
-                |(tp, mp, tq, mq), bq| {
-                    let p = bq.processing();
-                    let q = bq.queued();
-                    (tp + p, mp.max(p), tq + q, mq.max(q))
-                },
-            );
+        let (total_processing, max_processing, total_queued, max_queued) = self
+            .batch_queues
+            .values()
+            .fold((0, 0, 0, 0), |(tp, mp, tq, mq), bq| {
+                let p = bq.processing();
+                let q = bq.queued();
+                (tp + p, mp.max(p), tq + q, mq.max(q))
+            });
 
         self.metrics_recorder
             .processing_concurrency_changed(total_processing, max_processing);

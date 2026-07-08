@@ -11,9 +11,7 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use batch_aint_one::{BatchMetrics, MetricsRecorder};
-use prometheus::{
-    HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
-};
+use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
 const DEFAULT_PREFIX: &str = "batch";
 
@@ -71,13 +69,19 @@ impl PrometheusMetrics {
             batcher_labels,
         )?;
         let items_rejected_total = IntCounterVec::new(
-            Opts::new("items_rejected_total", "Items rejected due to a full batch queue")
-                .namespace(prefix),
+            Opts::new(
+                "items_rejected_total",
+                "Items rejected due to a full batch queue",
+            )
+            .namespace(prefix),
             batcher_labels,
         )?;
         let batches_completed_total = IntCounterVec::new(
-            Opts::new("batches_completed_total", "Batches that finished processing")
-                .namespace(prefix),
+            Opts::new(
+                "batches_completed_total",
+                "Batches that finished processing",
+            )
+            .namespace(prefix),
             batcher_success_labels,
         )?;
         let batch_size = HistogramVec::new(
@@ -131,8 +135,11 @@ impl PrometheusMetrics {
             batcher_labels,
         )?;
         let queue_depth = IntGaugeVec::new(
-            Opts::new("queue_depth", "Total number of batches queued for processing")
-                .namespace(prefix),
+            Opts::new(
+                "queue_depth",
+                "Total number of batches queued for processing",
+            )
+            .namespace(prefix),
             batcher_labels,
         )?;
         let queue_depth_max_per_key = IntGaugeVec::new(
@@ -287,15 +294,13 @@ mod tests {
 
     use super::*;
 
-    fn get_metric<'a>(
-        families: &'a [MetricFamily],
-        name: &str,
-    ) -> Option<&'a MetricFamily> {
+    fn get_metric<'a>(families: &'a [MetricFamily], name: &str) -> Option<&'a MetricFamily> {
         families.iter().find(|f| f.name() == name)
     }
 
     fn get_counter_value(families: &[MetricFamily], name: &str, labels: &[(&str, &str)]) -> f64 {
-        let family = get_metric(families, name).unwrap_or_else(|| panic!("metric {name} not found"));
+        let family =
+            get_metric(families, name).unwrap_or_else(|| panic!("metric {name} not found"));
         for metric in family.get_metric() {
             if labels_match(metric, labels) {
                 return metric.get_counter().value();
@@ -305,7 +310,8 @@ mod tests {
     }
 
     fn get_gauge_value(families: &[MetricFamily], name: &str, labels: &[(&str, &str)]) -> f64 {
-        let family = get_metric(families, name).unwrap_or_else(|| panic!("metric {name} not found"));
+        let family =
+            get_metric(families, name).unwrap_or_else(|| panic!("metric {name} not found"));
         for metric in family.get_metric() {
             if labels_match(metric, labels) {
                 return metric.get_gauge().value();
@@ -314,12 +320,9 @@ mod tests {
         panic!("no metric {name} with labels {labels:?}");
     }
 
-    fn get_histogram_count(
-        families: &[MetricFamily],
-        name: &str,
-        labels: &[(&str, &str)],
-    ) -> u64 {
-        let family = get_metric(families, name).unwrap_or_else(|| panic!("metric {name} not found"));
+    fn get_histogram_count(families: &[MetricFamily], name: &str, labels: &[(&str, &str)]) -> u64 {
+        let family =
+            get_metric(families, name).unwrap_or_else(|| panic!("metric {name} not found"));
         for metric in family.get_metric() {
             if labels_match(metric, labels) {
                 return metric.get_histogram().get_sample_count();
@@ -328,12 +331,9 @@ mod tests {
         panic!("no metric {name} with labels {labels:?}");
     }
 
-    fn get_histogram_sum(
-        families: &[MetricFamily],
-        name: &str,
-        labels: &[(&str, &str)],
-    ) -> f64 {
-        let family = get_metric(families, name).unwrap_or_else(|| panic!("metric {name} not found"));
+    fn get_histogram_sum(families: &[MetricFamily], name: &str, labels: &[(&str, &str)]) -> f64 {
+        let family =
+            get_metric(families, name).unwrap_or_else(|| panic!("metric {name} not found"));
         for metric in family.get_metric() {
             if labels_match(metric, labels) {
                 return metric.get_histogram().get_sample_sum();
@@ -371,9 +371,7 @@ mod tests {
             get_histogram_count(&families, "batch_channel_duration_seconds", labels),
             2,
         );
-        assert!(
-            get_histogram_sum(&families, "batch_channel_duration_seconds", labels) > 0.0,
-        );
+        assert!(get_histogram_sum(&families, "batch_channel_duration_seconds", labels) > 0.0,);
     }
 
     #[test]
@@ -386,7 +384,11 @@ mod tests {
 
         let families = registry.gather();
         assert_eq!(
-            get_counter_value(&families, "batch_items_rejected_total", &[("batcher", "test")]),
+            get_counter_value(
+                &families,
+                "batch_items_rejected_total",
+                &[("batcher", "test")]
+            ),
             1.0,
         );
     }
@@ -487,10 +489,17 @@ mod tests {
             3.0,
         );
         assert_eq!(
-            get_gauge_value(&families, "batch_processing_concurrency_max_per_key", labels),
+            get_gauge_value(
+                &families,
+                "batch_processing_concurrency_max_per_key",
+                labels
+            ),
             2.0,
         );
-        assert_eq!(get_gauge_value(&families, "batch_queue_depth", labels), 10.0);
+        assert_eq!(
+            get_gauge_value(&families, "batch_queue_depth", labels),
+            10.0
+        );
         assert_eq!(
             get_gauge_value(&families, "batch_queue_depth_max_per_key", labels),
             4.0,
