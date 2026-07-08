@@ -224,7 +224,7 @@ impl MetricsRecorder for PrometheusMetricsRecorder {
     }
 
     fn batch_completed(&self, metrics: &BatchMetrics) {
-        let name = &self.batcher_name;
+        let name = self.batcher_name.as_str();
         let success = if metrics.success { "true" } else { "false" };
 
         self.metrics
@@ -252,7 +252,7 @@ impl MetricsRecorder for PrometheusMetricsRecorder {
         let success = if success { "true" } else { "false" };
         self.metrics
             .resource_acquisition_duration_seconds
-            .with_label_values(&[&self.batcher_name, success])
+            .with_label_values(&[self.batcher_name.as_str(), success])
             .observe(duration.as_secs_f64());
     }
 
