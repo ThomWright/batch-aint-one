@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug};
+use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -12,6 +12,7 @@ use crate::{
     batch_inner::Generation,
     batch_queue::BatchQueue,
     limits::Limits,
+    metrics::{BatchMetrics, MetricsRecorder},
     policies::{BatchingPolicy, OnAdd, OnFinish, OnGenerationEvent},
     processor::Processor,
 };
@@ -43,6 +44,8 @@ pub(crate) struct Worker<P: Processor> {
 
     /// Unprocessed batches, grouped by key `K`.
     batch_queues: HashMap<P::Key, BatchQueue<P>>,
+
+    metrics_recorder: Arc<dyn MetricsRecorder>,
 }
 
 /// Events which drive the worker.
@@ -52,9 +55,23 @@ pub(crate) struct Worker<P: Processor> {
 /// handling them, so it observes all events in message order.
 pub(crate) enum Message<P: Processor> {
     TimedOut(P::Key, Generation),
-    ResourcesAcquired(P::Key, Generation, P::Resources, Span),
-    ResourceAcquisitionFailed(P::Key, Generation, BatchError<P::Error>),
-    Finished(P::Key),
+    ResourcesAcquired {
+        key: P::Key,
+        generation: Generation,
+        resources: P::Resources,
+        span: Span,
+        acquisition_duration: Duration,
+    },
+    ResourceAcquisitionFailed {
+        key: P::Key,
+        generation: Generation,
+        err: BatchError<P::Error>,
+        acquisition_duration: Duration,
+    },
+    Finished {
+        key: P::Key,
+        metrics: BatchMetrics,
+    },
 }
 
 impl<P: Processor> Debug for Message<P> {
@@ -65,19 +82,30 @@ impl<P: Processor> Debug for Message<P> {
                 .field(key)
                 .field(generation)
                 .finish(),
-            Message::ResourcesAcquired(key, generation, _, _) => f
+            Message::ResourcesAcquired {
+                key,
+                generation,
+                resources: _,
+                span: _,
+                acquisition_duration: _,
+            } => f
                 .debug_tuple("ResourcesAcquired")
                 .field(key)
                 .field(generation)
                 .field(&"<Resources>")
                 .finish(),
-            Message::ResourceAcquisitionFailed(key, generation, err) => f
+            Message::ResourceAcquisitionFailed {
+                key,
+                generation,
+                err,
+                acquisition_duration: _,
+            } => f
                 .debug_tuple("ResourceAcquisitionFailed")
                 .field(key)
                 .field(generation)
                 .field(err)
                 .finish(),
-            Message::Finished(key) => f.debug_tuple("Finished").field(key).finish(),
+            Message::Finished { key, metrics: _ } => f.debug_tuple("Finished").field(key).finish(),
         }
     }
 }
@@ -109,6 +137,7 @@ impl<P: Processor> Worker<P> {
         processor: P,
         limits: Limits,
         batching_policy: BatchingPolicy,
+        metrics_recorder: Arc<dyn MetricsRecorder>,
     ) -> (WorkerHandle, WorkerDropGuard, mpsc::Sender<BatchItem<P>>) {
         // These channel sizes are somewhat arbitrary - they just need to be big enough to avoid
         // backpressure in normal operation.
@@ -135,6 +164,8 @@ impl<P: Processor> Worker<P> {
             batching_policy,
 
             batch_queues: HashMap::new(),
+
+            metrics_recorder,
         };
 
         let handle = tokio::spawn(async move {
@@ -150,6 +181,9 @@ impl<P: Processor> Worker<P> {
 
     /// Add an item to the batch.
     fn add(&mut self, item: BatchItem<P>) {
+        self.metrics_recorder
+            .item_received(item.submitted_at.elapsed());
+
         let key = item.key.clone();
 
         let batch_queue = self.batch_queues.entry(key.clone()).or_insert_with(|| {
@@ -176,6 +210,8 @@ impl<P: Processor> Worker<P> {
                 batch_queue.push(item);
             }
             OnAdd::Reject(reason) => {
+                self.metrics_recorder.item_rejected();
+
                 if item
                     .tx
                     .send((Err(BatchError::Rejected(reason)), None))
@@ -190,6 +226,8 @@ impl<P: Processor> Worker<P> {
                 }
             }
         }
+
+        self.report_gauges();
     }
 
     /// Get the batch queue for the given key, which should always exist when handling an event
@@ -241,7 +279,11 @@ impl<P: Processor> Worker<P> {
         generation: Generation,
         resources: P::Resources,
         span: Span,
+        acquisition_duration: Duration,
     ) {
+        self.metrics_recorder
+            .resource_acquisition_completed(acquisition_duration, true);
+
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
 
         batch_queue.resources_acquired(generation, resources, span);
@@ -262,20 +304,48 @@ impl<P: Processor> Worker<P> {
         key: P::Key,
         generation: Generation,
         err: BatchError<P::Error>,
+        acquisition_duration: Duration,
     ) {
+        self.metrics_recorder
+            .resource_acquisition_completed(acquisition_duration, false);
+
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
 
         batch_queue.fail_generation(generation, err);
 
         self.process_next_and_clean_up(&key);
+        self.report_gauges();
     }
 
-    fn on_batch_finished(&mut self, key: &P::Key) {
+    fn on_batch_finished(&mut self, key: &P::Key, metrics: BatchMetrics) {
+        self.metrics_recorder.batch_completed(&metrics);
+
         let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
 
         batch_queue.mark_processed();
 
         self.process_next_and_clean_up(key);
+        self.report_gauges();
+    }
+
+    fn report_gauges(&self) {
+        self.metrics_recorder
+            .active_keys_changed(self.batch_queues.len());
+
+        let (total_processing, max_processing, total_queued, max_queued) =
+            self.batch_queues.values().fold(
+                (0, 0, 0, 0),
+                |(tp, mp, tq, mq), bq| {
+                    let p = bq.processing();
+                    let q = bq.queued();
+                    (tp + p, mp.max(p), tq + q, mq.max(q))
+                },
+            );
+
+        self.metrics_recorder
+            .processing_concurrency_changed(total_processing, max_processing);
+        self.metrics_recorder
+            .queue_depth_changed(total_queued, max_queued);
     }
 
     /// After a batch has left the queue (either processed or having failed to acquire resources),
@@ -328,17 +398,17 @@ impl<P: Processor> Worker<P> {
 
                 Some(msg) = self.msg_rx.recv() => {
                     match msg {
-                        Message::ResourcesAcquired(key, generation, resources, span) => {
-                            self.on_resource_acquired(key, generation, resources, span);
+                        Message::ResourcesAcquired { key, generation, resources, span, acquisition_duration } => {
+                            self.on_resource_acquired(key, generation, resources, span, acquisition_duration);
                         }
-                        Message::ResourceAcquisitionFailed(key, generation, err) => {
-                            self.on_resource_acquisition_failed(key, generation, err);
+                        Message::ResourceAcquisitionFailed { key, generation, err, acquisition_duration } => {
+                            self.on_resource_acquisition_failed(key, generation, err, acquisition_duration);
                         }
                         Message::TimedOut(key, generation) => {
                             self.on_timeout(key, generation);
                         }
-                        Message::Finished(key) => {
-                            self.on_batch_finished(&key);
+                        Message::Finished { key, metrics } => {
+                            self.on_batch_finished(&key, metrics);
                         }
                     }
                 }
@@ -441,6 +511,7 @@ mod test {
             limits: Limits::builder().max_batch_size(1).build(),
             batching_policy: BatchingPolicy::Size,
             batch_queues: HashMap::new(),
+            metrics_recorder: Arc::new(crate::metrics::NoopMetricsRecorder),
         }
     }
 
@@ -463,10 +534,10 @@ mod test {
 
         // Handle the Finished message, as the run loop would.
         let msg = worker.msg_rx.recv().await.unwrap();
-        let Message::Finished(key) = msg else {
+        let Message::Finished { key, metrics } = msg else {
             panic!("expected Finished message, got {:?}", msg);
         };
-        worker.on_batch_finished(&key);
+        worker.on_batch_finished(&key, metrics);
 
         assert!(
             worker.batch_queues.is_empty(),
@@ -491,6 +562,7 @@ mod test {
             SimpleBatchProcessor,
             Limits::builder().max_batch_size(2).build(),
             BatchingPolicy::Size,
+            Arc::new(crate::metrics::NoopMetricsRecorder),
         );
 
         let rx1 = {

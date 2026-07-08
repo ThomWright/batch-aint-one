@@ -10,6 +10,7 @@ use crate::{
     BatchError,
     batch_inner::{BatchInner, Generation},
     error::BatchResult,
+    metrics::BatchMetrics,
     processor::Processor,
     timeout::TimeoutHandle,
     worker::Message,
@@ -188,16 +189,29 @@ impl<P: Processor> Batch<P> {
             // Spawn a new task so we can process multiple batches concurrently, without blocking the
             // run loop.
             let handle = tokio::spawn(async move {
+                let start = tokio::time::Instant::now();
+
                 let result = inner_state
                     .pre_acquire(processor)
                     .with_current_subscriber()
                     .await;
 
+                let acquisition_duration = start.elapsed();
+
                 let msg = match result {
-                    Ok((resources, span)) => {
-                        Message::ResourcesAcquired(key, generation, resources, span)
-                    }
-                    Err(err) => Message::ResourceAcquisitionFailed(key, generation, err),
+                    Ok((resources, span)) => Message::ResourcesAcquired {
+                        key,
+                        generation,
+                        resources,
+                        span,
+                        acquisition_duration,
+                    },
+                    Err(err) => Message::ResourceAcquisitionFailed {
+                        key,
+                        generation,
+                        err,
+                        acquisition_duration,
+                    },
                 };
 
                 if tx.send(msg).await.is_err() {
@@ -278,28 +292,42 @@ impl<P: Processor> Batch<P> {
             batch.first_item_wait_time_secs = delay_since_first_submission,
         );
 
-        // Extract the inputs and response channels from the batch items.
-        let (inputs, response_channels): (Vec<_>, Vec<_>) = mem::take(&mut self.items)
-            .into_iter()
-            .map(|item| {
-                // Link the shared batch processing span to the span for each batch item. We
-                // don't use a parent relationship because that's 1:many (parent:child), and
-                // this is many:1.
-                outer_span.follows_from(&item.requesting_span);
-                (item.input, item.tx)
-            })
-            .unzip();
+        // Extract the inputs, response channels, and submission times from the batch items.
+        let mut inputs = Vec::with_capacity(batch_size);
+        let mut response_channels = Vec::with_capacity(batch_size);
+        let mut submitted_ats = Vec::with_capacity(batch_size);
+
+        for item in mem::take(&mut self.items) {
+            // Link the shared batch processing span to the span for each batch item. We
+            // don't use a parent relationship because that's 1:many (parent:child), and
+            // this is many:1.
+            outer_span.follows_from(&item.requesting_span);
+            inputs.push(item.input);
+            response_channels.push(item.tx);
+            submitted_ats.push(item.submitted_at);
+        }
 
         // Process the batch.
+        let process_start = tokio::time::Instant::now();
+
         let outputs = Arc::clone(&self.inner)
             .process(processor, inputs, resources, outer_span.clone())
             .await;
 
+        let processing_duration = process_start.elapsed();
+        let success = outputs.iter().all(|o| o.is_ok());
+
         // Send the outputs back to the requesters.
         Self::send_outputs(response_channels, outputs, Some(outer_span));
 
+        // Compute per-item latencies (submission to result delivery).
+        let now = tokio::time::Instant::now();
+        let item_latencies = submitted_ats.iter().map(|t| now - *t).collect();
+
+        let metrics = BatchMetrics::new(batch_size, processing_duration, success, item_latencies);
+
         // Signal that we're finished with this batch.
-        Self::finalise(key.clone(), on_finished).await;
+        Self::finalise(key.clone(), metrics, on_finished).await;
     }
 
     /// Send a failure result to every item in the batch.
@@ -330,8 +358,16 @@ impl<P: Processor> Batch<P> {
         }
     }
 
-    async fn finalise(key: P::Key, on_finished: mpsc::Sender<Message<P>>) {
-        if on_finished.send(Message::Finished(key)).await.is_err() {
+    async fn finalise(
+        key: P::Key,
+        metrics: BatchMetrics,
+        on_finished: mpsc::Sender<Message<P>>,
+    ) {
+        if on_finished
+            .send(Message::Finished { key, metrics })
+            .await
+            .is_err()
+        {
             // The worker must have shut down. In this case, we don't want to process any more
             // batches anyway.
             info!("Tried to signal a batch had finished but the worker has shut down");

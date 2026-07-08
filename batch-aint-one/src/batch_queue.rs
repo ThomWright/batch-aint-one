@@ -100,6 +100,14 @@ impl<P: Processor> BatchQueue<P> {
         self.is_empty() && self.processing == 0 && self.pre_acquiring == 0
     }
 
+    pub(crate) fn processing(&self) -> usize {
+        self.processing
+    }
+
+    pub(crate) fn queued(&self) -> usize {
+        self.queue.len()
+    }
+
     pub(crate) fn mark_processed(&mut self) {
         soft_assert!(
             self.processing > 0,
