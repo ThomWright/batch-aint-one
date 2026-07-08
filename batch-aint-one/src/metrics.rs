@@ -57,7 +57,8 @@ pub struct BatchMetrics {
 }
 
 impl BatchMetrics {
-    pub(crate) fn new(
+    /// Create a new `BatchMetrics`.
+    pub fn new(
         size: usize,
         processing_duration: Duration,
         success: bool,

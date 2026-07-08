@@ -141,7 +141,7 @@ This depends on the batching policy used. `BatchingPolicy::Immediate` optimises 
 - [x] Record keys as span attributes
 - [x] Wait for shutdown
 - [ ] Return batch metadata
-- [ ] Metrics
+- [x] Metrics (see [`batch-aint-one-prometheus`](https://crates.io/crates/batch-aint-one-prometheus))
 
 ## Further reading
 
