@@ -54,6 +54,12 @@ pub struct BatchStats {
     pub success: bool,
     /// Time from submission to result delivery, for each item in the batch.
     pub item_latencies: Vec<Duration>,
+    /// Time each item spent in the batch queue before processing started.
+    ///
+    /// Measured from when the worker received the item to when the batch began processing.
+    /// Includes time waiting for the batch to fill, for concurrency capacity, and for
+    /// resource acquisition.
+    pub queue_durations: Vec<Duration>,
 }
 
 impl BatchStats {
@@ -63,12 +69,14 @@ impl BatchStats {
         processing_duration: Duration,
         success: bool,
         item_latencies: Vec<Duration>,
+        queue_durations: Vec<Duration>,
     ) -> Self {
         Self {
             size,
             processing_duration,
             success,
             item_latencies,
+            queue_durations,
         }
     }
 }

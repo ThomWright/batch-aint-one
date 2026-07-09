@@ -180,9 +180,10 @@ impl<P: Processor> Worker<P> {
     }
 
     /// Add an item to the batch.
-    fn add(&mut self, item: BatchItem<P>) {
+    fn add(&mut self, mut item: BatchItem<P>) {
         self.metrics_recorder
             .item_received(item.submitted_at.elapsed());
+        item.received_at = Some(tokio::time::Instant::now());
 
         let key = item.key.clone();
 
@@ -523,6 +524,7 @@ mod test {
             key: "K1".to_string(),
             input: "I1".to_string(),
             submitted_at: tokio::time::Instant::now(),
+            received_at: None,
             tx,
             requesting_span: Span::none(),
         });
@@ -571,6 +573,7 @@ mod test {
                     key: "K1".to_string(),
                     input: "I1".to_string(),
                     submitted_at: tokio::time::Instant::now(),
+            received_at: None,
                     tx,
                     requesting_span: Span::none(),
                 })
@@ -587,6 +590,7 @@ mod test {
                     key: "K1".to_string(),
                     input: "I2".to_string(),
                     submitted_at: tokio::time::Instant::now(),
+            received_at: None,
                     tx,
                     requesting_span: Span::none(),
                 })
