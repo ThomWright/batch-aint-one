@@ -85,6 +85,7 @@ impl<P: Processor> Batcher<P> {
                 key,
                 input,
                 submitted_at: tokio::time::Instant::now(),
+                received_at: None,
                 tx,
                 requesting_span,
             })

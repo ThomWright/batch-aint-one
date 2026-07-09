@@ -79,6 +79,7 @@ pub(super) fn new_item<P: Processor>(key: P::Key, input: P::Input) -> BatchItem<
         key,
         input,
         submitted_at: tokio::time::Instant::now(),
+        received_at: None,
         tx,
         requesting_span: Span::none(),
     }

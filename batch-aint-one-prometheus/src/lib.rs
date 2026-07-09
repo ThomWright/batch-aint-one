@@ -34,6 +34,7 @@ pub struct BatchMetrics {
     batch_size: HistogramVec,
     batch_processing_duration_seconds: HistogramVec,
     item_latency_seconds: HistogramVec,
+    queue_duration_seconds: HistogramVec,
     resource_acquisition_duration_seconds: HistogramVec,
     active_keys: IntGaugeVec,
     processing_concurrency: IntGaugeVec,
@@ -106,6 +107,14 @@ impl BatchMetrics {
             .namespace(prefix),
             batcher_labels,
         )?;
+        let queue_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "queue_duration_seconds",
+                "Time items spent in the batch queue before processing started",
+            )
+            .namespace(prefix),
+            batcher_labels,
+        )?;
         let resource_acquisition_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
                 "resource_acquisition_duration_seconds",
@@ -158,6 +167,7 @@ impl BatchMetrics {
         registry.register(Box::new(batch_size.clone()))?;
         registry.register(Box::new(batch_processing_duration_seconds.clone()))?;
         registry.register(Box::new(item_latency_seconds.clone()))?;
+        registry.register(Box::new(queue_duration_seconds.clone()))?;
         registry.register(Box::new(resource_acquisition_duration_seconds.clone()))?;
         registry.register(Box::new(active_keys.clone()))?;
         registry.register(Box::new(processing_concurrency.clone()))?;
@@ -173,6 +183,7 @@ impl BatchMetrics {
             batch_size,
             batch_processing_duration_seconds,
             item_latency_seconds,
+            queue_duration_seconds,
             resource_acquisition_duration_seconds,
             active_keys,
             processing_concurrency,
@@ -245,6 +256,12 @@ impl MetricsRecorder for BatchMetricsRecorder {
                 .item_latency_seconds
                 .with_label_values(&[name])
                 .observe(latency.as_secs_f64());
+        }
+        for queue_duration in &metrics.queue_durations {
+            self.metrics
+                .queue_duration_seconds
+                .with_label_values(&[name])
+                .observe(queue_duration.as_secs_f64());
         }
     }
 
@@ -408,6 +425,11 @@ mod tests {
                 Duration::from_millis(110),
                 Duration::from_millis(120),
             ],
+            vec![
+                Duration::from_millis(40),
+                Duration::from_millis(30),
+                Duration::from_millis(20),
+            ],
         );
         recorder.batch_completed(&batch_metrics);
 
@@ -437,6 +459,10 @@ mod tests {
         );
         assert_eq!(
             get_histogram_count(&families, "batch_item_latency_seconds", batcher_labels),
+            3,
+        );
+        assert_eq!(
+            get_histogram_count(&families, "batch_queue_duration_seconds", batcher_labels),
             3,
         );
     }

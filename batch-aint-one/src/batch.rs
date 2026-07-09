@@ -21,6 +21,7 @@ pub(crate) struct BatchItem<P: Processor> {
     pub key: P::Key,
     pub input: P::Input,
     pub submitted_at: tokio::time::Instant,
+    pub received_at: Option<tokio::time::Instant>,
     /// Used to send the output back.
     pub tx: SendOutput<P::Output, P::Error>,
     /// This item was added to the batch as part of this span.
@@ -292,10 +293,11 @@ impl<P: Processor> Batch<P> {
             batch.first_item_wait_time_secs = delay_since_first_submission,
         );
 
-        // Extract the inputs, response channels, and submission times from the batch items.
+        // Extract the inputs, response channels, and timestamps from the batch items.
         let mut inputs = Vec::with_capacity(batch_size);
         let mut response_channels = Vec::with_capacity(batch_size);
         let mut submitted_ats = Vec::with_capacity(batch_size);
+        let mut received_ats = Vec::with_capacity(batch_size);
 
         for item in mem::take(&mut self.items) {
             // Link the shared batch processing span to the span for each batch item. We
@@ -305,6 +307,7 @@ impl<P: Processor> Batch<P> {
             inputs.push(item.input);
             response_channels.push(item.tx);
             submitted_ats.push(item.submitted_at);
+            received_ats.push(item.received_at);
         }
 
         // Process the batch.
@@ -320,11 +323,21 @@ impl<P: Processor> Batch<P> {
         // Send the outputs back to the requesters.
         Self::send_outputs(response_channels, outputs, Some(outer_span));
 
-        // Compute per-item latencies (submission to result delivery).
+        // Compute per-item durations.
         let now = tokio::time::Instant::now();
         let item_latencies = submitted_ats.iter().map(|t| now - *t).collect();
+        let queue_durations = received_ats
+            .iter()
+            .map(|t| t.map_or(Duration::ZERO, |t| process_start - t))
+            .collect();
 
-        let metrics = BatchStats::new(batch_size, processing_duration, success, item_latencies);
+        let metrics = BatchStats::new(
+            batch_size,
+            processing_duration,
+            success,
+            item_latencies,
+            queue_durations,
+        );
 
         // Signal that we're finished with this batch.
         Self::finalise(key.clone(), metrics, on_finished).await;
@@ -432,6 +445,7 @@ mod tests {
             key: "key".to_string(),
             input: "item".to_string(),
             submitted_at: tokio::time::Instant::now(),
+            received_at: None,
             tx,
             requesting_span: Span::none(),
         });
@@ -460,6 +474,7 @@ mod tests {
             key: "key".to_string(),
             input: "item".to_string(),
             submitted_at: tokio::time::Instant::now(),
+            received_at: None,
             tx,
             requesting_span: Span::none(),
         });
@@ -471,6 +486,7 @@ mod tests {
             key: "key".to_string(),
             input: "item".to_string(),
             submitted_at: tokio::time::Instant::now(),
+            received_at: None,
             tx,
             requesting_span: Span::none(),
         });

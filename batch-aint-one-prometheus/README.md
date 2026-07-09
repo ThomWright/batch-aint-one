@@ -40,6 +40,7 @@ Use `BatchMetrics::with_prefix` to customise the metric name prefix (default: `b
 | `batch_batch_size` | Histogram | batcher | Number of items per batch |
 | `batch_batch_processing_duration_seconds` | Histogram | batcher, success | Time taken to process a batch |
 | `batch_item_latency_seconds` | Histogram | batcher | End-to-end latency per item, from submission to result delivery |
+| `batch_queue_duration_seconds` | Histogram | batcher | Time items spent in the batch queue before processing started |
 | `batch_resource_acquisition_duration_seconds` | Histogram | batcher, success | Time taken to acquire resources for a batch |
 | `batch_active_keys` | Gauge | batcher | Number of keys with active batch queues |
 | `batch_processing_concurrency` | Gauge | batcher | Total number of batches currently processing |
