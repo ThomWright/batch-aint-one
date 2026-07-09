@@ -7,7 +7,7 @@
 
 _I got 99 problems, but a batch ain't one..._
 
-Batch up multiple items for processing as a single unit.
+Batch up multiple items from concurrent requests for processing as a single unit.
 
 ## Why
 
