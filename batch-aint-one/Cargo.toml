@@ -10,7 +10,7 @@ I got 99 problems, but a batch ain't one
 """
 documentation = "https://docs.rs/batch-aint-one"
 homepage = "https://github.com/ThomWright/batch-aint-one"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["batching", "batch", "async", "concurrency"]
 categories = ["concurrency"]
 
