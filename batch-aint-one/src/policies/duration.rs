@@ -142,7 +142,7 @@ mod tests {
         // Step 4: First batch finishes
         notify1.notify_waiters(); // Let first batch complete
         let msg = rx.recv().await.unwrap();
-        assert_matches!(msg, Message::Finished(_));
+        assert_matches!(msg, Message::Finished { .. });
 
         queue.mark_processed();
 

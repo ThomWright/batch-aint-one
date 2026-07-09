@@ -148,7 +148,7 @@ mod tests {
         // First batch finishes
         notify1.notify_waiters(); // Let first batch complete
         let msg = finished_rx.recv().await.unwrap();
-        assert_matches!(msg, Message::Finished(_));
+        assert_matches!(msg, Message::Finished { .. });
 
         queue.mark_processed();
 
@@ -187,12 +187,12 @@ mod tests {
         // Wait for B's acquisition to fail. The failure message has been sent, but the worker
         // hasn't handled it yet, so B is still in the queue and not yet processable.
         let msg = acquire_rx.recv().await.unwrap();
-        assert_matches!(msg, Message::ResourceAcquisitionFailed(_, _, _));
+        assert_matches!(msg, Message::ResourceAcquisitionFailed { .. });
 
         // Batch A finishes, and the worker handles this before the failure message.
         notify_a.notify_waiters();
         let msg = finished_rx.recv().await.unwrap();
-        assert_matches!(msg, Message::Finished(_));
+        assert_matches!(msg, Message::Finished { .. });
         queue.mark_processed();
 
         let result = policy.on_finish(&queue);
@@ -249,7 +249,7 @@ mod tests {
 
         let msg = acquired2.recv().await.unwrap();
         let second_gen = Generation::default().next();
-        assert_matches!(msg, Message::ResourcesAcquired(_, generation, resources, span) => {
+        assert_matches!(msg, Message::ResourcesAcquired { generation, resources, span, .. } => {
             assert_eq!(generation, second_gen);
             queue.resources_acquired(generation, resources, span);
         });
@@ -262,7 +262,7 @@ mod tests {
 
         let msg = acquired1.recv().await.unwrap();
         let first_gen = Generation::default();
-        assert_matches!(msg, Message::ResourcesAcquired(_, generation, resources, span) => {
+        assert_matches!(msg, Message::ResourcesAcquired { generation, resources, span, .. } => {
             assert_eq!(generation, first_gen);
             queue.resources_acquired(generation, resources, span);
         });

@@ -20,7 +20,7 @@
 #[cfg(doctest)]
 use doc_comment::doctest;
 #[cfg(doctest)]
-doctest!("../../README.md");
+doctest!("../README.md");
 
 /// Check an invariant which should never be violated: panic in debug builds (and tests), but
 /// only log a warning in release builds rather than bringing the process down.
@@ -39,6 +39,7 @@ mod batch_queue;
 mod batcher;
 pub mod error;
 mod limits;
+pub mod metrics;
 mod policies;
 mod processor;
 mod timeout;
@@ -47,6 +48,7 @@ mod worker;
 pub use batcher::Batcher;
 pub use error::BatchError;
 pub use limits::Limits;
+pub use metrics::{BatchStats, MetricsRecorder};
 pub use policies::{BatchingPolicy, OnFull};
 pub use processor::Processor;
 pub use worker::WorkerHandle;

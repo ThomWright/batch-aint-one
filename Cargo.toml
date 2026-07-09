@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["batch-aint-one", "simulator"]
+members = ["batch-aint-one", "batch-aint-one-prometheus", "simulator"]
 
 [workspace.package]
 edition = "2024"

@@ -8,6 +8,7 @@ use crate::{
     batch::BatchItem,
     error::BatchResult,
     limits::Limits,
+    metrics::{MetricsRecorder, NoopMetricsRecorder},
     policies::BatchingPolicy,
     processor::Processor,
     worker::{Worker, WorkerDropGuard, WorkerHandle},
@@ -50,13 +51,20 @@ impl<P: Processor> Batcher<P> {
         processor: P,
         limits: Limits,
         batching_policy: BatchingPolicy,
+        metrics_recorder: Option<Arc<dyn MetricsRecorder>>,
     ) -> Self {
         let name = name.into();
+        let metrics_recorder = metrics_recorder.unwrap_or_else(|| Arc::new(NoopMetricsRecorder));
 
         let batching_policy = batching_policy.normalise(limits);
 
-        let (handle, worker_guard, item_tx) =
-            Worker::spawn(name.clone(), processor, limits, batching_policy);
+        let (handle, worker_guard, item_tx) = Worker::spawn(
+            name.clone(),
+            processor,
+            limits,
+            batching_policy,
+            metrics_recorder,
+        );
 
         Self {
             name,
