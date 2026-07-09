@@ -5,30 +5,30 @@ Prometheus metrics for [batch-aint-one](https://crates.io/crates/batch-aint-one)
 ## Usage
 
 ```rust
-# use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
+use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
 use batch_aint_one_prometheus::BatchMetrics;
 use prometheus::Registry;
-#
-# #[derive(Debug, Clone)]
-# struct MyProcessor;
-# impl Processor for MyProcessor {
-#     type Key = String;
-#     type Input = String;
-#     type Output = String;
-#     type Error = String;
-#     type Resources = ();
-#     async fn acquire_resources(&self, _key: String) -> Result<(), String> { Ok(()) }
-#     async fn process(&self, _key: String, inputs: impl Iterator<Item = String> + Send, _resources: ()) -> Result<Vec<String>, String> {
-#         Ok(inputs.collect())
-#     }
-# }
+
+#[derive(Debug, Clone)]
+struct MyProcessor;
+impl Processor for MyProcessor {
+    type Key = String;
+    type Input = String;
+    type Output = String;
+    type Error = String;
+    type Resources = ();
+    async fn acquire_resources(&self, _key: String) -> Result<(), String> { Ok(()) }
+    async fn process(&self, _key: String, inputs: impl Iterator<Item = String> + Send, _resources: ()) -> Result<Vec<String>, String> {
+        Ok(inputs.collect())
+    }
+}
 
 // Register metrics on your Prometheus registry.
 let registry = Registry::new();
 let metrics = BatchMetrics::new(&registry).unwrap();
 
 // Pass the metrics to each Batcher. The batcher label is set from the batcher's name.
-# tokio_test::block_on(async {
+tokio_test::block_on(async {
 let batcher = Batcher::builder()
     .name("my-batcher")
     .processor(MyProcessor)
@@ -36,7 +36,7 @@ let batcher = Batcher::builder()
     .batching_policy(BatchingPolicy::Immediate)
     .metrics(Box::new(metrics))
     .build();
-# });
+});
 ```
 
 All metrics are labelled with a `batcher` label, so multiple `Batcher` instances can share the same `BatchMetrics`. `BatchMetrics` implements [`MetricsRecorderFactory`](batch_aint_one::MetricsRecorderFactory), so the batcher creates its own recorder using its name.

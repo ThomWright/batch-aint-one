@@ -1,6 +1,6 @@
 //! Prometheus metrics for [`batch-aint-one`](batch_aint_one).
 //!
-//! See the [README](https://github.com/ThomWright/batch-aint-one) for usage examples.
+//! See the [README](https://crates.io/crates/batch-aint-one-prometheus) for usage examples.
 
 #[cfg(doctest)]
 use doc_comment::doctest;
