@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## 0.14.0
+
 ### Added
 
 - Optional `MetricsRecorder` trait for observability, passed via `Batcher::builder().metrics_recorder(...)`. Implement this to bridge batcher metrics (item rates, batch sizes, latencies, rejections, queue depth, concurrency) to your metrics system.
+- `BatchStats` struct with public constructor, passed to `MetricsRecorder::batch_completed`.
 
 ## 0.13.1
 

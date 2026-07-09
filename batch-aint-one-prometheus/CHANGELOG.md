@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## 0.1.0
+
 ### Added
 
 - Initial release: Prometheus `MetricsRecorder` implementation backed by the `prometheus` crate. Registers counters, histograms, and gauges for all `MetricsRecorder` callbacks, with a `batcher` label to distinguish multiple `Batcher` instances.
