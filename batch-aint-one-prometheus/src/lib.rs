@@ -10,7 +10,7 @@ doctest!("../README.md");
 use std::fmt::Debug;
 use std::time::Duration;
 
-use batch_aint_one::{BatchStats, MetricsRecorder};
+use batch_aint_one::{BatchStats, MetricsRecorder, MetricsRecorderFactory};
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
 const DEFAULT_PREFIX: &str = "batch";
@@ -204,10 +204,16 @@ impl BatchMetrics {
     }
 }
 
+impl MetricsRecorderFactory for BatchMetrics {
+    fn create_recorder(&self, batcher_name: &str) -> Box<dyn MetricsRecorder> {
+        Box::new(self.recorder(batcher_name))
+    }
+}
+
 /// Records metrics for a single batcher instance.
 ///
 /// Created via [`BatchMetrics::recorder`]. Implements [`MetricsRecorder`] so it can be
-/// passed to `Batcher::builder().metrics_recorder(...)`.
+/// passed to `Batcher::builder().metrics(...)`.
 #[derive(Debug, Clone)]
 pub struct BatchMetricsRecorder {
     metrics: BatchMetrics,

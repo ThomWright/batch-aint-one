@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt::Debug, time::Duration};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -45,7 +45,7 @@ pub(crate) struct Worker<P: Processor> {
     /// Unprocessed batches, grouped by key `K`.
     batch_queues: HashMap<P::Key, BatchQueue<P>>,
 
-    metrics_recorder: Arc<dyn MetricsRecorder>,
+    metrics_recorder: Box<dyn MetricsRecorder>,
 }
 
 /// Events which drive the worker.
@@ -137,7 +137,7 @@ impl<P: Processor> Worker<P> {
         processor: P,
         limits: Limits,
         batching_policy: BatchingPolicy,
-        metrics_recorder: Arc<dyn MetricsRecorder>,
+        metrics_recorder: Box<dyn MetricsRecorder>,
     ) -> (WorkerHandle, WorkerDropGuard, mpsc::Sender<BatchItem<P>>) {
         // These channel sizes are somewhat arbitrary - they just need to be big enough to avoid
         // backpressure in normal operation.
@@ -511,7 +511,7 @@ mod test {
             limits: Limits::builder().max_batch_size(1).build(),
             batching_policy: BatchingPolicy::Size,
             batch_queues: HashMap::new(),
-            metrics_recorder: Arc::new(crate::metrics::NoopMetricsRecorder),
+            metrics_recorder: Box::new(crate::metrics::NoopMetricsRecorder),
         }
     }
 
@@ -563,7 +563,7 @@ mod test {
             SimpleBatchProcessor,
             Limits::builder().max_batch_size(2).build(),
             BatchingPolicy::Size,
-            Arc::new(crate::metrics::NoopMetricsRecorder),
+            Box::new(crate::metrics::NoopMetricsRecorder),
         );
 
         let rx1 = {

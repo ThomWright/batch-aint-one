@@ -48,7 +48,7 @@ mod worker;
 pub use batcher::Batcher;
 pub use error::BatchError;
 pub use limits::Limits;
-pub use metrics::{BatchStats, MetricsRecorder};
+pub use metrics::{BatchStats, MetricsRecorder, MetricsRecorderFactory};
 pub use policies::{BatchingPolicy, OnFull};
 pub use processor::Processor;
 pub use worker::WorkerHandle;

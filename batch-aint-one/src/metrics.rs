@@ -81,6 +81,12 @@ impl BatchStats {
     }
 }
 
+/// Creates a [`MetricsRecorder`] for a named batcher.
+pub trait MetricsRecorderFactory: Debug + Send + Sync + 'static {
+    /// Create a [`MetricsRecorder`] for the given batcher name.
+    fn create_recorder(&self, batcher_name: &str) -> Box<dyn MetricsRecorder>;
+}
+
 /// A no-op metrics recorder that discards all metrics.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NoopMetricsRecorder;
@@ -110,8 +116,23 @@ mod tests {
         queue_depth: (usize, usize),
     }
 
-    #[derive(Debug, Default)]
-    struct TestRecorder(Mutex<TestRecorderInner>);
+    #[derive(Debug)]
+    struct TestRecorder(Arc<Mutex<TestRecorderInner>>);
+
+    #[derive(Debug)]
+    struct TestRecorderFactory(Arc<Mutex<TestRecorderInner>>);
+
+    impl MetricsRecorderFactory for TestRecorderFactory {
+        fn create_recorder(&self, _batcher_name: &str) -> Box<dyn MetricsRecorder> {
+            Box::new(TestRecorder(self.0.clone()))
+        }
+    }
+
+    fn test_metrics() -> (Arc<Mutex<TestRecorderInner>>, Box<dyn MetricsRecorderFactory>) {
+        let state = Arc::new(Mutex::new(TestRecorderInner::default()));
+        let factory = Box::new(TestRecorderFactory(state.clone()));
+        (state, factory)
+    }
 
     impl MetricsRecorder for TestRecorder {
         fn item_received(&self, channel_duration: Duration) {
@@ -197,14 +218,14 @@ mod tests {
 
     #[tokio::test]
     async fn records_metrics_for_successful_batch() {
-        let recorder = Arc::new(TestRecorder::default());
+        let (state, factory) = test_metrics();
 
         let batcher = Batcher::builder()
             .name("test")
             .processor(SimpleProcessor::instant())
             .limits(Limits::builder().max_batch_size(2).build())
             .batching_policy(BatchingPolicy::Size)
-            .metrics_recorder(Arc::clone(&recorder) as Arc<dyn MetricsRecorder>)
+            .metrics(factory)
             .build();
 
         let (r1, r2) = tokio::join!(
@@ -216,7 +237,7 @@ mod tests {
 
         shut_down(&batcher).await;
 
-        let inner = recorder.0.lock().unwrap();
+        let inner = state.lock().unwrap();
         assert_eq!(inner.items_received, 2);
         assert_eq!(inner.batches_completed, 1);
         assert_eq!(inner.items_rejected, 0);
@@ -228,7 +249,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn records_rejection_metrics() {
-        let recorder = Arc::new(TestRecorder::default());
+        let (state, factory) = test_metrics();
 
         let batcher = Batcher::builder()
             .name("test")
@@ -243,7 +264,7 @@ mod tests {
                     .build(),
             )
             .batching_policy(BatchingPolicy::Size)
-            .metrics_recorder(Arc::clone(&recorder) as Arc<dyn MetricsRecorder>)
+            .metrics(factory)
             .build();
 
         // With max_batch_size=1 and max_batch_queue_size=1:
@@ -264,19 +285,19 @@ mod tests {
 
         shut_down(&batcher).await;
 
-        assert_eq!(recorder.0.lock().unwrap().items_rejected, 1);
+        assert_eq!(state.lock().unwrap().items_rejected, 1);
     }
 
     #[tokio::test]
     async fn records_gauge_metrics() {
-        let recorder = Arc::new(TestRecorder::default());
+        let (state, factory) = test_metrics();
 
         let batcher = Batcher::builder()
             .name("test")
             .processor(SimpleProcessor::instant())
             .limits(Limits::builder().max_batch_size(1).build())
             .batching_policy(BatchingPolicy::Size)
-            .metrics_recorder(Arc::clone(&recorder) as Arc<dyn MetricsRecorder>)
+            .metrics(factory)
             .build();
 
         let r = batcher.add("A".to_string(), "1".to_string()).await;
@@ -284,7 +305,7 @@ mod tests {
 
         shut_down(&batcher).await;
 
-        let inner = recorder.0.lock().unwrap();
+        let inner = state.lock().unwrap();
         assert!(!inner.active_keys.is_empty());
         assert!(inner.active_keys.iter().any(|&c| c > 0));
         // Key goes idle and is removed after the batch finishes.
