@@ -128,7 +128,10 @@ mod tests {
         }
     }
 
-    fn test_metrics() -> (Arc<Mutex<TestRecorderInner>>, Box<dyn MetricsRecorderFactory>) {
+    fn test_metrics() -> (
+        Arc<Mutex<TestRecorderInner>>,
+        Box<dyn MetricsRecorderFactory>,
+    ) {
         let state = Arc::new(Mutex::new(TestRecorderInner::default()));
         let factory = Box::new(TestRecorderFactory(state.clone()));
         (state, factory)

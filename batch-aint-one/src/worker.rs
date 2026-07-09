@@ -573,7 +573,7 @@ mod test {
                     key: "K1".to_string(),
                     input: "I1".to_string(),
                     submitted_at: tokio::time::Instant::now(),
-            received_at: None,
+                    received_at: None,
                     tx,
                     requesting_span: Span::none(),
                 })
@@ -590,7 +590,7 @@ mod test {
                     key: "K1".to_string(),
                     input: "I2".to_string(),
                     submitted_at: tokio::time::Instant::now(),
-            received_at: None,
+                    received_at: None,
                     tx,
                     requesting_span: Span::none(),
                 })
