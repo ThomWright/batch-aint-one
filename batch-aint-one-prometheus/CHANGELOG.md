@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## 0.2.0
+
+### Added
+
+- `batch_queue_duration_seconds` histogram metric for per-item queue duration.
+- `BatchMetrics` now implements `MetricsRecorderFactory`, so it can be passed directly to `Batcher::builder().metrics(Box::new(metrics))` without manually creating a recorder.
+
 ## 0.1.0
 
 ### Added

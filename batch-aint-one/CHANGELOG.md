@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## 0.15.0
+
+### Added
+
+- Per-item `queue_durations` field on `BatchStats`, measuring time from worker receipt to processing start.
+- `MetricsRecorderFactory` trait: the batcher creates its own recorder using its name, replacing the old `.metrics_recorder(Arc<dyn MetricsRecorder>)` builder method.
+
+### Changed
+
+- Builder method renamed from `.metrics_recorder()` to `.metrics()`, now accepts `Box<dyn MetricsRecorderFactory>`.
+
 ## 0.14.0
 
 ### Added
