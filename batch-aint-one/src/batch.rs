@@ -10,7 +10,7 @@ use crate::{
     BatchError,
     batch_inner::{BatchInner, Generation},
     error::BatchResult,
-    metrics::BatchMetrics,
+    metrics::BatchStats,
     processor::Processor,
     timeout::TimeoutHandle,
     worker::Message,
@@ -324,7 +324,7 @@ impl<P: Processor> Batch<P> {
         let now = tokio::time::Instant::now();
         let item_latencies = submitted_ats.iter().map(|t| now - *t).collect();
 
-        let metrics = BatchMetrics::new(batch_size, processing_duration, success, item_latencies);
+        let metrics = BatchStats::new(batch_size, processing_duration, success, item_latencies);
 
         // Signal that we're finished with this batch.
         Self::finalise(key.clone(), metrics, on_finished).await;
@@ -358,7 +358,7 @@ impl<P: Processor> Batch<P> {
         }
     }
 
-    async fn finalise(key: P::Key, metrics: BatchMetrics, on_finished: mpsc::Sender<Message<P>>) {
+    async fn finalise(key: P::Key, metrics: BatchStats, on_finished: mpsc::Sender<Message<P>>) {
         if on_finished
             .send(Message::Finished { key, metrics })
             .await

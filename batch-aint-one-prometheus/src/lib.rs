@@ -10,7 +10,7 @@ doctest!("../README.md");
 use std::fmt::Debug;
 use std::time::Duration;
 
-use batch_aint_one::{BatchMetrics, MetricsRecorder};
+use batch_aint_one::{BatchStats, MetricsRecorder};
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
 const DEFAULT_PREFIX: &str = "batch";
@@ -26,7 +26,7 @@ const BATCH_SIZE_BUCKETS: &[f64] = &[1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200
 /// Metric types are `Clone`-cheap (`Arc`-backed internally), so cloning this struct is
 /// inexpensive.
 #[derive(Debug, Clone)]
-pub struct PrometheusMetrics {
+pub struct BatchMetrics {
     items_received_total: IntCounterVec,
     channel_duration_seconds: HistogramVec,
     items_rejected_total: IntCounterVec,
@@ -42,7 +42,7 @@ pub struct PrometheusMetrics {
     queue_depth_max_per_key: IntGaugeVec,
 }
 
-impl PrometheusMetrics {
+impl BatchMetrics {
     /// Register metrics on `registry` with the default prefix (`batch`).
     pub fn new(registry: &Registry) -> prometheus::Result<Self> {
         Self::with_prefix(registry, DEFAULT_PREFIX)
@@ -182,11 +182,11 @@ impl PrometheusMetrics {
         })
     }
 
-    /// Create a [`PrometheusMetricsRecorder`] for a specific batcher instance.
+    /// Create a [`BatchMetricsRecorder`] for a specific batcher instance.
     ///
     /// The `batcher_name` is used as the value for the `batcher` label on all metrics.
-    pub fn recorder(&self, batcher_name: &str) -> PrometheusMetricsRecorder {
-        PrometheusMetricsRecorder {
+    pub fn recorder(&self, batcher_name: &str) -> BatchMetricsRecorder {
+        BatchMetricsRecorder {
             metrics: self.clone(),
             batcher_name: batcher_name.to_string(),
         }
@@ -195,15 +195,15 @@ impl PrometheusMetrics {
 
 /// Records metrics for a single batcher instance.
 ///
-/// Created via [`PrometheusMetrics::recorder`]. Implements [`MetricsRecorder`] so it can be
+/// Created via [`BatchMetrics::recorder`]. Implements [`MetricsRecorder`] so it can be
 /// passed to `Batcher::builder().metrics_recorder(...)`.
 #[derive(Debug, Clone)]
-pub struct PrometheusMetricsRecorder {
-    metrics: PrometheusMetrics,
+pub struct BatchMetricsRecorder {
+    metrics: BatchMetrics,
     batcher_name: String,
 }
 
-impl MetricsRecorder for PrometheusMetricsRecorder {
+impl MetricsRecorder for BatchMetricsRecorder {
     fn item_received(&self, channel_duration: Duration) {
         let name = &self.batcher_name;
         self.metrics
@@ -223,7 +223,7 @@ impl MetricsRecorder for PrometheusMetricsRecorder {
             .inc();
     }
 
-    fn batch_completed(&self, metrics: &BatchMetrics) {
+    fn batch_completed(&self, metrics: &BatchStats) {
         let name = self.batcher_name.as_str();
         let success = if metrics.success { "true" } else { "false" };
 
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn records_item_received() {
         let registry = Registry::new();
-        let metrics = PrometheusMetrics::new(&registry).unwrap();
+        let metrics = BatchMetrics::new(&registry).unwrap();
         let recorder = metrics.recorder("test");
 
         recorder.item_received(Duration::from_millis(5));
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn records_item_rejected() {
         let registry = Registry::new();
-        let metrics = PrometheusMetrics::new(&registry).unwrap();
+        let metrics = BatchMetrics::new(&registry).unwrap();
         let recorder = metrics.recorder("test");
 
         recorder.item_rejected();
@@ -396,10 +396,10 @@ mod tests {
     #[test]
     fn records_batch_completed() {
         let registry = Registry::new();
-        let metrics = PrometheusMetrics::new(&registry).unwrap();
+        let metrics = BatchMetrics::new(&registry).unwrap();
         let recorder = metrics.recorder("test");
 
-        let batch_metrics = BatchMetrics::new(
+        let batch_metrics = BatchStats::new(
             3,
             Duration::from_millis(50),
             true,
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn records_resource_acquisition() {
         let registry = Registry::new();
-        let metrics = PrometheusMetrics::new(&registry).unwrap();
+        let metrics = BatchMetrics::new(&registry).unwrap();
         let recorder = metrics.recorder("test");
 
         recorder.resource_acquisition_completed(Duration::from_millis(25), true);
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn records_gauge_metrics() {
         let registry = Registry::new();
-        let metrics = PrometheusMetrics::new(&registry).unwrap();
+        let metrics = BatchMetrics::new(&registry).unwrap();
         let recorder = metrics.recorder("test");
 
         recorder.active_keys_changed(5);
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn multiple_batchers_have_separate_labels() {
         let registry = Registry::new();
-        let metrics = PrometheusMetrics::new(&registry).unwrap();
+        let metrics = BatchMetrics::new(&registry).unwrap();
         let recorder_a = metrics.recorder("batcher-a");
         let recorder_b = metrics.recorder("batcher-b");
 
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn custom_prefix() {
         let registry = Registry::new();
-        let metrics = PrometheusMetrics::with_prefix(&registry, "myapp").unwrap();
+        let metrics = BatchMetrics::with_prefix(&registry, "myapp").unwrap();
         let recorder = metrics.recorder("test");
 
         recorder.item_received(Duration::from_millis(1));

@@ -5,13 +5,13 @@ Prometheus metrics for [batch-aint-one](https://crates.io/crates/batch-aint-one)
 ## Usage
 
 ```rust
-use batch_aint_one_prometheus::PrometheusMetrics;
+use batch_aint_one_prometheus::BatchMetrics;
 use prometheus::Registry;
 use std::sync::Arc;
 
 // Register metrics on your Prometheus registry.
 let registry = Registry::new();
-let metrics = PrometheusMetrics::new(&registry).unwrap();
+let metrics = BatchMetrics::new(&registry).unwrap();
 
 // Create a recorder for each Batcher instance and pass it to the builder.
 let recorder = Arc::new(metrics.recorder("my-batcher"));
@@ -25,9 +25,9 @@ let recorder = Arc::new(metrics.recorder("my-batcher"));
 //     .build();
 ```
 
-All metrics are labelled with a `batcher` label, so multiple `Batcher` instances can share the same `PrometheusMetrics`.
+All metrics are labelled with a `batcher` label, so multiple `Batcher` instances can share the same `BatchMetrics`.
 
-Use `PrometheusMetrics::with_prefix` to customise the metric name prefix (default: `batch`).
+Use `BatchMetrics::with_prefix` to customise the metric name prefix (default: `batch`).
 
 ## Metrics
 

@@ -12,7 +12,7 @@ use crate::{
     batch_inner::Generation,
     batch_queue::BatchQueue,
     limits::Limits,
-    metrics::{BatchMetrics, MetricsRecorder},
+    metrics::{BatchStats, MetricsRecorder},
     policies::{BatchingPolicy, OnAdd, OnFinish, OnGenerationEvent},
     processor::Processor,
 };
@@ -70,7 +70,7 @@ pub(crate) enum Message<P: Processor> {
     },
     Finished {
         key: P::Key,
-        metrics: BatchMetrics,
+        metrics: BatchStats,
     },
 }
 
@@ -317,7 +317,7 @@ impl<P: Processor> Worker<P> {
         self.report_gauges();
     }
 
-    fn on_batch_finished(&mut self, key: &P::Key, metrics: BatchMetrics) {
+    fn on_batch_finished(&mut self, key: &P::Key, metrics: BatchStats) {
         self.metrics_recorder.batch_completed(&metrics);
 
         let batch_queue = Self::queue_mut(&mut self.batch_queues, key);

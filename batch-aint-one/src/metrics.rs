@@ -21,7 +21,7 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     fn item_rejected(&self) {}
 
     /// A batch finished processing and results were sent back to callers.
-    fn batch_completed(&self, _metrics: &BatchMetrics) {}
+    fn batch_completed(&self, _metrics: &BatchStats) {}
 
     /// Resource acquisition completed.
     fn resource_acquisition_completed(&self, _duration: Duration, _success: bool) {}
@@ -42,10 +42,10 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     fn queue_depth_changed(&self, _total: usize, _max_per_key: usize) {}
 }
 
-/// Metrics for a completed batch.
+/// Stats for a completed batch.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct BatchMetrics {
+pub struct BatchStats {
     /// The number of items in the batch.
     pub size: usize,
     /// How long the batch took to process (including resource acquisition if not pre-acquired).
@@ -56,8 +56,8 @@ pub struct BatchMetrics {
     pub item_latencies: Vec<Duration>,
 }
 
-impl BatchMetrics {
-    /// Create a new `BatchMetrics`.
+impl BatchStats {
+    /// Create a new `BatchStats`.
     pub fn new(
         size: usize,
         processing_duration: Duration,
@@ -116,7 +116,7 @@ mod tests {
             self.0.lock().unwrap().items_rejected += 1;
         }
 
-        fn batch_completed(&self, metrics: &BatchMetrics) {
+        fn batch_completed(&self, metrics: &BatchStats) {
             let mut inner = self.0.lock().unwrap();
             inner.batches_completed += 1;
             inner.batch_sizes.push(metrics.size);
