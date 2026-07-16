@@ -61,3 +61,5 @@ Use `BatchMetrics::with_prefix` to customise the metric name prefix (default: `b
 | `batch_processing_concurrency_max_per_key`    | Gauge     | batcher          | Highest batch processing concurrency across any single key       |
 | `batch_queue_depth`                           | Gauge     | batcher          | Total number of batches queued for processing                    |
 | `batch_queue_depth_max_per_key`               | Gauge     | batcher          | Deepest batch queue across any single key                        |
+| `batch_queue_items`                           | Gauge     | batcher          | Total number of items queued for processing                      |
+| `batch_queue_items_max_per_key`               | Gauge     | batcher          | Highest number of items queued across any single key             |

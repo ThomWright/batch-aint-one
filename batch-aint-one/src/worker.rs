@@ -333,19 +333,22 @@ impl<P: Processor> Worker<P> {
         self.metrics_recorder
             .active_keys_changed(self.batch_queues.len());
 
-        let (total_processing, max_processing, total_queued, max_queued) = self
-            .batch_queues
-            .values()
-            .fold((0, 0, 0, 0), |(tp, mp, tq, mq), bq| {
-                let p = bq.processing();
-                let q = bq.queued();
-                (tp + p, mp.max(p), tq + q, mq.max(q))
-            });
+        let (total_processing, max_processing, total_queued, max_queued, total_items, max_items) =
+            self.batch_queues
+                .values()
+                .fold((0, 0, 0, 0, 0, 0), |(tp, mp, tq, mq, ti, mi), bq| {
+                    let p = bq.processing();
+                    let q = bq.queued();
+                    let i = bq.queued_items();
+                    (tp + p, mp.max(p), tq + q, mq.max(q), ti + i, mi.max(i))
+                });
 
         self.metrics_recorder
             .processing_concurrency_changed(total_processing, max_processing);
         self.metrics_recorder
             .queue_depth_changed(total_queued, max_queued);
+        self.metrics_recorder
+            .queue_items_changed(total_items, max_items);
     }
 
     /// After a batch has left the queue (either processed or having failed to acquire resources),
@@ -463,6 +466,8 @@ impl Drop for WorkerDropGuard {
 
 #[cfg(test)]
 mod test {
+    use std::sync::{Arc, Mutex};
+
     use tokio::sync::oneshot;
     use tracing::Span;
 
@@ -605,5 +610,62 @@ mod test {
 
         assert_eq!(o1, "I1 processed".to_string());
         assert_eq!(o2, "I2 processed".to_string());
+    }
+
+    #[derive(Debug, Clone)]
+    struct RecordingMetrics(Arc<Mutex<(usize, usize)>>);
+
+    impl MetricsRecorder for RecordingMetrics {
+        fn queue_items_changed(&self, total: usize, max_per_key: usize) {
+            *self.0.lock().unwrap() = (total, max_per_key);
+        }
+    }
+
+    fn dummy_item(key: &str) -> BatchItem<SimpleBatchProcessor> {
+        let (tx, _rx) = oneshot::channel();
+        BatchItem {
+            key: key.to_string(),
+            input: "I".to_string(),
+            submitted_at: tokio::time::Instant::now(),
+            received_at: None,
+            tx,
+            requesting_span: Span::none(),
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_items_changed_sums_and_maxes_across_keys() {
+        let mut worker = new_worker();
+        worker.limits = Limits::builder().max_batch_size(2).build();
+
+        let gauges = Arc::new(Mutex::new((0, 0)));
+        worker.metrics_recorder = Box::new(RecordingMetrics(gauges.clone()));
+
+        let limits = worker.limits;
+
+        // Key "A": 3 items split across 2 batches (one full, one with a single item).
+        let queue_a = worker
+            .batch_queues
+            .entry("A".to_string())
+            .or_insert_with(|| BatchQueue::new("test".to_string(), "A".to_string(), limits));
+        for _ in 0..3 {
+            queue_a.push(dummy_item("A"));
+        }
+
+        // Key "B": 1 item in a single batch.
+        let queue_b = worker
+            .batch_queues
+            .entry("B".to_string())
+            .or_insert_with(|| BatchQueue::new("test".to_string(), "B".to_string(), limits));
+        queue_b.push(dummy_item("B"));
+
+        worker.report_gauges();
+
+        let (total, max_per_key) = *gauges.lock().unwrap();
+        assert_eq!(total, 4, "should sum items across both keys");
+        assert_eq!(
+            max_per_key, 3,
+            "should report the highest per-key item count, not batch count"
+        );
     }
 }

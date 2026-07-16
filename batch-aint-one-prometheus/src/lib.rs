@@ -41,6 +41,8 @@ pub struct BatchMetrics {
     processing_concurrency_max_per_key: IntGaugeVec,
     queue_depth: IntGaugeVec,
     queue_depth_max_per_key: IntGaugeVec,
+    queue_items: IntGaugeVec,
+    queue_items_max_per_key: IntGaugeVec,
 }
 
 impl BatchMetrics {
@@ -159,6 +161,19 @@ impl BatchMetrics {
             .namespace(prefix),
             batcher_labels,
         )?;
+        let queue_items = IntGaugeVec::new(
+            Opts::new("queue_items", "Total number of items queued for processing")
+                .namespace(prefix),
+            batcher_labels,
+        )?;
+        let queue_items_max_per_key = IntGaugeVec::new(
+            Opts::new(
+                "queue_items_max_per_key",
+                "Highest number of items queued across any single key",
+            )
+            .namespace(prefix),
+            batcher_labels,
+        )?;
 
         registry.register(Box::new(items_received_total.clone()))?;
         registry.register(Box::new(channel_duration_seconds.clone()))?;
@@ -174,6 +189,8 @@ impl BatchMetrics {
         registry.register(Box::new(processing_concurrency_max_per_key.clone()))?;
         registry.register(Box::new(queue_depth.clone()))?;
         registry.register(Box::new(queue_depth_max_per_key.clone()))?;
+        registry.register(Box::new(queue_items.clone()))?;
+        registry.register(Box::new(queue_items_max_per_key.clone()))?;
 
         Ok(Self {
             items_received_total,
@@ -190,6 +207,8 @@ impl BatchMetrics {
             processing_concurrency_max_per_key,
             queue_depth,
             queue_depth_max_per_key,
+            queue_items,
+            queue_items_max_per_key,
         })
     }
 
@@ -306,6 +325,18 @@ impl MetricsRecorder for BatchMetricsRecorder {
             .set(total as i64);
         self.metrics
             .queue_depth_max_per_key
+            .with_label_values(&[name])
+            .set(max_per_key as i64);
+    }
+
+    fn queue_items_changed(&self, total: usize, max_per_key: usize) {
+        let name = &self.batcher_name;
+        self.metrics
+            .queue_items
+            .with_label_values(&[name])
+            .set(total as i64);
+        self.metrics
+            .queue_items_max_per_key
             .with_label_values(&[name])
             .set(max_per_key as i64);
     }
@@ -511,6 +542,7 @@ mod tests {
         recorder.active_keys_changed(5);
         recorder.processing_concurrency_changed(3, 2);
         recorder.queue_depth_changed(10, 4);
+        recorder.queue_items_changed(200, 80);
 
         let families = registry.gather();
         let labels = &[("batcher", "test")];
@@ -535,6 +567,14 @@ mod tests {
         assert_eq!(
             get_gauge_value(&families, "batch_queue_depth_max_per_key", labels),
             4.0,
+        );
+        assert_eq!(
+            get_gauge_value(&families, "batch_queue_items", labels),
+            200.0
+        );
+        assert_eq!(
+            get_gauge_value(&families, "batch_queue_items_max_per_key", labels),
+            80.0,
         );
     }
 

@@ -40,6 +40,15 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     /// `max_per_key` is the deepest queue across any single key, useful for detecting
     /// saturation without per-key labels.
     fn queue_depth_changed(&self, _total: usize, _max_per_key: usize) {}
+
+    /// The total number of items queued for processing changed.
+    ///
+    /// Unlike [`queue_depth_changed`](Self::queue_depth_changed), which counts batches, this
+    /// counts individual items, so it isn't affected by `max_batch_size`.
+    ///
+    /// `max_per_key` is the highest number of items queued across any single key, useful for
+    /// detecting saturation without per-key labels.
+    fn queue_items_changed(&self, _total: usize, _max_per_key: usize) {}
 }
 
 /// Stats for a completed batch.
@@ -114,6 +123,7 @@ mod tests {
         active_keys: Vec<usize>,
         processing_concurrency: (usize, usize),
         queue_depth: (usize, usize),
+        queue_items: (usize, usize),
     }
 
     #[derive(Debug)]
@@ -171,6 +181,10 @@ mod tests {
 
         fn queue_depth_changed(&self, total: usize, max_per_key: usize) {
             self.0.lock().unwrap().queue_depth = (total, max_per_key);
+        }
+
+        fn queue_items_changed(&self, total: usize, max_per_key: usize) {
+            self.0.lock().unwrap().queue_items = (total, max_per_key);
         }
     }
 

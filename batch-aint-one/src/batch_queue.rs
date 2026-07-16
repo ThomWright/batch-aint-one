@@ -108,6 +108,10 @@ impl<P: Processor> BatchQueue<P> {
         self.queue.len()
     }
 
+    pub(crate) fn queued_items(&self) -> usize {
+        self.queue.iter().map(Batch::len).sum()
+    }
+
     pub(crate) fn mark_processed(&mut self) {
         soft_assert!(
             self.processing > 0,
@@ -364,5 +368,65 @@ impl<P: Processor> Debug for BatchQueue<P> {
             .field("pre_acquiring", &pre_acquiring)
             .field("limits", limits)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::oneshot;
+    use tracing::Span;
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct DummyProcessor;
+    impl Processor for DummyProcessor {
+        type Key = String;
+        type Input = String;
+        type Output = String;
+        type Error = String;
+        type Resources = ();
+        async fn acquire_resources(&self, _key: String) -> Result<(), String> {
+            Ok(())
+        }
+        async fn process(
+            &self,
+            _key: String,
+            _inputs: impl Iterator<Item = String> + Send,
+            _resources: (),
+        ) -> Result<Vec<String>, String> {
+            Ok(vec![])
+        }
+    }
+
+    fn item(key: &str) -> BatchItem<DummyProcessor> {
+        let (tx, _rx) = oneshot::channel();
+        BatchItem {
+            key: key.to_string(),
+            input: "item".to_string(),
+            submitted_at: tokio::time::Instant::now(),
+            received_at: None,
+            tx,
+            requesting_span: Span::none(),
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_items_sums_across_batches() {
+        let limits = Limits::builder().max_batch_size(2).build();
+        let mut queue: BatchQueue<DummyProcessor> =
+            BatchQueue::new("test".to_string(), "key".to_string(), limits);
+
+        for _ in 0..3 {
+            queue.push(item("key"));
+        }
+
+        // The 3rd item can't fit in the first (now full) batch, so it starts a new one.
+        assert_eq!(queue.queued(), 2, "should have split into 2 batches");
+        assert_eq!(
+            queue.queued_items(),
+            3,
+            "should count every item, not just batches"
+        );
     }
 }
