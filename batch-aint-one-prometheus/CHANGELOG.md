@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## 0.2.1
+
 ### Added
 
 - `batch_queue_items` and `batch_queue_items_max_per_key` gauges, tracking `MetricsRecorder::queue_items_changed`.

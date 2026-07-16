@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## 0.15.1
+
 ### Added
 
 - `MetricsRecorder::queue_items_changed`, reporting the total number of items queued for processing, complementing the existing batch-count `queue_depth_changed`.

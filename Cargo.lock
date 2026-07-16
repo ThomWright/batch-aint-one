@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "batch-aint-one"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "assert_matches",
  "bon",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "batch-aint-one-prometheus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "batch-aint-one",
  "doc-comment",
