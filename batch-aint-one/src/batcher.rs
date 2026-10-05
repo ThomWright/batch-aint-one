@@ -79,7 +79,7 @@ impl<P: Processor> Batcher<P> {
     /// Add an item to be batched and processed, and await the result.
     pub async fn add(&self, key: P::Key, input: P::Input) -> BatchResult<P::Output, P::Error> {
         // Record the span ID so we can link the shared processing span.
-        let requesting_span = Span::current().clone();
+        let requesting_span = Span::current();
 
         let (tx, rx) = oneshot::channel();
         self.item_tx
