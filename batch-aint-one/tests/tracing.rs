@@ -35,7 +35,6 @@ impl Processor for SimpleBatchProcessor {
 }
 
 #[tokio::test]
-#[ignore = "flaky"]
 async fn test_tracing() {
     use tracing::Level;
     use tracing_capture::{CaptureLayer, SharedStorage};

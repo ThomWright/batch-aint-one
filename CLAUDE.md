@@ -57,9 +57,9 @@ Batcher::add(key, input) ──item_tx──▶ Worker (owns HashMap<Key, BatchQ
 - `policies/`: `BatchingPolicy` is a pure decision layer. `mod.rs` handles shared logic (rejection when the queue is full, timeout/resource events) and dispatches `on_add` / `on_finish` to one file per policy (`immediate`, `size`, `duration`, `balanced`), returning `OnAdd` / `OnGenerationEvent` / `OnFinish` actions for the worker to execute. Policies have unit tests using `policies/test_utils.rs`.
 - `metrics.rs`: `MetricsRecorder` trait (all methods default to no-ops) and `MetricsRecorderFactory`, which the batcher calls with its name. The worker reports gauges after each state change.
 - `soft_assert!` (in `lib.rs`) is for internal invariants: it panics in debug/tests but only logs a warning in release.
-- Tracing: each processed batch gets one span that `follows_from` every requesting span, and each caller gets a "batch finished" span linking back (see comments in `Batcher::add`). `test_tracing` in `lib.rs` describes this span structure, but is `#[ignore]`d as flaky, so it isn't checked in CI.
+- Tracing: each processed batch gets one span that `follows_from` every requesting span, and each caller gets a "batch finished" span linking back (see comments in `Batcher::add`). `tests/tracing.rs` pins this span structure. It must stay in its own test binary, because tracing-core can cache a callsite as disabled when another test thread hits it first (tokio-rs/tracing#2874).
 
-Integration tests in `batch-aint-one/tests/` are a single test binary (`tests.rs`) with modules per area (strategies, resources, errors, panic, shutdown); many use tokio's paused time.
+Integration tests in `batch-aint-one/tests/` are mostly one test binary (`tests.rs`) with modules per area (strategies, resources, errors, panic, shutdown); many use tokio's paused time. `tracing.rs` is separate (see above).
 
 ## Conventions
 
