@@ -77,13 +77,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --all-features -- --deny warnings
+      - run: cargo clippy --all-targets --all-features -- --deny warnings
 
   publish:
     name: publish
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
-    needs: [clippy, test]
+    needs: [clippy, rustfmt, test]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
