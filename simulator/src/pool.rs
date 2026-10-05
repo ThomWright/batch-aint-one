@@ -82,16 +82,18 @@ impl ConnectionPool {
         let acquire_latency = self.acquire_latency.lock().unwrap().sample();
         tokio::time::sleep(acquire_latency).await;
 
-        let prev_available = self
-            .available
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |available| {
-                if available > 0 {
-                    Some(available - 1)
-                } else {
-                    Some(available)
-                }
-            })
-            .expect("should always update");
+        // A saturating decrement. Written as a CAS loop because `fetch_update` is deprecated and
+        // its replacement, `try_update`, needs Rust 1.95. Switch to `try_update` once the MSRV is
+        // at least 1.95.
+        let mut prev_available = self.available.load(Ordering::SeqCst);
+        while let Err(actual) = self.available.compare_exchange_weak(
+            prev_available,
+            prev_available.saturating_sub(1),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            prev_available = actual;
+        }
 
         if prev_available == 0 {
             // No connections available, need to open a new one
