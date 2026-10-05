@@ -4,6 +4,7 @@ members = ["batch-aint-one", "batch-aint-one-prometheus", "simulator"]
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.87"
 authors = ["Thom Wright <dev@thomwright.co.uk>"]
 license = "MIT"
 repository = "https://github.com/ThomWright/batch-aint-one"
