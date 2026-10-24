@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
+use batch_aint_one::{Batcher, BatchingPolicy, Limits, OnFull, Processor};
 use futures::future::join_all;
 use rstest::rstest;
 use tokio::sync::mpsc;
@@ -185,4 +185,117 @@ async fn idempotent_shutdown() {
     tokio::time::timeout(Duration::from_secs(1), worker.wait_for_shutdown())
         .await
         .expect("Worker should shut down gracefully even with multiple shutdown calls");
+}
+
+#[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+async fn shut_down_processes_partial_batch() {
+    tokio::time::pause();
+
+    let batcher = Batcher::builder()
+        .name("shut_down_processes_partial_batch")
+        .processor(SimpleBatchProcessor(Duration::ZERO))
+        .limits(Limits::builder().max_batch_size(3).build())
+        .batching_policy(BatchingPolicy::Size)
+        .build();
+
+    let worker = batcher.worker_handle();
+
+    let add = tokio::spawn(async move { batcher.add("key".to_string(), "item".to_string()).await });
+    // Let the worker receive the item, so it isn't idle when shutting down.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+
+    worker.shut_down().await;
+
+    let output = tokio::time::timeout(Duration::from_secs(1), add)
+        .await
+        .expect("The partial batch should be processed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(output, "item processed for key");
+
+    tokio::time::timeout(Duration::from_secs(1), worker.wait_for_shutdown())
+        .await
+        .expect("Worker should shut down");
+}
+
+#[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+async fn shut_down_processes_batch_before_its_deadline() {
+    tokio::time::pause();
+
+    let batcher = Batcher::builder()
+        .name("shut_down_processes_batch_before_its_deadline")
+        .processor(SimpleBatchProcessor(Duration::ZERO))
+        .limits(Limits::builder().max_batch_size(3).build())
+        .batching_policy(BatchingPolicy::Duration(
+            Duration::from_secs(10),
+            OnFull::Process,
+        ))
+        .build();
+
+    let worker = batcher.worker_handle();
+
+    let start = tokio::time::Instant::now();
+
+    let add = tokio::spawn(async move { batcher.add("key".to_string(), "item".to_string()).await });
+    // Let the worker receive the item, so it isn't idle when shutting down.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+
+    worker.shut_down().await;
+
+    add.await.unwrap().unwrap();
+    worker.wait_for_shutdown().await;
+
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "The batch should be processed without waiting for its deadline, took {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+async fn shut_down_respects_key_concurrency() {
+    tokio::time::pause();
+
+    let processing_duration = Duration::from_millis(100);
+
+    let batcher = Batcher::builder()
+        .name("shut_down_respects_key_concurrency")
+        .processor(SimpleBatchProcessor(processing_duration))
+        .limits(
+            Limits::builder()
+                .max_batch_size(3)
+                .max_key_concurrency(1)
+                .build(),
+        )
+        .batching_policy(BatchingPolicy::Size)
+        .build();
+
+    let worker = batcher.worker_handle();
+
+    let start = tokio::time::Instant::now();
+
+    // A full batch starts processing, leaving a partial batch waiting.
+    let adds: Vec<_> = (1..=4)
+        .map(|i| {
+            let batcher = batcher.clone();
+            tokio::spawn(async move { batcher.add("key".to_string(), format!("item {i}")).await })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(1)).await;
+
+    worker.shut_down().await;
+
+    for result in join_all(adds).await {
+        result.unwrap().unwrap();
+    }
+    worker.wait_for_shutdown().await;
+
+    // The partial batch waits for the full batch to finish.
+    assert_elapsed!(start, processing_duration * 2, Duration::from_millis(2));
 }

@@ -423,6 +423,18 @@ impl<P: Processor> Worker<P> {
         }
     }
 
+    /// Process every batch that can be processed now, within the concurrency limits, regardless
+    /// of the batching policy.
+    fn flush(&mut self) {
+        for batch_queue in self.batch_queues.values_mut() {
+            while !batch_queue.at_max_total_processing_capacity()
+                && batch_queue.has_batch_to_flush()
+            {
+                batch_queue.flush_next_batch(self.processor.clone(), self.msg_tx.clone());
+            }
+        }
+    }
+
     fn all_keys_idle(&self) -> bool {
         self.batch_queues.values().all(|q| q.is_idle())
     }
@@ -477,6 +489,14 @@ impl<P: Processor> Worker<P> {
                 }
             }
 
+            // Waiting for a batch to fill up or reach its deadline could hold up shutdown, maybe
+            // forever. Flushing after every event, rather than once, also catches batches which
+            // become processable later: when capacity frees up, resources are acquired, or items
+            // are added.
+            if self.shutting_down {
+                self.flush();
+            }
+
             if self.gauge_recording == GaugeRecording::OnChange {
                 self.record_gauges();
             }
@@ -521,16 +541,13 @@ impl WorkerHandle {
     /// the worker stops accepting items, processes any already sent, and exits. After that,
     /// [`Batcher::add`](crate::Batcher::add) returns [`BatchError::Tx`].
     ///
-    /// This means shutdown may never complete if:
+    /// While shutting down, batches are processed without waiting for the batching policy, e.g. a
+    /// partial batch doesn't wait to fill up and a [`Duration`](crate::BatchingPolicy::Duration)
+    /// batch doesn't wait for its deadline. The concurrency limits still apply.
     ///
-    /// - new items keep being added, or
-    /// - a batch never meets its policy's processing condition, e.g. when using the
-    ///   [`Size`](crate::BatchingPolicy::Size) policy, a final partial batch may wait
-    ///   indefinitely for more items.
-    ///
-    /// So stop whatever adds items first. For example, in an HTTP service: stop the server and let
-    /// in-flight requests finish, then call `shut_down()` and
-    /// [`wait_for_shutdown()`](Self::wait_for_shutdown).
+    /// Shutdown may never complete if new items keep being added, so stop whatever adds them
+    /// first. For example, in an HTTP service: stop the server and let in-flight requests finish,
+    /// then call `shut_down()` and [`wait_for_shutdown()`](Self::wait_for_shutdown).
     pub async fn shut_down(&self) {
         info!("Sending shut down signal to batch worker");
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- While shutting down, the worker processes batches without waiting for the batching policy: a partial batch doesn't wait to fill up, and a `Duration` batch doesn't wait for its deadline. The concurrency limits still apply. Previously, a `Size` policy's final partial batch could stop shutdown from ever completing.
 - Gauges are recorded once more when the worker shuts down, so the final values aren't left stale.
 - With `GaugeRecording::OnChange`, gauges are now also recorded after timeouts and resource acquisition, which can start processing a batch.
 - Batchers without metrics no longer compute gauges.

@@ -202,6 +202,11 @@ impl<P: Processor> BatchQueue<P> {
         false
     }
 
+    /// Is there a batch which could be processed now, if we ignore its deadline?
+    pub(crate) fn has_batch_to_flush(&self) -> bool {
+        self.queue.iter().any(|batch| batch.can_flush())
+    }
+
     pub(crate) fn is_generation_ready(&self, generation: Generation) -> bool {
         for batch in &self.queue {
             if batch.is_generation(generation) {
@@ -255,6 +260,26 @@ impl<P: Processor> BatchQueue<P> {
             soft_assert!(
                 false,
                 "No ready batch found in batch queue '{}'",
+                self.batcher_name
+            );
+            return;
+        };
+
+        self.increment_processing_count();
+
+        batch.process(processor, on_finished);
+    }
+
+    /// Process the first batch which can be processed now, ignoring its deadline.
+    pub(crate) fn flush_next_batch(
+        &mut self,
+        processor: P,
+        on_finished: mpsc::UnboundedSender<Message<P>>,
+    ) {
+        let Some(batch) = self.take_first(|batch| batch.can_flush()) else {
+            soft_assert!(
+                false,
+                "No batch to flush found in batch queue '{}'",
                 self.batcher_name
             );
             return;

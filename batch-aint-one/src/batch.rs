@@ -136,11 +136,18 @@ impl<P: Processor> Batch<P> {
     }
 
     pub(crate) fn is_ready(&self) -> bool {
-        // To be ready, we must have some items to process...
+        // To be ready, we must be able to flush, and any deadline must be in the past.
+        self.can_flush()
+            && self
+                .deadline
+                .is_none_or(|deadline| deadline <= Instant::now())
+    }
+
+    /// Can this batch be processed now, if we ignore its deadline?
+    pub(crate) fn can_flush(&self) -> bool {
+        // We must have some items to process...
         !self.is_empty()
-            // ... and if there is a timeout deadline, it must be in the past
-            && self.deadline.is_none_or(|deadline| deadline <= Instant::now())
-            // ... and we must be in a processable state, i.e. not acquiring resources
+            // ... and be in a processable state, i.e. not acquiring resources
             && self.is_processable()
     }
 
