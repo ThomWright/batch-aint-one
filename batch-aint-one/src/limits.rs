@@ -2,7 +2,9 @@ use std::fmt::{self, Display};
 
 use bon::bon;
 
-/// Limits on batch sizes, queueing and concurrency, applied per key.
+/// Limits on batch sizes, queueing and concurrency.
+///
+/// Most limits apply per key. `max_items_awaiting_worker` applies to the whole batcher.
 ///
 /// New items are rejected when the batch queue for their key is full: `max_batch_queue_size`
 /// batches are queued, and the newest batch already contains `max_batch_size` items.
@@ -16,6 +18,7 @@ pub struct Limits {
     pub(crate) max_batch_size: usize,
     pub(crate) max_key_concurrency: usize,
     pub(crate) max_batch_queue_size: usize,
+    pub(crate) max_items_awaiting_worker: usize,
 }
 
 #[bon]
@@ -42,6 +45,33 @@ impl Limits {
         ///
         /// Defaults to `max_key_concurrency * 2`.
         max_batch_queue_size: Option<usize>,
+        /// Limits the number of items, across all keys, that have been submitted with
+        /// [`Batcher::add()`](crate::Batcher::add) but not yet accepted by the background
+        /// worker. Once this is reached, `add()` waits for room before submitting its item.
+        ///
+        /// This is a buffer for when the worker itself falls behind, e.g. when the runtime is
+        /// short of CPU. It is not a queue limit, and on its own it does not shed load:
+        ///
+        /// - The worker usually accepts items much faster than they are processed. When
+        ///   processing is the bottleneck, the per-key limits reject items and this buffer stays
+        ///   nearly empty.
+        /// - It bounds the buffer, not the number of callers waiting for room. Waiting slows down
+        ///   callers that limit their own concurrency, but callers that spawn a task per request
+        ///   just queue up in those tasks instead.
+        /// - It is shared by all keys, so items for a key whose queue is full still take up room
+        ///   until the worker reads and rejects them.
+        ///
+        /// A larger buffer hides more latency when the worker is overloaded, and a smaller one
+        /// makes callers wait sooner. To shed load, rely on the per-key limits, and limit how
+        /// many calls to `add()` are in flight. Time spent waiting for room is included in the
+        /// `channel_duration` reported to
+        /// [`MetricsRecorder::item_received()`](crate::MetricsRecorder::item_received).
+        ///
+        /// Defaults to the maximum number of items one key can have in the system,
+        /// `max_batch_size * (max_key_concurrency + max_batch_queue_size)`. With many keys and
+        /// small per-key limits, consider raising it, because the default may be smaller than
+        /// normal bursts across all keys.
+        max_items_awaiting_worker: Option<usize>,
     ) -> Self {
         assert!(
             max_batch_size > 0,
@@ -57,24 +87,19 @@ impl Limits {
             "max_batch_queue_size must be greater than zero"
         );
 
+        let max_items_awaiting_worker = max_items_awaiting_worker
+            .unwrap_or(max_batch_size * (max_key_concurrency + max_batch_queue_size));
+        assert!(
+            max_items_awaiting_worker > 0,
+            "max_items_awaiting_worker must be greater than zero"
+        );
+
         Self {
             max_batch_size,
             max_key_concurrency,
             max_batch_queue_size,
+            max_items_awaiting_worker,
         }
-    }
-
-    fn max_items_processing_per_key(&self) -> usize {
-        self.max_batch_size * self.max_key_concurrency
-    }
-
-    fn max_items_queued_per_key(&self) -> usize {
-        self.max_batch_size * self.max_batch_queue_size
-    }
-
-    /// The maximum number of items that can be in the system for a given key.
-    pub(crate) fn max_items_in_system_per_key(&self) -> usize {
-        self.max_items_processing_per_key() + self.max_items_queued_per_key()
     }
 }
 
@@ -88,8 +113,11 @@ impl Display for Limits {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "batch_size: {}, key_concurrency: {}, queue_size: {}",
-            self.max_batch_size, self.max_key_concurrency, self.max_batch_queue_size
+            "batch_size: {}, key_concurrency: {}, queue_size: {}, items_awaiting_worker: {}",
+            self.max_batch_size,
+            self.max_key_concurrency,
+            self.max_batch_queue_size,
+            self.max_items_awaiting_worker
         )
     }
 }
@@ -106,6 +134,34 @@ mod tests {
         assert_eq!(default.max_batch_size, built.max_batch_size);
         assert_eq!(default.max_key_concurrency, built.max_key_concurrency);
         assert_eq!(default.max_batch_queue_size, built.max_batch_queue_size);
+        assert_eq!(
+            default.max_items_awaiting_worker,
+            built.max_items_awaiting_worker
+        );
+    }
+
+    #[test]
+    fn max_items_awaiting_worker_defaults_to_max_items_per_key() {
+        let limits = Limits::builder()
+            .max_batch_size(2)
+            .max_key_concurrency(3)
+            .max_batch_queue_size(4)
+            .build();
+
+        assert_eq!(limits.max_items_awaiting_worker, 2 * (3 + 4));
+    }
+
+    #[test]
+    fn max_items_awaiting_worker_can_be_overridden() {
+        let limits = Limits::builder().max_items_awaiting_worker(5).build();
+
+        assert_eq!(limits.max_items_awaiting_worker, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_items_awaiting_worker must be greater than zero")]
+    fn rejects_zero_max_items_awaiting_worker() {
+        Limits::builder().max_items_awaiting_worker(0).build();
     }
 
     #[test]

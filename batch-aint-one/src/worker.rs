@@ -139,9 +139,7 @@ impl<P: Processor> Worker<P> {
         batching_policy: BatchingPolicy,
         metrics_recorder: Box<dyn MetricsRecorder>,
     ) -> (WorkerHandle, WorkerDropGuard, mpsc::Sender<BatchItem<P>>) {
-        // This channel size is somewhat arbitrary - it just needs to be big enough to avoid
-        // backpressure in normal operation.
-        let (item_tx, item_rx) = mpsc::channel(limits.max_items_in_system_per_key());
+        let (item_tx, item_rx) = mpsc::channel(limits.max_items_awaiting_worker);
         // Unbounded so spawned tasks never wait to report back. Only internal tasks send on this
         // channel, at most one message each per timer, resource acquisition or processing task,
         // so in-flight work bounds its size.
@@ -562,6 +560,19 @@ mod test {
         let mut worker = new_worker();
 
         worker.on_timeout("K1".to_string(), Generation::default());
+    }
+
+    #[tokio::test]
+    async fn item_channel_is_sized_by_max_items_awaiting_worker() {
+        let (_worker_handle, _worker_guard, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
+            "test".to_string(),
+            SimpleBatchProcessor,
+            Limits::builder().max_items_awaiting_worker(5).build(),
+            BatchingPolicy::Size,
+            Box::new(crate::metrics::NoopMetricsRecorder),
+        );
+
+        assert_eq!(item_tx.max_capacity(), 5);
     }
 
     #[tokio::test]
