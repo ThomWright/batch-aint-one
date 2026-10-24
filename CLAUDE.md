@@ -41,21 +41,21 @@ The design is a single-writer actor: one background worker task owns all batch s
 
 ```text
 Batcher::add(key, input) ──item_tx──▶ Worker (owns HashMap<Key, BatchQueue>)
-        ▲                                 │  consults BatchingPolicy on each event
-        │ oneshot (output, batch span)    │  spawns tasks for timeouts, resource
-        └─────────────────────────────────┘  acquisition and processing
-                                          ▲
-                spawned tasks ──msg_tx────┘  Message::{TimedOut, ResourcesAcquired,
+        ▲                                 │  consults BatchingPolicy on each event,
+        │ oneshot (output, batch span)    │  waits for batch deadlines in its loop,
+        └─────────────────────────────────┘  spawns tasks for resource acquisition
+                                          ▲  and processing
+                spawned tasks ──msg_tx────┘  Message::{ResourcesAcquired,
                                                       ResourceAcquisitionFailed, Finished}
 ```
 
 - `batcher.rs`: public handle. Cheap to clone; dropping the last clone aborts the worker (`WorkerDropGuard`). Graceful shutdown goes through `WorkerHandle`.
-- `worker.rs`: the event loop. Spawned tasks never mutate state directly; they report back via `Message` and the worker applies the state transition, so all events are observed in message order. Idle keys' queues are removed in `process_next_and_clean_up` to bound memory.
+- `worker.rs`: the event loop. The module doc explains why tasks are only spawned for user code. Spawned tasks never mutate state directly; they report back via `Message` and the worker applies the state transition, so all events are observed in message order. Batch deadlines live on the batches; the worker's `wake_ups` map only says when to re-check a key, so stale entries are harmless. Idle keys' queues are removed in `process_next_and_clean_up` to bound memory.
 - `batch_queue.rs`: per-key `VecDeque<Batch>` (always at least one, possibly empty, batch) plus `processing` / `pre_acquiring` counters that enforce `Limits::max_key_concurrency`.
-- `batch.rs`: per-batch state machine (`New → Acquiring → ReadyForProcessing → Processing`), items, and timeout handle. `batch_inner.rs` does the actual resource acquisition and processing in a spawned task so panics are caught.
-- `Generation` (in `batch_inner.rs`) tags batches so stale timer/resource messages can be matched to the right batch. Generations restart when a key's queue is recreated, so message handlers must re-check readiness (e.g. `is_generation_ready`) rather than trust a message alone.
-- `policies/`: `BatchingPolicy` is a pure decision layer. `mod.rs` handles shared logic (rejection when the queue is full, timeout/resource events) and dispatches `on_add` / `on_finish` to one file per policy (`immediate`, `size`, `duration`, `balanced`), returning `OnAdd` / `OnGenerationEvent` / `OnFinish` actions for the worker to execute. Policies have unit tests using `policies/test_utils.rs`.
-- `metrics.rs`: `MetricsRecorder` trait (all methods default to no-ops) and `MetricsRecorderFactory`, which the batcher calls with its name. The worker reports gauges after each state change.
+- `batch.rs`: per-batch state machine (`New → Acquiring → ReadyForProcessing → Processing`), items, and deadline. `batch_inner.rs` does the actual resource acquisition and processing in a spawned task so panics are caught.
+- `Generation` (in `batch_inner.rs`) tags batches so resource acquisition results can be matched to the right batch. Generations restart when a key's queue is recreated; see its doc comment for why that's safe.
+- `policies/`: `BatchingPolicy` is a pure decision layer. `mod.rs` handles shared logic (rejection when the queue is full, deadline and resource events) and dispatches `on_add` / `on_finish` to one file per policy (`immediate`, `size`, `duration`, `balanced`), returning `OnAdd` / `OnDeadline` / `OnGenerationEvent` / `OnFinish` actions for the worker to execute. Policies have unit tests using `policies/test_utils.rs`.
+- `metrics.rs`: `MetricsRecorder` trait (all methods default to no-ops) and `MetricsRecorderFactory`, which the batcher calls with its name. The worker records gauges when the recorder's `gauge_recording()` says to.
 - `soft_assert!` (in `lib.rs`) is for internal invariants: it panics in debug/tests but only logs a warning in release.
 - Tracing: each processed batch gets one span that `follows_from` every requesting span, and each caller gets a "batch finished" span linking back (see comments in `Batcher::add`). `tests/tracing.rs` pins this span structure. It must stay in its own test binary, because tracing-core can cache a callsite as disabled when another test thread hits it first (tokio-rs/tracing#2874).
 

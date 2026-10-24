@@ -1,9 +1,20 @@
-use std::{collections::HashMap, fmt::Debug, time::Duration};
+//! The worker: one task that owns all batch state, driven by an event loop.
+//!
+//! The worker only spawns tasks to run user code ([`Processor::acquire_resources`] and
+//! [`Processor::process`]), because running it concurrently is the point of batching. Everything
+//! else, including waiting for batch deadlines, happens in the loop itself. That keeps a single
+//! owner for all state, so there are no races between the worker and its own helpers.
+
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt::Debug,
+    time::Duration,
+};
 
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
-    time::{Interval, MissedTickBehavior},
+    time::{Instant, Interval, MissedTickBehavior},
 };
 use tracing::{Span, debug, info};
 
@@ -14,7 +25,7 @@ use crate::{
     batch_queue::BatchQueue,
     limits::Limits,
     metrics::{BatchStats, GaugeRecording, MetricsRecorder},
-    policies::{BatchingPolicy, OnAdd, OnFinish, OnGenerationEvent},
+    policies::{BatchingPolicy, OnAdd, OnDeadline, OnFinish, OnGenerationEvent},
     processor::Processor,
 };
 
@@ -45,6 +56,12 @@ pub(crate) struct Worker<P: Processor> {
 
     /// Unprocessed batches, grouped by key `K`.
     batch_queues: HashMap<P::Key, BatchQueue<P>>,
+    /// When to check keys for batches whose deadlines have passed.
+    ///
+    /// The deadlines themselves live on the batches. An entry is only a reminder to check its key,
+    /// so it can outlive the batch it was made for: the batch may have been processed early, or
+    /// its queue removed. Checking then finds nothing ready and does nothing.
+    wake_ups: BTreeMap<Instant, Vec<P::Key>>,
 
     metrics_recorder: Box<dyn MetricsRecorder>,
     gauge_recording: GaugeRecording,
@@ -54,11 +71,10 @@ pub(crate) struct Worker<P: Processor> {
 
 /// Events which drive the worker.
 ///
-/// Spawned tasks (resource acquisition, timeouts) report their outcomes to the worker by
+/// Spawned tasks (resource acquisition and processing) report their outcomes to the worker by
 /// sending a message, and the worker performs the resulting batch state transitions when
 /// handling them, so it observes all events in message order.
 pub(crate) enum Message<P: Processor> {
-    TimedOut(P::Key, Generation),
     ResourcesAcquired {
         key: P::Key,
         generation: Generation,
@@ -81,11 +97,6 @@ pub(crate) enum Message<P: Processor> {
 impl<P: Processor> Debug for Message<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Message::TimedOut(key, generation) => f
-                .debug_tuple("TimedOut")
-                .field(key)
-                .field(generation)
-                .finish(),
             Message::ResourcesAcquired {
                 key,
                 generation,
@@ -146,8 +157,8 @@ impl<P: Processor> Worker<P> {
     ) -> (WorkerHandle, WorkerDropGuard, mpsc::Sender<BatchItem<P>>) {
         let (item_tx, item_rx) = mpsc::channel(limits.max_items_awaiting_worker);
         // Unbounded so spawned tasks never wait to report back. Only internal tasks send on this
-        // channel, at most one message each per timer, resource acquisition or processing task,
-        // so in-flight work bounds its size.
+        // channel, at most one message each per resource acquisition or processing task, so
+        // in-flight work bounds its size.
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
 
         let (control_tx, control_rx) = mpsc::channel(1);
@@ -183,6 +194,7 @@ impl<P: Processor> Worker<P> {
             batching_policy,
 
             batch_queues: HashMap::new(),
+            wake_ups: BTreeMap::new(),
 
             metrics_recorder,
             gauge_recording,
@@ -226,7 +238,9 @@ impl<P: Processor> Worker<P> {
             OnAdd::AddAndProcessAfter(duration) => {
                 batch_queue.push(item);
 
-                batch_queue.process_after(duration, self.msg_tx.clone());
+                let deadline = Instant::now() + duration;
+                batch_queue.set_deadline(deadline);
+                self.wake_ups.entry(deadline).or_default().push(key);
             }
             OnAdd::Add => {
                 batch_queue.push(item);
@@ -277,19 +291,33 @@ impl<P: Processor> Worker<P> {
         batch_queue.process_next_batch(self.processor.clone(), self.msg_tx.clone());
     }
 
-    fn on_timeout(&mut self, key: P::Key, generation: Generation) {
-        // Unlike the other message handlers, the queue may have been removed: timers are not
-        // tracked by the in-flight counters, so a TimedOut message can outlive its queue.
+    /// Check every key whose wake-up time has passed.
+    fn on_wake_up(&mut self) {
+        let now = Instant::now();
+        while let Some(entry) = self.wake_ups.first_entry() {
+            let wake_up_time = *entry.key();
+            if wake_up_time > now {
+                break;
+            }
+            let batch_keys = entry.remove();
+            for key in batch_keys {
+                self.on_deadline(key);
+            }
+        }
+    }
+
+    /// Process the key's next ready batch, if the batching policy allows it.
+    fn on_deadline(&mut self, key: P::Key) {
         let Some(batch_queue) = self.batch_queues.get_mut(&key) else {
-            debug!("Timeout for a batch queue which no longer exists. Ignoring.");
+            debug!("Deadline for a batch queue which no longer exists. Ignoring.");
             return;
         };
 
-        match self.batching_policy.on_timeout(generation, batch_queue) {
-            OnGenerationEvent::Process => {
-                self.process_generation(key, generation);
+        match self.batching_policy.on_deadline(batch_queue) {
+            OnDeadline::ProcessNextReady => {
+                self.process_next_ready_batch(&key);
             }
-            OnGenerationEvent::DoNothing => {}
+            OnDeadline::DoNothing => {}
         }
     }
 
@@ -421,6 +449,10 @@ impl<P: Processor> Worker<P> {
                     self.record_gauges();
                 }
 
+                _ = sleep_until_first(&self.wake_ups) => {
+                    self.on_wake_up();
+                }
+
                 Some(item) = self.item_rx.recv() => {
                     self.add(item);
                 }
@@ -432,9 +464,6 @@ impl<P: Processor> Worker<P> {
                         }
                         Message::ResourceAcquisitionFailed { key, generation, err, acquisition_duration } => {
                             self.on_resource_acquisition_failed(key, generation, err, acquisition_duration);
-                        }
-                        Message::TimedOut(key, generation) => {
-                            self.on_timeout(key, generation);
                         }
                         Message::Finished { key, metrics } => {
                             self.on_batch_finished(&key, metrics);
@@ -462,6 +491,14 @@ async fn tick(interval: &mut Option<Interval>) {
         Some(interval) => {
             interval.tick().await;
         }
+        None => std::future::pending().await,
+    }
+}
+
+/// Waits until the earliest wake-up time, or forever if there are none.
+async fn sleep_until_first<K>(wake_ups: &BTreeMap<Instant, Vec<K>>) {
+    match wake_ups.keys().next() {
+        Some(&wake_up) => tokio::time::sleep_until(wake_up).await,
         None => std::future::pending().await,
     }
 }
@@ -529,6 +566,7 @@ mod test {
     use tracing::Span;
 
     use super::*;
+    use crate::{OnFull, error::BatchResult};
 
     #[derive(Debug, Clone)]
     struct SimpleBatchProcessor;
@@ -573,6 +611,7 @@ mod test {
             limits: Limits::builder().max_batch_size(1).build(),
             batching_policy: BatchingPolicy::Size,
             batch_queues: HashMap::new(),
+            wake_ups: BTreeMap::new(),
             metrics_recorder: Box::new(crate::metrics::NoopMetricsRecorder),
             gauge_recording: GaugeRecording::OnDemand,
             gauge_interval: None,
@@ -610,14 +649,60 @@ mod test {
         );
     }
 
+    type OutputReceiver = oneshot::Receiver<(BatchResult<String, String>, Option<Span>)>;
+
+    fn new_item(key: &str, input: &str) -> (BatchItem<SimpleBatchProcessor>, OutputReceiver) {
+        let (tx, rx) = oneshot::channel();
+        let item = BatchItem {
+            key: key.to_string(),
+            input: input.to_string(),
+            submitted_at: tokio::time::Instant::now(),
+            received_at: None,
+            tx,
+            requesting_span: Span::none(),
+        };
+        (item, rx)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wake_up_for_an_earlier_batch_does_not_process_a_later_one() {
+        let mut worker = new_worker();
+        worker.limits = Limits::builder().max_batch_size(2).build();
+        worker.batching_policy = BatchingPolicy::Duration(Duration::from_secs(10), OnFull::Process);
+
+        // The first batch fills up and is processed before its deadline, and the key's queue is
+        // removed once it's idle. Its wake-up is still pending.
+        let (item, _rx) = new_item("K1", "I1");
+        worker.add(item);
+        let (item, rx) = new_item("K1", "I2");
+        worker.add(item);
+        rx.await.unwrap().0.unwrap();
+        let Some(Message::Finished { key, metrics }) = worker.msg_rx.recv().await else {
+            panic!("expected Finished message");
+        };
+        worker.on_batch_finished(&key, metrics);
+        assert!(worker.batch_queues.is_empty());
+
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let (item, _rx) = new_item("K1", "I3");
+        worker.add(item);
+
+        // The first batch's wake-up: the new batch's deadline hasn't passed yet.
+        tokio::time::advance(Duration::from_secs(5)).await;
+        worker.on_wake_up();
+        assert_eq!(worker.batch_queues["K1"].processing(), 0);
+
+        // The new batch's own wake-up.
+        tokio::time::advance(Duration::from_secs(5)).await;
+        worker.on_wake_up();
+        assert_eq!(worker.batch_queues["K1"].processing(), 1);
+    }
+
     #[tokio::test]
-    async fn ignores_timeout_for_removed_batch_queue() {
-        // A timer can fire and enqueue a TimedOut message, after which the batch is processed
-        // anyway (e.g. it filled up) and the queue is removed once the key is idle. The stale
-        // TimedOut message must be ignored, not panic the worker.
+    async fn ignores_deadline_for_removed_batch_queue() {
         let mut worker = new_worker();
 
-        worker.on_timeout("K1".to_string(), Generation::default());
+        worker.on_deadline("K1".to_string());
     }
 
     #[tokio::test]

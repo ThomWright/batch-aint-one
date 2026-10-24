@@ -41,14 +41,16 @@ mod tests {
     use std::sync::Arc;
 
     use assert_matches::assert_matches;
-    use tokio::sync::{Notify, mpsc};
+    use tokio::{
+        sync::{Notify, mpsc},
+        time::Instant,
+    };
 
     use crate::{
         Limits,
-        batch_inner::Generation,
         batch_queue::BatchQueue,
         error::{ConcurrencyStatus, RejectionReason},
-        policies::BatchingPolicy,
+        policies::{BatchingPolicy, OnDeadline},
         worker::Message,
     };
 
@@ -92,7 +94,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn timeout_while_processing() {
         // Scenario: Duration policy, max_concurrency=1, batch_size=2
         // 1. Add 3 items (2 in first batch, 1 in second)
@@ -127,17 +129,12 @@ mod tests {
         assert_matches!(result, OnAdd::AddAndProcessAfter(_)); // New batch, set timeout
         let notify2 = Arc::new(Notify::new());
         queue.push(new_item((), notify2.notified_owned()));
-        let (tx, mut timeout_rx) = mpsc::unbounded_channel();
-        queue.process_after(Duration::from_millis(1), tx);
+        queue.set_deadline(Instant::now() + Duration::from_millis(1));
 
         // Step 3: Second batch times out while first is still processing
-        let msg = timeout_rx.recv().await.unwrap(); // Wait for timeout signal
-        let second_gen = Generation::default().next();
-        assert_matches!(msg, Message::TimedOut(_, generation)=> {
-            assert_eq!(generation, second_gen);
-        });
-        let result = policy.on_timeout(second_gen, &queue);
-        assert_matches!(result, super::super::OnGenerationEvent::DoNothing); // Can't process, at max capacity
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let result = policy.on_deadline(&queue);
+        assert_matches!(result, OnDeadline::DoNothing); // Can't process, at max capacity
 
         // Step 4: First batch finishes
         notify1.notify_waiters(); // Let first batch complete

@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With `GaugeRecording::OnChange`, gauges are now also recorded after timeouts and resource acquisition, which can start processing a batch.
 - Batchers without metrics no longer compute gauges.
 
+### Internal
+
+- The `Duration` policy's deadlines are now handled in the worker's event loop, instead of spawning a timer task per batch. This removes a race where a late timer message could be matched to a later batch with the same key. It was harmless, but only because of how the `Duration` policy sets deadlines.
+
 ## 0.15.1
 
 ### Added

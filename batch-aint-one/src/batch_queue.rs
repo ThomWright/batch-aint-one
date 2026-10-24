@@ -1,6 +1,6 @@
-use std::{collections::VecDeque, fmt::Debug, time::Duration};
+use std::{collections::VecDeque, fmt::Debug};
 
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 
 use crate::{
     BatchError, Limits,
@@ -349,14 +349,10 @@ impl<P: Processor> BatchQueue<P> {
         self.increment_resource_acquisition_count();
     }
 
-    /// Process the last batch after a delay.
-    pub(crate) fn process_after(
-        &mut self,
-        duration: Duration,
-        tx: mpsc::UnboundedSender<Message<P>>,
-    ) {
+    /// Make the last batch wait until `deadline` before it's ready to process.
+    pub(crate) fn set_deadline(&mut self, deadline: Instant) {
         let back = self.queue.back_mut().expect("Should always be non-empty");
-        back.process_after(duration, tx);
+        back.set_deadline(deadline);
     }
 }
 

@@ -3,6 +3,7 @@ use std::{fmt::Debug, iter, mem, sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
+    time::Instant,
 };
 use tracing::{Level, Span, info, instrument::WithSubscriber, span};
 
@@ -12,7 +13,6 @@ use crate::{
     error::BatchResult,
     metrics::BatchStats,
     processor::Processor,
-    timeout::TimeoutHandle,
     worker::Message,
 };
 
@@ -37,7 +37,8 @@ type SendOutput<O, E> = oneshot::Sender<(BatchResult<O, E>, Option<Span>)>;
 pub(crate) struct Batch<P: Processor> {
     inner: Arc<BatchInner<P>>,
     items: Vec<BatchItem<P>>,
-    timeout: TimeoutHandle<P>,
+    /// If set, the batch isn't ready to process until this time.
+    deadline: Option<Instant>,
     state: BatchState<P>,
 }
 
@@ -57,7 +58,7 @@ impl<P: Processor> Debug for Batch<P> {
         let Batch {
             inner,
             items,
-            timeout,
+            deadline,
             state,
         } = self;
         f.debug_struct("Batch")
@@ -65,7 +66,7 @@ impl<P: Processor> Debug for Batch<P> {
             .field("key", &inner.key())
             .field("generation", &inner.generation())
             .field("items_len", &items.len())
-            .field("timeout", &timeout)
+            .field("deadline", &deadline)
             .field("state", &state)
             .finish()
     }
@@ -92,25 +93,19 @@ impl<P: Processor> Debug for BatchState<P> {
 
 impl<P: Processor> Batch<P> {
     pub(crate) fn new(batcher_name: String, key: P::Key) -> Self {
-        let state = Arc::new(BatchInner::new(batcher_name.clone(), key.clone()));
-
-        let timeout = TimeoutHandle::new(key.clone(), state.generation());
-
         Self {
-            inner: state,
+            inner: Arc::new(BatchInner::new(batcher_name, key)),
             items: Vec::new(),
-            timeout,
+            deadline: None,
             state: BatchState::New,
         }
     }
 
     pub(crate) fn new_generation(&self) -> Self {
-        let state = self.inner.new_generation();
-        let timeout = TimeoutHandle::new(self.inner.key().clone(), state.generation());
         Self {
-            inner: Arc::new(state),
+            inner: Arc::new(self.inner.new_generation()),
             items: Vec::new(),
-            timeout,
+            deadline: None,
             state: BatchState::New,
         }
     }
@@ -144,7 +139,7 @@ impl<P: Processor> Batch<P> {
         // To be ready, we must have some items to process...
         !self.is_empty()
             // ... and if there is a timeout deadline, it must be in the past
-            && self.timeout.is_ready_for_processing()
+            && self.deadline.is_none_or(|deadline| deadline <= Instant::now())
             // ... and we must be in a processable state, i.e. not acquiring resources
             && self.is_processable()
     }
@@ -161,11 +156,8 @@ impl<P: Processor> Batch<P> {
     }
 
     pub(crate) fn has_timeout_expired(&self) -> bool {
-        self.timeout.is_expired()
-    }
-
-    fn cancel_timeout(&mut self) {
-        self.timeout.cancel();
+        self.deadline
+            .is_some_and(|deadline| deadline <= Instant::now())
     }
 
     pub(crate) fn has_started_acquiring(&self) -> bool {
@@ -247,8 +239,6 @@ impl<P: Processor> Batch<P> {
             "should not try to process a batch that is in state {:?}",
             self.state
         );
-
-        self.cancel_timeout();
 
         let resources = self.take_resources();
 
@@ -386,12 +376,8 @@ impl<P: Processor> Batch<P> {
         }
     }
 
-    pub(crate) fn process_after(
-        &mut self,
-        duration: Duration,
-        tx: mpsc::UnboundedSender<Message<P>>,
-    ) {
-        self.timeout.set_timeout(duration, tx);
+    pub(crate) fn set_deadline(&mut self, deadline: Instant) {
+        self.deadline = Some(deadline);
     }
 
     fn first_submission(&self) -> Option<tokio::time::Instant> {
@@ -413,8 +399,8 @@ mod tests {
     use std::time::Duration;
 
     use tokio::{
-        sync::{mpsc, oneshot},
-        time,
+        sync::oneshot,
+        time::{self, Instant},
     };
     use tracing::Span;
 
@@ -457,8 +443,7 @@ mod tests {
             requesting_span: Span::none(),
         });
 
-        let (tx, _rx) = mpsc::unbounded_channel();
-        batch.process_after(Duration::from_millis(50), tx);
+        batch.set_deadline(Instant::now() + Duration::from_millis(50));
 
         assert!(!batch.is_ready(), "should not be processable initially");
 

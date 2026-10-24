@@ -42,7 +42,6 @@ mod limits;
 pub mod metrics;
 mod policies;
 mod processor;
-mod timeout;
 mod worker;
 
 pub use batcher::{Batcher, BatcherBuilder};

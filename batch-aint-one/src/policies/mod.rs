@@ -101,10 +101,17 @@ pub(crate) enum OnAdd {
     Add,
 }
 
-/// Action to take when a specific generation times out or acquires resources.
+/// Action to take when a specific generation acquires resources.
 #[derive(Debug)]
 pub(crate) enum OnGenerationEvent {
     Process,
+    DoNothing,
+}
+
+/// Action to take when a batch's deadline is reached.
+#[derive(Debug)]
+pub(crate) enum OnDeadline {
+    ProcessNextReady,
     DoNothing,
 }
 
@@ -171,15 +178,11 @@ impl BatchingPolicy {
         }
     }
 
-    pub(crate) fn on_timeout<P: Processor>(
-        &self,
-        generation: Generation,
-        batch_queue: &BatchQueue<P>,
-    ) -> OnGenerationEvent {
-        if batch_queue.at_max_total_processing_capacity() {
-            OnGenerationEvent::DoNothing
+    pub(crate) fn on_deadline<P: Processor>(&self, batch_queue: &BatchQueue<P>) -> OnDeadline {
+        if !batch_queue.at_max_total_processing_capacity() && batch_queue.has_batch_ready() {
+            OnDeadline::ProcessNextReady
         } else {
-            Self::process_generation_if_ready(generation, batch_queue)
+            OnDeadline::DoNothing
         }
     }
 
