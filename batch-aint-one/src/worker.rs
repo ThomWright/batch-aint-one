@@ -30,8 +30,8 @@ pub(crate) struct Worker<P: Processor> {
     /// Receives signals to process a batch for key `K`.
     msg_rx: mpsc::UnboundedReceiver<Message<P>>,
 
-    /// Used to send messages to the worker related to shutdown.
-    shutdown_notifier_rx: mpsc::Receiver<ShutdownMessage>,
+    /// Receives requests from [`WorkerHandle`].
+    control_rx: mpsc::Receiver<ControlMessage>,
 
     /// Used to signal to listeners that the worker has shut down.
     shutdown_notifiers: Vec<oneshot::Sender<()>>,
@@ -110,7 +110,7 @@ impl<P: Processor> Debug for Message<P> {
     }
 }
 
-pub(crate) enum ShutdownMessage {
+pub(crate) enum ControlMessage {
     Register(ShutdownNotifier),
     ShutDown,
 }
@@ -122,7 +122,7 @@ pub(crate) struct ShutdownNotifier(oneshot::Sender<()>);
 /// Used for shutting down the worker and waiting for it to finish.
 #[derive(Debug, Clone)]
 pub struct WorkerHandle {
-    shutdown_tx: mpsc::Sender<ShutdownMessage>,
+    control_tx: mpsc::Sender<ControlMessage>,
 }
 
 /// Aborts the worker task when dropped.
@@ -145,7 +145,7 @@ impl<P: Processor> Worker<P> {
         // so in-flight work bounds its size.
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
 
-        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let (control_tx, control_rx) = mpsc::channel(1);
 
         let mut worker = Worker {
             batcher_name,
@@ -156,7 +156,7 @@ impl<P: Processor> Worker<P> {
             msg_tx,
             msg_rx,
 
-            shutdown_notifier_rx: shutdown_rx,
+            control_rx,
             shutdown_notifiers: Vec::new(),
 
             shutting_down: false,
@@ -174,7 +174,7 @@ impl<P: Processor> Worker<P> {
         });
 
         (
-            WorkerHandle { shutdown_tx },
+            WorkerHandle { control_tx },
             WorkerDropGuard { handle },
             item_tx,
         )
@@ -229,7 +229,7 @@ impl<P: Processor> Worker<P> {
             }
         }
 
-        self.report_gauges();
+        self.record_gauges();
     }
 
     /// Get the batch queue for the given key, which should always exist when handling an event
@@ -316,7 +316,7 @@ impl<P: Processor> Worker<P> {
         batch_queue.fail_generation(generation, err);
 
         self.process_next_and_clean_up(&key);
-        self.report_gauges();
+        self.record_gauges();
     }
 
     fn on_batch_finished(&mut self, key: &P::Key, metrics: BatchStats) {
@@ -327,10 +327,10 @@ impl<P: Processor> Worker<P> {
         batch_queue.mark_processed();
 
         self.process_next_and_clean_up(key);
-        self.report_gauges();
+        self.record_gauges();
     }
 
-    fn report_gauges(&self) {
+    fn record_gauges(&self) {
         self.metrics_recorder
             .active_keys_changed(self.batch_queues.len());
 
@@ -385,12 +385,12 @@ impl<P: Processor> Worker<P> {
     async fn run(&mut self) {
         loop {
             tokio::select! {
-                Some(msg) = self.shutdown_notifier_rx.recv() => {
+                Some(msg) = self.control_rx.recv() => {
                     match msg {
-                        ShutdownMessage::Register(notifier) => {
+                        ControlMessage::Register(notifier) => {
                            self.shutdown_notifiers.push(notifier.0);
                         }
-                        ShutdownMessage::ShutDown => {
+                        ControlMessage::ShutDown => {
                             self.shutting_down = true;
                         }
                     }
@@ -442,7 +442,7 @@ impl WorkerHandle {
     pub async fn shut_down(&self) {
         info!("Sending shut down signal to batch worker");
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.
-        let _ = self.shutdown_tx.send(ShutdownMessage::ShutDown).await;
+        let _ = self.control_tx.send(ControlMessage::ShutDown).await;
     }
 
     /// Wait for the worker to finish.
@@ -450,8 +450,8 @@ impl WorkerHandle {
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.
         let (notifier_tx, notifier_rx) = oneshot::channel();
         let _ = self
-            .shutdown_tx
-            .send(ShutdownMessage::Register(ShutdownNotifier(notifier_tx)))
+            .control_tx
+            .send(ControlMessage::Register(ShutdownNotifier(notifier_tx)))
             .await;
         // Wait for the notifier to be dropped.
         let _ = notifier_rx.await;
@@ -503,7 +503,7 @@ mod test {
     fn new_worker() -> Worker<SimpleBatchProcessor> {
         let (_item_tx, item_rx) = mpsc::channel(1);
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        let (_shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let (_control_tx, control_rx) = mpsc::channel(1);
 
         Worker {
             batcher_name: "test".to_string(),
@@ -511,7 +511,7 @@ mod test {
             processor: SimpleBatchProcessor,
             msg_tx,
             msg_rx,
-            shutdown_notifier_rx: shutdown_rx,
+            control_rx,
             shutdown_notifiers: Vec::new(),
             shutting_down: false,
             limits: Limits::builder().max_batch_size(1).build(),
@@ -673,7 +673,7 @@ mod test {
             .or_insert_with(|| BatchQueue::new("test".to_string(), "B".to_string(), limits));
         queue_b.push(dummy_item("B"));
 
-        worker.report_gauges();
+        worker.record_gauges();
 
         let (total, max_per_key) = *gauges.lock().unwrap();
         assert_eq!(total, 4, "should sum items across both keys");
