@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `Limits::max_items_awaiting_worker`, to override how many items can wait for the background worker to accept them before `add()` waits for room. Unlike the other limits it applies to the whole batcher, not per key. The default is unchanged.
+- `LimitsBuilder` and `BatcherBuilder` are now exported, so the API docs include their setters, e.g. each limit's default.
 
 ## 0.15.1
 
