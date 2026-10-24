@@ -1,9 +1,15 @@
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use batch_aint_one::{Batcher, BatchingPolicy, Limits, OnFull, Processor};
 use futures::future::join_all;
 use rstest::rstest;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{assert_elapsed, types::SimpleBatchProcessor};
 
@@ -298,4 +304,164 @@ async fn shut_down_respects_key_concurrency() {
 
     // The partial batch waits for the full batch to finish.
     assert_elapsed!(start, processing_duration * 2, Duration::from_millis(2));
+}
+
+/// Counts how many resource acquisitions and batches have finished.
+#[derive(Debug, Clone, Default)]
+struct CountingProcessor {
+    acquisition_duration: Duration,
+    processing_duration: Duration,
+    acquired: Arc<AtomicUsize>,
+    processed: Arc<AtomicUsize>,
+}
+
+impl Processor for CountingProcessor {
+    type Key = String;
+    type Input = String;
+    type Output = String;
+    type Error = String;
+    type Resources = ();
+
+    async fn acquire_resources(&self, _key: String) -> Result<(), String> {
+        tokio::time::sleep(self.acquisition_duration).await;
+        self.acquired.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn process(
+        &self,
+        _key: String,
+        inputs: impl Iterator<Item = String> + Send,
+        _resources: (),
+    ) -> Result<Vec<String>, String> {
+        tokio::time::sleep(self.processing_duration).await;
+        self.processed.fetch_add(1, Ordering::SeqCst);
+        Ok(inputs.collect())
+    }
+}
+
+/// Cancel a caller's `add`, then drop the last `Batcher`.
+async fn drop_last_batcher<P: Processor>(add: JoinHandle<()>, batcher: Batcher<P>) {
+    add.abort();
+    let _ = add.await;
+    drop(batcher);
+}
+
+#[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+async fn dropping_last_batcher_waits_for_processing() {
+    tokio::time::pause();
+
+    let processing_duration = Duration::from_millis(500);
+    let processor = CountingProcessor {
+        processing_duration,
+        ..Default::default()
+    };
+    let processed = Arc::clone(&processor.processed);
+
+    let batcher = Batcher::builder()
+        .name("dropping_last_batcher_waits_for_processing")
+        .processor(processor)
+        .limits(Limits::builder().max_batch_size(1).build())
+        .batching_policy(BatchingPolicy::Size)
+        .build();
+
+    let worker = batcher.worker_handle();
+
+    let start = tokio::time::Instant::now();
+
+    let add = {
+        let batcher = batcher.clone();
+        tokio::spawn(async move {
+            let _ = batcher.add("key".to_string(), "item".to_string()).await;
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(1)).await;
+
+    drop_last_batcher(add, batcher).await;
+    worker.wait_for_shutdown().await;
+
+    assert_eq!(processed.load(Ordering::SeqCst), 1);
+    assert_elapsed!(start, processing_duration, Duration::from_millis(2));
+}
+
+#[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+async fn dropping_last_batcher_waits_for_acquisition_without_processing() {
+    tokio::time::pause();
+
+    let acquisition_duration = Duration::from_millis(500);
+    let processor = CountingProcessor {
+        acquisition_duration,
+        ..Default::default()
+    };
+    let acquired = Arc::clone(&processor.acquired);
+    let processed = Arc::clone(&processor.processed);
+
+    let batcher = Batcher::builder()
+        .name("dropping_last_batcher_waits_for_acquisition_without_processing")
+        .processor(processor)
+        .limits(Limits::builder().max_batch_size(3).build())
+        // Starts acquiring resources as soon as an item is added.
+        .batching_policy(BatchingPolicy::Immediate)
+        .build();
+
+    let worker = batcher.worker_handle();
+
+    let start = tokio::time::Instant::now();
+
+    let add = {
+        let batcher = batcher.clone();
+        tokio::spawn(async move {
+            let _ = batcher.add("key".to_string(), "item".to_string()).await;
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(1)).await;
+
+    drop_last_batcher(add, batcher).await;
+    worker.wait_for_shutdown().await;
+
+    assert_eq!(acquired.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        processed.load(Ordering::SeqCst),
+        0,
+        "Nothing is waiting for the output, so the batch shouldn't be processed"
+    );
+    assert_elapsed!(start, acquisition_duration, Duration::from_millis(2));
+}
+
+#[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+async fn dropping_last_batcher_drops_unstarted_batches() {
+    tokio::time::pause();
+
+    let processor = CountingProcessor::default();
+    let acquired = Arc::clone(&processor.acquired);
+    let processed = Arc::clone(&processor.processed);
+
+    let batcher = Batcher::builder()
+        .name("dropping_last_batcher_drops_unstarted_batches")
+        .processor(processor)
+        .limits(Limits::builder().max_batch_size(3).build())
+        .batching_policy(BatchingPolicy::Size)
+        .build();
+
+    let worker = batcher.worker_handle();
+
+    let add = {
+        let batcher = batcher.clone();
+        tokio::spawn(async move {
+            let _ = batcher.add("key".to_string(), "item".to_string()).await;
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(1)).await;
+
+    drop_last_batcher(add, batcher).await;
+    worker.wait_for_shutdown().await;
+
+    assert_eq!(acquired.load(Ordering::SeqCst), 0);
+    assert_eq!(processed.load(Ordering::SeqCst), 0);
 }

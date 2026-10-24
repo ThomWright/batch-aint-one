@@ -4,6 +4,9 @@
 //! [`Processor::process`]), because running it concurrently is the point of batching. Everything
 //! else, including waiting for batch deadlines, happens in the loop itself. That keeps a single
 //! owner for all state, so there are no races between the worker and its own helpers.
+//!
+//! The worker never cancels user code. It only exits once every task it spawned has reported
+//! back, so when it has exited, no user code it started is still running.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -13,7 +16,6 @@ use std::{
 
 use tokio::{
     sync::{mpsc, oneshot},
-    task::JoinHandle,
     time::{Instant, Interval, MissedTickBehavior},
 };
 use tracing::{Span, debug, info};
@@ -144,12 +146,6 @@ pub struct WorkerHandle {
     control_tx: mpsc::Sender<ControlMessage>,
 }
 
-/// Aborts the worker task when dropped.
-#[derive(Debug)]
-pub(crate) struct WorkerDropGuard {
-    handle: JoinHandle<()>,
-}
-
 impl<P: Processor> Worker<P> {
     pub fn spawn(
         batcher_name: String,
@@ -157,7 +153,7 @@ impl<P: Processor> Worker<P> {
         limits: Limits,
         batching_policy: BatchingPolicy,
         metrics_recorder: Box<dyn MetricsRecorder>,
-    ) -> (WorkerHandle, WorkerDropGuard, mpsc::Sender<BatchItem<P>>) {
+    ) -> (WorkerHandle, mpsc::Sender<BatchItem<P>>) {
         let (item_tx, item_rx) = mpsc::channel(limits.max_items_awaiting_worker);
         // Unbounded so spawned tasks never wait to report back. Only internal tasks send on this
         // channel, at most one message each per resource acquisition or processing task, so
@@ -205,15 +201,11 @@ impl<P: Processor> Worker<P> {
             gauge_interval,
         };
 
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             worker.run().await;
         });
 
-        (
-            WorkerHandle { control_tx },
-            WorkerDropGuard { handle },
-            item_tx,
-        )
+        (WorkerHandle { control_tx }, item_tx)
     }
 
     /// Add an item to the batch.
@@ -435,6 +427,63 @@ impl<P: Processor> Worker<P> {
         }
     }
 
+    /// Wait for every in-flight resource acquisition and processing task to finish, after the
+    /// last [`Batcher`](crate::Batcher) has been dropped.
+    ///
+    /// Nothing can be waiting for an output, so batches which haven't started are dropped, and so
+    /// are resources acquired for them. Only control requests and reports from spawned tasks are
+    /// handled here, so no new work can start.
+    async fn finish_in_flight(&mut self) {
+        let mut in_flight: usize = self.batch_queues.values().map(BatchQueue::in_flight).sum();
+        self.batch_queues.clear();
+        self.wake_ups.clear();
+        info!(
+            "Batch worker '{}' is shutting down, waiting for {} in-flight batches",
+            &self.batcher_name, in_flight
+        );
+        if self.gauge_recording == GaugeRecording::OnChange {
+            self.record_gauges();
+        }
+
+        while in_flight > 0 {
+            tokio::select! {
+                Some(msg) = self.control_rx.recv() => {
+                    match msg {
+                        ControlMessage::Register(notifier) => {
+                            self.shutdown_notifiers.push(notifier.0);
+                        }
+                        // Already shutting down.
+                        ControlMessage::ShutDown => {}
+                        ControlMessage::RecordGauges(done) => {
+                            self.record_gauges();
+                            // The caller may have stopped waiting, which is fine.
+                            let _ = done.send(());
+                        }
+                    }
+                }
+
+                Some(msg) = self.msg_rx.recv() => {
+                    match msg {
+                        Message::ResourcesAcquired { acquisition_duration, .. } => {
+                            self.metrics_recorder
+                                .resource_acquisition_completed(acquisition_duration, true);
+                        }
+                        Message::ResourceAcquisitionFailed { acquisition_duration, .. } => {
+                            self.metrics_recorder
+                                .resource_acquisition_completed(acquisition_duration, false);
+                        }
+                        Message::Finished { metrics, .. } => {
+                            self.metrics_recorder.batch_completed(&metrics);
+                        }
+                    }
+                    in_flight -= 1;
+                }
+            }
+        }
+
+        self.record_gauges();
+    }
+
     fn all_keys_idle(&self) -> bool {
         self.batch_queues.values().all(|q| q.is_idle())
     }
@@ -470,7 +519,15 @@ impl<P: Processor> Worker<P> {
                 item = self.item_rx.recv(), if !self.items_drained => {
                     match item {
                         Some(item) => self.add(item),
-                        None => self.items_drained = true,
+                        // While shutting down, the channel ends because the worker closed it, or
+                        // because every `Batcher` was dropped. Either way, shutdown carries on
+                        // processing every batch, as requested.
+                        None if self.shutting_down => self.items_drained = true,
+                        // Every `Batcher` has been dropped.
+                        None => {
+                            self.finish_in_flight().await;
+                            return;
+                        }
                     }
                 }
 
@@ -570,7 +627,11 @@ impl WorkerHandle {
         let _ = done_rx.await;
     }
 
-    /// Wait for the worker to finish.
+    /// Wait for the worker to exit, either after [`shut_down()`](Self::shut_down) or once the last
+    /// [`Batcher`](crate::Batcher) has been dropped.
+    ///
+    /// Once this returns, every [`Processor::acquire_resources`] and [`Processor::process`] call
+    /// the worker started has returned. So if any of them never returns, neither does this.
     pub async fn wait_for_shutdown(&self) {
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.
         let (notifier_tx, notifier_rx) = oneshot::channel();
@@ -580,13 +641,6 @@ impl WorkerHandle {
             .await;
         // Wait for the notifier to be dropped.
         let _ = notifier_rx.await;
-    }
-}
-
-impl Drop for WorkerDropGuard {
-    fn drop(&mut self) {
-        info!("Aborting batch worker");
-        self.handle.abort();
     }
 }
 
@@ -740,7 +794,7 @@ mod test {
 
     #[tokio::test]
     async fn item_channel_is_sized_by_max_items_awaiting_worker() {
-        let (_worker_handle, _worker_guard, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
+        let (_worker_handle, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
             "test".to_string(),
             SimpleBatchProcessor,
             Limits::builder().max_items_awaiting_worker(5).build(),
@@ -753,7 +807,7 @@ mod test {
 
     #[tokio::test]
     async fn simple_test_over_channel() {
-        let (_worker_handle, _worker_guard, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
+        let (_worker_handle, item_tx) = Worker::<SimpleBatchProcessor>::spawn(
             "test".to_string(),
             SimpleBatchProcessor,
             Limits::builder().max_batch_size(2).build(),

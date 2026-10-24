@@ -100,6 +100,11 @@ impl<P: Processor> BatchQueue<P> {
         self.is_empty() && self.processing == 0 && self.pre_acquiring == 0
     }
 
+    /// How many batches are acquiring resources or processing.
+    pub(crate) fn in_flight(&self) -> usize {
+        self.pre_acquiring + self.processing
+    }
+
     pub(crate) fn processing(&self) -> usize {
         self.processing
     }

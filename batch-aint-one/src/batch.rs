@@ -2,7 +2,6 @@ use std::{fmt::Debug, iter, mem, sync::Arc, time::Duration};
 
 use tokio::{
     sync::{mpsc, oneshot},
-    task::JoinHandle,
     time::Instant,
 };
 use tracing::{Level, Span, info, instrument::WithSubscriber, span};
@@ -44,7 +43,7 @@ pub(crate) struct Batch<P: Processor> {
 
 enum BatchState<P: Processor> {
     New,
-    Acquiring(JoinHandle<()>),
+    Acquiring,
     ReadyForProcessing {
         resources: P::Resources,
         /// The span in which the resources were acquired.
@@ -78,8 +77,8 @@ impl<P: Processor> Debug for BatchState<P> {
             BatchState::New => {
                 write!(f, "New")
             }
-            BatchState::Acquiring(_) => {
-                write!(f, "Acquiring(<JoinHandle>)")
+            BatchState::Acquiring => {
+                write!(f, "Acquiring")
             }
             BatchState::ReadyForProcessing { .. } => {
                 write!(f, "ReadyForProcessing(<Resources>)")
@@ -192,7 +191,7 @@ impl<P: Processor> Batch<P> {
 
             // Spawn a new task so we can process multiple batches concurrently, without blocking the
             // run loop.
-            let handle = tokio::spawn(async move {
+            tokio::spawn(async move {
                 let start = tokio::time::Instant::now();
 
                 let result = inner_state
@@ -226,14 +225,14 @@ impl<P: Processor> Batch<P> {
                 }
             });
 
-            self.state = BatchState::Acquiring(handle);
+            self.state = BatchState::Acquiring;
         }
     }
 
     /// Store pre-acquired resources, making the batch ready for processing.
     pub(crate) fn resources_acquired(&mut self, resources: P::Resources, span: Span) {
         soft_assert!(
-            matches!(self.state, BatchState::Acquiring(_)),
+            matches!(self.state, BatchState::Acquiring),
             "resources acquired for a batch in state {:?}",
             self.state
         );
@@ -260,14 +259,7 @@ impl<P: Processor> Batch<P> {
     fn take_resources(&mut self) -> Option<(P::Resources, Span)> {
         match mem::replace(&mut self.state, BatchState::Processing) {
             BatchState::ReadyForProcessing { resources, span } => Some((resources, span)),
-            BatchState::New => None,
-            BatchState::Acquiring(handle) => {
-                // Unreachable when the caller has checked `is_processable`. Keep the handle so
-                // the acquisition task is still aborted when the batch is dropped.
-                self.state = BatchState::Acquiring(handle);
-                None
-            }
-            BatchState::Processing => None,
+            BatchState::New | BatchState::Acquiring | BatchState::Processing => None,
         }
     }
 
@@ -389,15 +381,6 @@ impl<P: Processor> Batch<P> {
 
     fn first_submission(&self) -> Option<tokio::time::Instant> {
         self.items.first().map(|item| item.submitted_at)
-    }
-}
-
-impl<P: Processor> Drop for Batch<P> {
-    fn drop(&mut self) {
-        // Cancel any ongoing resource acquisition
-        if let BatchState::Acquiring(handle) = &self.state {
-            handle.abort();
-        }
     }
 }
 

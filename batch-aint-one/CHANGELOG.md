@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Dropping the last `Batcher` no longer aborts the worker. Resource acquisition and processing already in progress run to completion, and `WorkerHandle::wait_for_shutdown()` now waits for them, instead of returning while they were still running. Batches which haven't started are still dropped, and so are resources acquired after the drop, without processing.
 - While shutting down, the worker processes batches without waiting for the batching policy: a partial batch doesn't wait to fill up, and a `Duration` batch doesn't wait for its deadline. The concurrency limits still apply. Previously, a `Size` policy's final partial batch could stop shutdown from ever completing.
 - Gauges are recorded once more when the worker shuts down, so the final values aren't left stale.
 - With `GaugeRecording::OnChange`, gauges are now also recorded after timeouts and resource acquisition, which can start processing a batch.

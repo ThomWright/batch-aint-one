@@ -49,8 +49,8 @@ Batcher::add(key, input) ──item_tx──▶ Worker (owns HashMap<Key, BatchQ
                                                       ResourceAcquisitionFailed, Finished}
 ```
 
-- `batcher.rs`: public handle. Cheap to clone; dropping the last clone aborts the worker (`WorkerDropGuard`). Graceful shutdown goes through `WorkerHandle`.
-- `worker.rs`: the event loop. The module doc explains why tasks are only spawned for user code. Spawned tasks never mutate state directly; they report back via `Message` and the worker applies the state transition, so all events are observed in message order. Batch deadlines live on the batches; the worker's `wake_ups` map only says when to re-check a key, so stale entries are harmless. Idle keys' queues are removed in `process_next_and_clean_up` to bound memory.
+- `batcher.rs`: public handle. Cheap to clone; when the last clone is dropped, the item channel closes and the worker drops unstarted batches, waits for in-flight work (`Worker::finish_in_flight`), then exits. Graceful shutdown goes through `WorkerHandle`.
+- `worker.rs`: the event loop. The module doc explains why tasks are only spawned for user code, and why the worker never cancels them. Spawned tasks never mutate state directly; they report back via `Message` and the worker applies the state transition, so all events are observed in message order. Batch deadlines live on the batches; the worker's `wake_ups` map only says when to re-check a key, so stale entries are harmless. Idle keys' queues are removed in `process_next_and_clean_up` to bound memory.
 - `batch_queue.rs`: per-key `VecDeque<Batch>` (always at least one, possibly empty, batch) plus `processing` / `pre_acquiring` counters that enforce `Limits::max_key_concurrency`.
 - `batch.rs`: per-batch state machine (`New → Acquiring → ReadyForProcessing → Processing`), items, and deadline. `batch_inner.rs` does the actual resource acquisition and processing in a spawned task so panics are caught.
 - `Generation` (in `batch_inner.rs`) tags batches so resource acquisition results can be matched to the right batch. Generations restart when a key's queue is recreated; see its doc comment for why that's safe.

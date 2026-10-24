@@ -11,7 +11,7 @@ use crate::{
     metrics::{MetricsRecorderFactory, NoopMetricsRecorder},
     policies::BatchingPolicy,
     processor::Processor,
-    worker::{Worker, WorkerDropGuard, WorkerHandle},
+    worker::{Worker, WorkerHandle},
 };
 
 /// Groups items to be processed in batches.
@@ -24,16 +24,15 @@ use crate::{
 ///
 /// ## Drop
 ///
-/// When the last instance of a `Batcher` is dropped, the worker task will be aborted (ungracefully
-/// shut down). Any callers still awaiting [`Batcher::add()`] will receive a
-/// [`BatchError::Rx`](crate::BatchError::Rx) error.
+/// When the last instance of a `Batcher` is dropped, nothing can still be waiting for an output,
+/// so the worker drops any batches which haven't started. Resource acquisition and processing
+/// already in progress run to completion, then the worker exits.
 ///
-/// If you want to shut down the worker gracefully, call [`WorkerHandle::shut_down()`].
+/// To process every batch first, call [`WorkerHandle::shut_down()`].
 #[derive(Debug)]
 pub struct Batcher<P: Processor> {
     name: String,
     worker: Arc<WorkerHandle>,
-    worker_guard: Arc<WorkerDropGuard>,
     item_tx: mpsc::Sender<BatchItem<P>>,
 }
 
@@ -60,7 +59,7 @@ impl<P: Processor> Batcher<P> {
 
         let batching_policy = batching_policy.normalise(limits);
 
-        let (handle, worker_guard, item_tx) = Worker::spawn(
+        let (handle, item_tx) = Worker::spawn(
             name.clone(),
             processor,
             limits,
@@ -71,7 +70,6 @@ impl<P: Processor> Batcher<P> {
         Self {
             name,
             worker: Arc::new(handle),
-            worker_guard: Arc::new(worker_guard),
             item_tx,
         }
     }
@@ -135,7 +133,6 @@ impl<P: Processor> Clone for Batcher<P> {
         Self {
             name: self.name.clone(),
             worker: self.worker.clone(),
-            worker_guard: self.worker_guard.clone(),
             item_tx: self.item_tx.clone(),
         }
     }
