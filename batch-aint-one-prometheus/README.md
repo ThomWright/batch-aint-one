@@ -43,6 +43,50 @@ All metrics are labelled with a `batcher` label, so multiple `Batcher` instances
 
 Use `BatchMetrics::with_prefix` to customise the metric name prefix (default: `batch`).
 
+### Recording gauges on scrape
+
+By default, batchers update the gauges after every event, which costs time proportional to the number of active keys. To update them only when Prometheus scrapes, use `GaugeRecording::OnDemand` and record the gauges in your scrape handler before gathering:
+
+```rust
+# use batch_aint_one::{Batcher, BatchingPolicy, Limits, Processor};
+# #[derive(Debug, Clone)]
+# struct MyProcessor;
+# impl Processor for MyProcessor {
+#     type Key = String;
+#     type Input = String;
+#     type Output = String;
+#     type Error = String;
+#     type Resources = ();
+#     async fn acquire_resources(&self, _key: String) -> Result<(), String> { Ok(()) }
+#     async fn process(&self, _key: String, inputs: impl Iterator<Item = String> + Send, _resources: ()) -> Result<Vec<String>, String> {
+#         Ok(inputs.collect())
+#     }
+# }
+use batch_aint_one::GaugeRecording;
+use batch_aint_one_prometheus::BatchMetrics;
+use prometheus::Registry;
+
+let registry = Registry::new();
+let metrics = BatchMetrics::new(&registry)
+    .unwrap()
+    .with_gauge_recording(GaugeRecording::OnDemand);
+
+tokio_test::block_on(async {
+let batcher = Batcher::builder()
+    .name("my-batcher")
+    .processor(MyProcessor)
+    .limits(Limits::builder().max_batch_size(10).build())
+    .batching_policy(BatchingPolicy::Immediate)
+    .metrics(Box::new(metrics))
+    .build();
+
+// In your scrape handler:
+batcher.worker_handle().record_gauges().await;
+let families = registry.gather();
+# assert!(families.iter().any(|f| f.name() == "batch_active_keys"));
+});
+```
+
 ## Metrics
 
 | Metric                                        | Type      | Labels           | Description                                                      |

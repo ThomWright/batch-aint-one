@@ -10,7 +10,7 @@ doctest!("../README.md");
 use std::fmt::Debug;
 use std::time::Duration;
 
-use batch_aint_one::{BatchStats, MetricsRecorder, MetricsRecorderFactory};
+use batch_aint_one::{BatchStats, GaugeRecording, MetricsRecorder, MetricsRecorderFactory};
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
 const DEFAULT_PREFIX: &str = "batch";
@@ -43,6 +43,7 @@ pub struct BatchMetrics {
     queue_depth_max_per_key: IntGaugeVec,
     queue_items: IntGaugeVec,
     queue_items_max_per_key: IntGaugeVec,
+    gauge_recording: GaugeRecording,
 }
 
 impl BatchMetrics {
@@ -209,7 +210,18 @@ impl BatchMetrics {
             queue_depth_max_per_key,
             queue_items,
             queue_items_max_per_key,
+            gauge_recording: GaugeRecording::OnChange,
         })
+    }
+
+    /// Set when batchers record gauges. Defaults to [`GaugeRecording::OnChange`].
+    ///
+    /// With [`GaugeRecording::OnDemand`], the gauges only update when
+    /// [`WorkerHandle::record_gauges()`](batch_aint_one::WorkerHandle::record_gauges) is called,
+    /// e.g. from your scrape handler before gathering metrics.
+    pub fn with_gauge_recording(mut self, gauge_recording: GaugeRecording) -> Self {
+        self.gauge_recording = gauge_recording;
+        self
     }
 
     /// Create a [`BatchMetricsRecorder`] for a specific batcher instance.
@@ -240,6 +252,10 @@ pub struct BatchMetricsRecorder {
 }
 
 impl MetricsRecorder for BatchMetricsRecorder {
+    fn gauge_recording(&self) -> GaugeRecording {
+        self.metrics.gauge_recording
+    }
+
     fn item_received(&self, channel_duration: Duration) {
         let name = &self.batcher_name;
         self.metrics
@@ -403,6 +419,28 @@ mod tests {
                 .iter()
                 .any(|l| l.name() == *k && l.value() == *v)
         })
+    }
+
+    #[test]
+    fn records_gauges_on_change_by_default() {
+        let metrics = BatchMetrics::new(&Registry::new()).unwrap();
+
+        assert_eq!(
+            metrics.recorder("test").gauge_recording(),
+            GaugeRecording::OnChange
+        );
+    }
+
+    #[test]
+    fn gauge_recording_can_be_set() {
+        let metrics = BatchMetrics::new(&Registry::new())
+            .unwrap()
+            .with_gauge_recording(GaugeRecording::OnDemand);
+
+        assert_eq!(
+            metrics.recorder("test").gauge_recording(),
+            GaugeRecording::OnDemand
+        );
     }
 
     #[test]

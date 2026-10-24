@@ -10,7 +10,22 @@ use std::{fmt::Debug, time::Duration};
 ///
 /// All methods are called synchronously on the background worker's event loop, so implementations
 /// should be cheap and non-blocking.
+///
+/// # Events and gauges
+///
+/// Most methods record an event, and are called once each time it happens.
+///
+/// The `*_changed` methods record gauges instead: the current value of something that goes up and
+/// down, such as the number of active keys. They are called together, with values taken at the
+/// same moment, at the times chosen by [`gauge_recording()`](Self::gauge_recording).
 pub trait MetricsRecorder: Debug + Send + Sync + 'static {
+    /// When to record gauges. Read once, when the batcher is created.
+    ///
+    /// Defaults to [`GaugeRecording::OnChange`].
+    fn gauge_recording(&self) -> GaugeRecording {
+        GaugeRecording::OnChange
+    }
+
     /// An item was received by the worker.
     ///
     /// `channel_duration` is the time from [`Batcher::add()`](crate::Batcher::add) being called
@@ -29,22 +44,22 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     /// Resource acquisition completed.
     fn resource_acquisition_completed(&self, _duration: Duration, _success: bool) {}
 
-    /// The number of active keys (keys with batch queues) changed.
+    /// Gauge: the number of active keys (keys with batch queues).
     fn active_keys_changed(&self, _count: usize) {}
 
-    /// The total number of batches currently processing changed.
+    /// Gauge: the total number of batches currently processing.
     ///
     /// `max_per_key` is the highest concurrency across any single key, useful for detecting
     /// hotspots without per-key labels.
     fn processing_concurrency_changed(&self, _total: usize, _max_per_key: usize) {}
 
-    /// The total number of batches queued for processing changed.
+    /// Gauge: the total number of batches queued for processing.
     ///
     /// `max_per_key` is the deepest queue across any single key, useful for detecting
     /// saturation without per-key labels.
     fn queue_depth_changed(&self, _total: usize, _max_per_key: usize) {}
 
-    /// The total number of items queued for processing changed.
+    /// Gauge: the total number of items queued for processing.
     ///
     /// Unlike [`queue_depth_changed`](Self::queue_depth_changed), which counts batches, this
     /// counts individual items, so it isn't affected by `max_batch_size`.
@@ -52,6 +67,34 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     /// `max_per_key` is the highest number of items queued across any single key, useful for
     /// detecting saturation without per-key labels.
     fn queue_items_changed(&self, _total: usize, _max_per_key: usize) {}
+}
+
+/// When a batcher records gauges with its [`MetricsRecorder`].
+///
+/// Gauges are also recorded once when the worker shuts down, in every mode, so the final values
+/// aren't left stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GaugeRecording {
+    /// After every event that may change a gauge, e.g. an item being added or a batch finishing.
+    ///
+    /// Gauges are always current, but recording them costs time proportional to the number of
+    /// active keys on every event. Values may repeat.
+    OnChange,
+    /// Periodically, at this interval.
+    ///
+    /// The cost is bounded, but values can be up to one interval old. Use this when you can't run
+    /// code just before metrics are collected, e.g. with exporters that push metrics, or
+    /// collection callbacks that can't `.await`.
+    ///
+    /// An interval of zero records after every change, like [`OnChange`](Self::OnChange).
+    Interval(Duration),
+    /// Only when [`WorkerHandle::record_gauges()`](crate::WorkerHandle::record_gauges) is
+    /// called.
+    ///
+    /// Costs nothing until then, but `record_gauges()` must be awaited before each collection to
+    /// keep the gauges current, e.g. in an async Prometheus scrape handler.
+    OnDemand,
 }
 
 /// Stats for a completed batch.
@@ -103,7 +146,12 @@ pub trait MetricsRecorderFactory: Debug + Send + Sync + 'static {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NoopMetricsRecorder;
 
-impl MetricsRecorder for NoopMetricsRecorder {}
+impl MetricsRecorder for NoopMetricsRecorder {
+    fn gauge_recording(&self) -> GaugeRecording {
+        // Nothing would see the gauges, so don't spend time on them.
+        GaugeRecording::OnDemand
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -130,14 +178,14 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct TestRecorder(Arc<Mutex<TestRecorderInner>>);
+    struct TestRecorder(Arc<Mutex<TestRecorderInner>>, GaugeRecording);
 
     #[derive(Debug)]
-    struct TestRecorderFactory(Arc<Mutex<TestRecorderInner>>);
+    struct TestRecorderFactory(Arc<Mutex<TestRecorderInner>>, GaugeRecording);
 
     impl MetricsRecorderFactory for TestRecorderFactory {
         fn create_recorder(&self, _batcher_name: &str) -> Box<dyn MetricsRecorder> {
-            Box::new(TestRecorder(self.0.clone()))
+            Box::new(TestRecorder(self.0.clone(), self.1))
         }
     }
 
@@ -145,12 +193,25 @@ mod tests {
         Arc<Mutex<TestRecorderInner>>,
         Box<dyn MetricsRecorderFactory>,
     ) {
+        test_metrics_with(GaugeRecording::OnChange)
+    }
+
+    fn test_metrics_with(
+        gauge_recording: GaugeRecording,
+    ) -> (
+        Arc<Mutex<TestRecorderInner>>,
+        Box<dyn MetricsRecorderFactory>,
+    ) {
         let state = Arc::new(Mutex::new(TestRecorderInner::default()));
-        let factory = Box::new(TestRecorderFactory(state.clone()));
+        let factory = Box::new(TestRecorderFactory(state.clone(), gauge_recording));
         (state, factory)
     }
 
     impl MetricsRecorder for TestRecorder {
+        fn gauge_recording(&self) -> GaugeRecording {
+            self.1
+        }
+
         fn item_received(&self, channel_duration: Duration) {
             let mut inner = self.0.lock().unwrap();
             inner.items_received += 1;
@@ -330,5 +391,70 @@ mod tests {
         assert!(inner.active_keys.iter().any(|&c| c > 0));
         // Key goes idle and is removed after the batch finishes.
         assert_eq!(*inner.active_keys.last().unwrap(), 0);
+    }
+
+    fn batcher_with(factory: Box<dyn MetricsRecorderFactory>) -> Batcher<SimpleProcessor> {
+        Batcher::builder()
+            .name("test")
+            .processor(SimpleProcessor::instant())
+            .limits(Limits::builder().max_batch_size(1).build())
+            .batching_policy(BatchingPolicy::Size)
+            .metrics(factory)
+            .build()
+    }
+
+    #[tokio::test]
+    async fn on_demand_records_gauges_only_when_asked() {
+        let (state, factory) = test_metrics_with(GaugeRecording::OnDemand);
+        let batcher = batcher_with(factory);
+
+        let r = batcher.add("A".to_string(), "1".to_string()).await;
+        assert!(r.is_ok());
+        assert!(
+            state.lock().unwrap().active_keys.is_empty(),
+            "should not record gauges until asked"
+        );
+
+        batcher.worker_handle().record_gauges().await;
+
+        assert_eq!(state.lock().unwrap().active_keys.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn interval_records_gauges_periodically() {
+        let (state, factory) = test_metrics_with(GaugeRecording::Interval(Duration::from_secs(10)));
+        let _batcher = batcher_with(factory);
+
+        // Ticks at 0s, 10s and 20s.
+        tokio::time::sleep(Duration::from_secs(25)).await;
+
+        assert_eq!(state.lock().unwrap().active_keys.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn records_gauges_on_shutdown() {
+        let (state, factory) = test_metrics_with(GaugeRecording::OnDemand);
+        let batcher = batcher_with(factory);
+
+        let r = batcher.add("A".to_string(), "1".to_string()).await;
+        assert!(r.is_ok());
+
+        shut_down(&batcher).await;
+
+        assert_eq!(state.lock().unwrap().active_keys, vec![0]);
+    }
+
+    #[tokio::test]
+    async fn zero_interval_records_gauges_on_change() {
+        let (state, factory) = test_metrics_with(GaugeRecording::Interval(Duration::ZERO));
+        let batcher = batcher_with(factory);
+
+        let r = batcher.add("A".to_string(), "1".to_string()).await;
+        assert!(r.is_ok());
+
+        assert!(
+            !state.lock().unwrap().active_keys.is_empty(),
+            "should have recorded gauges after the add"
+        );
     }
 }

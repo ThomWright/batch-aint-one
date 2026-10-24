@@ -3,6 +3,7 @@ use std::{collections::HashMap, fmt::Debug, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
+    time::{Interval, MissedTickBehavior},
 };
 use tracing::{Span, debug, info};
 
@@ -12,7 +13,7 @@ use crate::{
     batch_inner::Generation,
     batch_queue::BatchQueue,
     limits::Limits,
-    metrics::{BatchStats, MetricsRecorder},
+    metrics::{BatchStats, GaugeRecording, MetricsRecorder},
     policies::{BatchingPolicy, OnAdd, OnFinish, OnGenerationEvent},
     processor::Processor,
 };
@@ -46,6 +47,9 @@ pub(crate) struct Worker<P: Processor> {
     batch_queues: HashMap<P::Key, BatchQueue<P>>,
 
     metrics_recorder: Box<dyn MetricsRecorder>,
+    gauge_recording: GaugeRecording,
+    /// Set when `gauge_recording` is `Interval`.
+    gauge_interval: Option<Interval>,
 }
 
 /// Events which drive the worker.
@@ -113,6 +117,7 @@ impl<P: Processor> Debug for Message<P> {
 pub(crate) enum ControlMessage {
     Register(ShutdownNotifier),
     ShutDown,
+    RecordGauges(oneshot::Sender<()>),
 }
 
 pub(crate) struct ShutdownNotifier(oneshot::Sender<()>);
@@ -147,6 +152,19 @@ impl<P: Processor> Worker<P> {
 
         let (control_tx, control_rx) = mpsc::channel(1);
 
+        let gauge_recording = match metrics_recorder.gauge_recording() {
+            GaugeRecording::Interval(period) if period.is_zero() => GaugeRecording::OnChange,
+            gauge_recording => gauge_recording,
+        };
+        let gauge_interval = match gauge_recording {
+            GaugeRecording::Interval(period) => {
+                let mut interval = tokio::time::interval(period);
+                interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                Some(interval)
+            }
+            GaugeRecording::OnChange | GaugeRecording::OnDemand => None,
+        };
+
         let mut worker = Worker {
             batcher_name,
 
@@ -167,6 +185,8 @@ impl<P: Processor> Worker<P> {
             batch_queues: HashMap::new(),
 
             metrics_recorder,
+            gauge_recording,
+            gauge_interval,
         };
 
         let handle = tokio::spawn(async move {
@@ -228,8 +248,6 @@ impl<P: Processor> Worker<P> {
                 }
             }
         }
-
-        self.record_gauges();
     }
 
     /// Get the batch queue for the given key, which should always exist when handling an event
@@ -316,7 +334,6 @@ impl<P: Processor> Worker<P> {
         batch_queue.fail_generation(generation, err);
 
         self.process_next_and_clean_up(&key);
-        self.record_gauges();
     }
 
     fn on_batch_finished(&mut self, key: &P::Key, metrics: BatchStats) {
@@ -327,7 +344,6 @@ impl<P: Processor> Worker<P> {
         batch_queue.mark_processed();
 
         self.process_next_and_clean_up(key);
-        self.record_gauges();
     }
 
     fn record_gauges(&self) {
@@ -393,7 +409,16 @@ impl<P: Processor> Worker<P> {
                         ControlMessage::ShutDown => {
                             self.shutting_down = true;
                         }
+                        ControlMessage::RecordGauges(done) => {
+                            self.record_gauges();
+                            // The caller may have stopped waiting, which is fine.
+                            let _ = done.send(());
+                        }
                     }
+                }
+
+                _ = tick(&mut self.gauge_interval) => {
+                    self.record_gauges();
                 }
 
                 Some(item) = self.item_rx.recv() => {
@@ -418,11 +443,26 @@ impl<P: Processor> Worker<P> {
                 }
             }
 
+            if self.gauge_recording == GaugeRecording::OnChange {
+                self.record_gauges();
+            }
+
             if self.ready_to_shut_down() {
                 info!("Batch worker '{}' is shutting down", &self.batcher_name);
+                self.record_gauges();
                 return;
             }
         }
+    }
+}
+
+/// Waits for the next tick, or forever if there is no interval.
+async fn tick(interval: &mut Option<Interval>) {
+    match interval {
+        Some(interval) => {
+            interval.tick().await;
+        }
+        None => std::future::pending().await,
     }
 }
 
@@ -443,6 +483,22 @@ impl WorkerHandle {
         info!("Sending shut down signal to batch worker");
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.
         let _ = self.control_tx.send(ControlMessage::ShutDown).await;
+    }
+
+    /// Record the current gauges with the batcher's [`MetricsRecorder`], and wait until that's
+    /// done.
+    ///
+    /// Works with any [`GaugeRecording`] mode, but is mainly for
+    /// [`OnDemand`](GaugeRecording::OnDemand), e.g. calling it from a Prometheus scrape handler
+    /// before gathering metrics. Returns straight away if the worker has shut down.
+    pub async fn record_gauges(&self) {
+        let (done_tx, done_rx) = oneshot::channel();
+        // We ignore errors here - if the receiver has gone away, the worker is already shut down.
+        let _ = self
+            .control_tx
+            .send(ControlMessage::RecordGauges(done_tx))
+            .await;
+        let _ = done_rx.await;
     }
 
     /// Wait for the worker to finish.
@@ -518,6 +574,8 @@ mod test {
             batching_policy: BatchingPolicy::Size,
             batch_queues: HashMap::new(),
             metrics_recorder: Box::new(crate::metrics::NoopMetricsRecorder),
+            gauge_recording: GaugeRecording::OnDemand,
+            gauge_interval: None,
         }
     }
 

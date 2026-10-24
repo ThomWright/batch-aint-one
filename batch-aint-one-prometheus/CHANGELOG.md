@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `BatchMetrics::with_gauge_recording`, to choose when batchers update the gauges, e.g. only on scrape with `GaugeRecording::OnDemand`.
+
 ## 0.2.1
 
 ### Added

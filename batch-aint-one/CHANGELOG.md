@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Limits::max_items_awaiting_worker`, to override how many items can wait for the background worker to accept them before `add()` waits for room. Unlike the other limits it applies to the whole batcher, not per key. The default is unchanged.
 - `LimitsBuilder` and `BatcherBuilder` are now exported, so the API docs include their setters, e.g. each limit's default.
+- `MetricsRecorder::gauge_recording` and `GaugeRecording`, to choose when gauges are recorded: after every change (the default), on an interval, or only when `WorkerHandle::record_gauges()` is called.
+- `WorkerHandle::record_gauges()`, to record the current gauges on demand.
+
+### Changed
+
+- Gauges are recorded once more when the worker shuts down, so the final values aren't left stale.
+- With `GaugeRecording::OnChange`, gauges are now also recorded after timeouts and resource acquisition, which can start processing a batch.
+- Batchers without metrics no longer compute gauges.
 
 ## 0.15.1
 
