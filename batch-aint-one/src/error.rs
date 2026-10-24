@@ -9,7 +9,7 @@ use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 #[derive(Error, Debug, Clone)]
 #[non_exhaustive]
 pub enum BatchError<E: Display> {
-    /// Something went wrong while submitting an input for processing.
+    /// The worker isn't accepting items, because it has shut down or stopped unexpectedly.
     ///
     /// Unrecoverable.
     #[error("Unable to send item to the worker for batching: channel closed")]

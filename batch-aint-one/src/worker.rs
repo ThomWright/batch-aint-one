@@ -34,6 +34,9 @@ pub(crate) struct Worker<P: Processor> {
 
     /// Used to receive new batch items.
     item_rx: mpsc::Receiver<BatchItem<P>>,
+    /// Set once `item_rx` has no more items to give: it's been closed, or every sender dropped, and
+    /// everything sent on it has been received.
+    items_drained: bool,
     /// The callback to process a batch of inputs.
     processor: P,
 
@@ -180,6 +183,7 @@ impl<P: Processor> Worker<P> {
             batcher_name,
 
             item_rx,
+            items_drained: false,
             processor,
 
             msg_tx,
@@ -419,10 +423,8 @@ impl<P: Processor> Worker<P> {
         }
     }
 
-    fn ready_to_shut_down(&self) -> bool {
-        self.shutting_down
-            && self.batch_queues.values().all(|q| q.is_empty())
-            && !self.batch_queues.values().any(|q| q.is_processing())
+    fn all_keys_idle(&self) -> bool {
+        self.batch_queues.values().all(|q| q.is_idle())
     }
 
     /// Start running the worker event loop.
@@ -453,8 +455,11 @@ impl<P: Processor> Worker<P> {
                     self.on_wake_up();
                 }
 
-                Some(item) = self.item_rx.recv() => {
-                    self.add(item);
+                item = self.item_rx.recv(), if !self.items_drained => {
+                    match item {
+                        Some(item) => self.add(item),
+                        None => self.items_drained = true,
+                    }
                 }
 
                 Some(msg) = self.msg_rx.recv() => {
@@ -476,10 +481,16 @@ impl<P: Processor> Worker<P> {
                 self.record_gauges();
             }
 
-            if self.ready_to_shut_down() {
-                info!("Batch worker '{}' is shutting down", &self.batcher_name);
-                self.record_gauges();
-                return;
+            if self.shutting_down && self.all_keys_idle() {
+                if self.items_drained {
+                    info!("Batch worker '{}' is shutting down", &self.batcher_name);
+                    self.record_gauges();
+                    return;
+                }
+                // Items may still be in the channel, or being sent, so close it rather than
+                // exiting. The loop keeps receiving until it's drained, and items it receives are
+                // processed as normal.
+                self.item_rx.close();
             }
         }
     }
@@ -506,16 +517,20 @@ async fn sleep_until_first<K>(wake_ups: &BTreeMap<Instant, Vec<K>>) {
 impl WorkerHandle {
     /// Signal the worker to shut down after processing any in-flight batches.
     ///
-    /// New items are still accepted while shutting down, and the worker only shuts down once all
-    /// keys are idle. This means shutdown may never complete if:
+    /// New items are still accepted and processed while shutting down. Once every key is idle,
+    /// the worker stops accepting items, processes any already sent, and exits. After that,
+    /// [`Batcher::add`](crate::Batcher::add) returns [`BatchError::Tx`].
+    ///
+    /// This means shutdown may never complete if:
     ///
     /// - new items keep being added, or
     /// - a batch never meets its policy's processing condition, e.g. when using the
     ///   [`Size`](crate::BatchingPolicy::Size) policy, a final partial batch may wait
     ///   indefinitely for more items.
     ///
-    /// Stopping the flow of new items is expected to be handled by the caller, e.g. by shutting
-    /// down the message handlers which add items before shutting down the batcher.
+    /// So stop whatever adds items first. For example, in an HTTP service: stop the server and let
+    /// in-flight requests finish, then call `shut_down()` and
+    /// [`wait_for_shutdown()`](Self::wait_for_shutdown).
     pub async fn shut_down(&self) {
         info!("Sending shut down signal to batch worker");
         // We ignore errors here - if the receiver has gone away, the worker is already shut down.
@@ -602,6 +617,7 @@ mod test {
         Worker {
             batcher_name: "test".to_string(),
             item_rx,
+            items_drained: false,
             processor: SimpleBatchProcessor,
             msg_tx,
             msg_rx,
@@ -824,5 +840,37 @@ mod test {
             max_per_key, 3,
             "should report the highest per-key item count, not batch count"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_processes_items_sent_as_the_worker_becomes_idle() {
+        let mut worker = new_worker();
+        let (item_tx, item_rx) = mpsc::channel(1);
+        worker.item_rx = item_rx;
+        let (control_tx, control_rx) = mpsc::channel(1);
+        worker.control_rx = control_rx;
+        worker.shutting_down = true;
+
+        // A send is in progress while the worker handles an event with every key idle.
+        let permit = item_tx.reserve().await.unwrap();
+        let (done_tx, done_rx) = oneshot::channel();
+        control_tx
+            .send(ControlMessage::RecordGauges(done_tx))
+            .await
+            .unwrap();
+        let run = tokio::spawn(async move { worker.run().await });
+        done_rx.await.unwrap();
+
+        let (item, rx) = new_item("K1", "I1");
+        permit.send(item);
+
+        let output = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .expect("the item should be processed before the worker exits")
+            .unwrap()
+            .0
+            .unwrap();
+        assert_eq!(output, "I1 processed");
+        run.await.unwrap();
     }
 }
