@@ -175,7 +175,11 @@ impl<P: Processor> Batch<P> {
     /// Acquire resources for this batch.
     ///
     /// Once acquired, a message will be sent back to the worker.
-    pub(crate) fn pre_acquire_resources(&mut self, processor: P, tx: mpsc::Sender<Message<P>>) {
+    pub(crate) fn pre_acquire_resources(
+        &mut self,
+        processor: P,
+        tx: mpsc::UnboundedSender<Message<P>>,
+    ) {
         soft_assert!(
             !self.has_started_acquiring(),
             "should not try to acquire resources if already started acquiring"
@@ -215,7 +219,7 @@ impl<P: Processor> Batch<P> {
                     },
                 };
 
-                if tx.send(msg).await.is_err() {
+                if tx.send(msg).is_err() {
                     info!(
                         "Tried to signal resources acquisition failure but the worker has shut down. Batcher: {}",
                         name
@@ -237,7 +241,7 @@ impl<P: Processor> Batch<P> {
         self.state = BatchState::ReadyForProcessing { resources, span };
     }
 
-    pub(crate) fn process(mut self, processor: P, on_finished: mpsc::Sender<Message<P>>) {
+    pub(crate) fn process(mut self, processor: P, on_finished: mpsc::UnboundedSender<Message<P>>) {
         soft_assert!(
             self.is_processable(),
             "should not try to process a batch that is in state {:?}",
@@ -274,7 +278,7 @@ impl<P: Processor> Batch<P> {
         mut self,
         processor: P,
         resources: Option<(P::Resources, Span)>,
-        on_finished: mpsc::Sender<Message<P>>,
+        on_finished: mpsc::UnboundedSender<Message<P>>,
     ) {
         let batch_size = self.items.len();
         let name = self.inner.name();
@@ -340,7 +344,7 @@ impl<P: Processor> Batch<P> {
         );
 
         // Signal that we're finished with this batch.
-        Self::finalise(key.clone(), metrics, on_finished).await;
+        Self::finalise(key.clone(), metrics, on_finished);
     }
 
     /// Send a failure result to every item in the batch.
@@ -371,10 +375,9 @@ impl<P: Processor> Batch<P> {
         }
     }
 
-    async fn finalise(key: P::Key, metrics: BatchStats, on_finished: mpsc::Sender<Message<P>>) {
+    fn finalise(key: P::Key, metrics: BatchStats, on_finished: mpsc::UnboundedSender<Message<P>>) {
         if on_finished
             .send(Message::Finished { key, metrics })
-            .await
             .is_err()
         {
             // The worker must have shut down. In this case, we don't want to process any more
@@ -383,7 +386,11 @@ impl<P: Processor> Batch<P> {
         }
     }
 
-    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<P>>) {
+    pub(crate) fn process_after(
+        &mut self,
+        duration: Duration,
+        tx: mpsc::UnboundedSender<Message<P>>,
+    ) {
         self.timeout.set_timeout(duration, tx);
     }
 
@@ -450,7 +457,7 @@ mod tests {
             requesting_span: Span::none(),
         });
 
-        let (tx, _rx) = mpsc::channel(1);
+        let (tx, _rx) = mpsc::unbounded_channel();
         batch.process_after(Duration::from_millis(50), tx);
 
         assert!(!batch.is_ready(), "should not be processable initially");

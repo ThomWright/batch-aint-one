@@ -26,9 +26,9 @@ pub(crate) struct Worker<P: Processor> {
     processor: P,
 
     /// Used to signal that a batch for key `K` should be processed.
-    msg_tx: mpsc::Sender<Message<P>>,
+    msg_tx: mpsc::UnboundedSender<Message<P>>,
     /// Receives signals to process a batch for key `K`.
-    msg_rx: mpsc::Receiver<Message<P>>,
+    msg_rx: mpsc::UnboundedReceiver<Message<P>>,
 
     /// Used to send messages to the worker related to shutdown.
     shutdown_notifier_rx: mpsc::Receiver<ShutdownMessage>,
@@ -139,10 +139,13 @@ impl<P: Processor> Worker<P> {
         batching_policy: BatchingPolicy,
         metrics_recorder: Box<dyn MetricsRecorder>,
     ) -> (WorkerHandle, WorkerDropGuard, mpsc::Sender<BatchItem<P>>) {
-        // These channel sizes are somewhat arbitrary - they just need to be big enough to avoid
+        // This channel size is somewhat arbitrary - it just needs to be big enough to avoid
         // backpressure in normal operation.
         let (item_tx, item_rx) = mpsc::channel(limits.max_items_in_system_per_key());
-        let (msg_tx, msg_rx) = mpsc::channel(limits.max_items_in_system_per_key());
+        // Unbounded so spawned tasks never wait to report back. Only internal tasks send on this
+        // channel, at most one message each per timer, resource acquisition or processing task,
+        // so in-flight work bounds its size.
+        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
 
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
@@ -501,7 +504,7 @@ mod test {
     /// manually and inspect its state.
     fn new_worker() -> Worker<SimpleBatchProcessor> {
         let (_item_tx, item_rx) = mpsc::channel(1);
-        let (msg_tx, msg_rx) = mpsc::channel(1);
+        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         let (_shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
         Worker {

@@ -83,7 +83,7 @@ mod tests {
         queue.push(new_item("key".to_string(), "item1".to_string()));
 
         // Start processing to reach max processing capacity
-        let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
+        let (on_finished, _rx) = tokio::sync::mpsc::unbounded_channel();
         queue.process_next_ready_batch(TestProcessor, on_finished);
 
         // Fill the next batch to reach max queueing capacity
@@ -117,7 +117,7 @@ mod tests {
         queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
         queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
-        let (on_finished, mut rx) = mpsc::channel(1);
+        let (on_finished, mut rx) = mpsc::unbounded_channel();
         queue.process_next_ready_batch(processor, on_finished);
 
         // Add partial second batch

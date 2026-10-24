@@ -73,7 +73,7 @@ mod tests {
 
         // Add one item and start processing
         queue.push(new_item("key".to_string(), "item1".to_string()));
-        let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
+        let (on_finished, _rx) = tokio::sync::mpsc::unbounded_channel();
         queue.process_next_ready_batch(TestProcessor, on_finished);
 
         // Now add another item - should wait (size=1 < hint=5, processing=true)
@@ -94,7 +94,7 @@ mod tests {
 
         // Add one item and start processing
         queue.push(new_item("key".to_string(), "item1".to_string()));
-        let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
+        let (on_finished, _rx) = tokio::sync::mpsc::unbounded_channel();
         queue.process_next_ready_batch(TestProcessor, on_finished);
 
         // Add 4 more items (total=5, reaching hint)
@@ -123,7 +123,7 @@ mod tests {
         for i in 1..=5 {
             queue.push(new_item("key".to_string(), format!("item{}", i)));
         }
-        let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
+        let (on_finished, _rx) = tokio::sync::mpsc::unbounded_channel();
         queue.process_next_ready_batch(TestProcessor, on_finished);
 
         // Fill second batch

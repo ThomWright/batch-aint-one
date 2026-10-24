@@ -119,7 +119,7 @@ mod tests {
         queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
         // Start processing first batch
-        let (on_finished, mut rx) = mpsc::channel(1);
+        let (on_finished, mut rx) = mpsc::unbounded_channel();
         queue.process_next_ready_batch(processor, on_finished);
 
         // Step 2: Add third item (goes to second batch)
@@ -127,7 +127,7 @@ mod tests {
         assert_matches!(result, OnAdd::AddAndProcessAfter(_)); // New batch, set timeout
         let notify2 = Arc::new(Notify::new());
         queue.push(new_item((), notify2.notified_owned()));
-        let (tx, mut timeout_rx) = mpsc::channel(1);
+        let (tx, mut timeout_rx) = mpsc::unbounded_channel();
         queue.process_after(Duration::from_millis(1), tx);
 
         // Step 3: Second batch times out while first is still processing

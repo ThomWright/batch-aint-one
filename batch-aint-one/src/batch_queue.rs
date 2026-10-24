@@ -249,7 +249,7 @@ impl<P: Processor> BatchQueue<P> {
     pub(crate) fn process_next_ready_batch(
         &mut self,
         processor: P,
-        on_finished: mpsc::Sender<Message<P>>,
+        on_finished: mpsc::UnboundedSender<Message<P>>,
     ) {
         let Some(batch) = self.take_next_ready_batch() else {
             soft_assert!(
@@ -268,7 +268,7 @@ impl<P: Processor> BatchQueue<P> {
     pub(crate) fn process_next_batch(
         &mut self,
         processor: P,
-        on_finished: mpsc::Sender<Message<P>>,
+        on_finished: mpsc::UnboundedSender<Message<P>>,
     ) {
         let Some(batch) = self.take_next_batch() else {
             soft_assert!(
@@ -292,7 +292,7 @@ impl<P: Processor> BatchQueue<P> {
         &mut self,
         generation: Generation,
         processor: P,
-        tx: mpsc::Sender<Message<P>>,
+        tx: mpsc::UnboundedSender<Message<P>>,
     ) {
         let Some(batch) = self.take_generation(generation) else {
             soft_assert!(
@@ -326,7 +326,11 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     /// Acquire resources for the first batch that hasn't yet acquired resources.
-    pub(crate) fn pre_acquire_resources(&mut self, processor: P, tx: mpsc::Sender<Message<P>>) {
+    pub(crate) fn pre_acquire_resources(
+        &mut self,
+        processor: P,
+        tx: mpsc::UnboundedSender<Message<P>>,
+    ) {
         let Some(batch) = self
             .queue
             .iter_mut()
@@ -346,7 +350,11 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     /// Process the last batch after a delay.
-    pub(crate) fn process_after(&mut self, duration: Duration, tx: mpsc::Sender<Message<P>>) {
+    pub(crate) fn process_after(
+        &mut self,
+        duration: Duration,
+        tx: mpsc::UnboundedSender<Message<P>>,
+    ) {
         let back = self.queue.back_mut().expect("Should always be non-empty");
         back.process_after(duration, tx);
     }

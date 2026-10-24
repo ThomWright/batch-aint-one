@@ -75,7 +75,7 @@ mod tests {
         queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
         // Start processing first batch
-        let (on_finished, _rx) = mpsc::channel(1);
+        let (on_finished, _rx) = mpsc::unbounded_channel();
         queue.process_next_ready_batch(processor.clone(), on_finished);
 
         // Add items to fill second batch (acquiring resources)
@@ -83,7 +83,7 @@ mod tests {
         queue.push(new_item((), Arc::clone(&notify2).notified_owned()));
         queue.push(new_item((), Arc::clone(&notify2).notified_owned()));
 
-        let (on_finished, _rx) = mpsc::channel(1);
+        let (on_finished, _rx) = mpsc::unbounded_channel();
         queue.process_next_ready_batch(processor, on_finished);
 
         // Act
@@ -109,7 +109,7 @@ mod tests {
 
         queue.push(new_item("key".to_string(), "item1".to_string()));
 
-        let (on_finished, _rx) = tokio::sync::mpsc::channel(1);
+        let (on_finished, _rx) = tokio::sync::mpsc::unbounded_channel();
         queue.process_next_ready_batch(TestProcessor, on_finished);
 
         let policy = BatchingPolicy::Immediate;
@@ -136,7 +136,7 @@ mod tests {
         queue.push(new_item((), Arc::clone(&notify1).notified_owned()));
 
         // Start processing first batch
-        let (on_finished, mut finished_rx) = mpsc::channel(1);
+        let (on_finished, mut finished_rx) = mpsc::unbounded_channel();
         queue.process_next_ready_batch(processor, on_finished);
 
         // Add item to second batch
@@ -172,7 +172,7 @@ mod tests {
         // Batch A: filled and processing.
         let notify_a = Arc::new(Notify::new());
         queue.push(new_item((), Arc::clone(&notify_a).notified_owned()));
-        let (finished_tx, mut finished_rx) = mpsc::channel(1);
+        let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
         queue.process_next_ready_batch(ControlledProcessor::default(), finished_tx);
 
         // Batch B: pre-acquiring resources, and the acquisition fails.
@@ -181,7 +181,7 @@ mod tests {
             acquire_error: Some("no resources".to_string()),
             ..Default::default()
         };
-        let (acquire_tx, mut acquire_rx) = mpsc::channel(1);
+        let (acquire_tx, mut acquire_rx) = mpsc::unbounded_channel();
         queue.pre_acquire_resources(failing_processor, acquire_tx);
 
         // Wait for B's acquisition to fail. The failure message has been sent, but the worker
@@ -223,7 +223,7 @@ mod tests {
         let acquire_lock1 = Arc::new(Mutex::new(()));
         let lock_guard1 = acquire_lock1.lock().await; // Hold the lock to simulate long acquire
         processor.acquire_locks.push(Arc::clone(&acquire_lock1));
-        let (tx, mut acquired1) = mpsc::channel(1);
+        let (tx, mut acquired1) = mpsc::unbounded_channel();
         queue.pre_acquire_resources(processor.clone(), tx);
 
         // Add second item while first is acquiring
@@ -241,7 +241,7 @@ mod tests {
         let acquire_lock2 = Arc::new(Mutex::new(()));
         let lock_guard2 = acquire_lock2.lock().await; // Hold the lock to simulate long acquire
         processor.acquire_locks.push(Arc::clone(&acquire_lock2));
-        let (tx, mut acquired2) = mpsc::channel(1);
+        let (tx, mut acquired2) = mpsc::unbounded_channel();
         queue.pre_acquire_resources(processor.clone(), tx);
 
         // Simulate resources acquired for second batch first
