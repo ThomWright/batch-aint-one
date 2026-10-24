@@ -13,8 +13,11 @@ use std::{fmt::Debug, time::Duration};
 pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     /// An item was received by the worker.
     ///
-    /// `channel_duration` is the time the item spent waiting in the channel between submission
-    /// and the worker picking it up.
+    /// `channel_duration` is the time from [`Batcher::add()`](crate::Batcher::add) being called
+    /// to the worker picking the item up. It includes time spent waiting for room when
+    /// [`max_items_awaiting_worker`](crate::LimitsBuilder::max_items_awaiting_worker) is reached.
+    /// It is normally tiny, so a rising `channel_duration` means the worker itself is falling
+    /// behind.
     fn item_received(&self, _channel_duration: Duration) {}
 
     /// An item was rejected because the batch queue for its key is full.

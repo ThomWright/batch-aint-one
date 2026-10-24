@@ -65,7 +65,7 @@ impl BatchMetrics {
         let channel_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
                 "channel_duration_seconds",
-                "Time items spent in the channel before the worker picked them up",
+                "Time from an item being submitted until the worker picked it up",
             )
             .namespace(prefix)
             .buckets(CHANNEL_DURATION_BUCKETS.to_vec()),

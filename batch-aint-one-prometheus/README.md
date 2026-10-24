@@ -48,7 +48,7 @@ Use `BatchMetrics::with_prefix` to customise the metric name prefix (default: `b
 | Metric                                        | Type      | Labels           | Description                                                      |
 |-----------------------------------------------|-----------|------------------|------------------------------------------------------------------|
 | `batch_items_received_total`                  | Counter   | batcher          | Items received by the batcher                                    |
-| `batch_channel_duration_seconds`              | Histogram | batcher          | Time items spent in the channel before the worker picked them up |
+| `batch_channel_duration_seconds`              | Histogram | batcher          | Time from an item being submitted until the worker picked it up  |
 | `batch_items_rejected_total`                  | Counter   | batcher          | Items rejected due to a full batch queue                         |
 | `batch_batches_completed_total`               | Counter   | batcher, success | Batches that finished processing                                 |
 | `batch_batch_size`                            | Histogram | batcher          | Number of items per batch                                        |
