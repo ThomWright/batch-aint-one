@@ -11,6 +11,11 @@ use std::{fmt::Debug, time::Duration};
 /// All methods are called synchronously on the background worker's event loop, so implementations
 /// should be cheap and non-blocking.
 ///
+/// # Panics
+///
+/// Methods must not panic. If one does, the batcher may stop processing items for a key, or stop
+/// altogether.
+///
 /// # Events and gauges
 ///
 /// Most methods record an event, and are called once each time it happens.

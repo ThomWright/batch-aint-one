@@ -7,6 +7,21 @@ use std::{
 /// Process a batch of inputs for a given key.
 ///
 /// Should be cheap to clone.
+///
+/// # Panics
+///
+/// [`acquire_resources()`](Self::acquire_resources) and [`process()`](Self::process) may panic.
+/// The panic is caught, and the affected items fail with
+/// [`BatchError::Panic`](crate::BatchError::Panic).
+///
+/// These must not panic:
+///
+/// - `Clone` on the processor.
+/// - `Clone`, `Hash`, `Eq` and `Debug` on [`Key`](Self::Key).
+/// - `Clone` on [`Error`](Self::Error).
+/// - `Drop` on any of the associated types.
+///
+/// If one does, the batcher may stop processing items for a key, or stop altogether.
 pub trait Processor: 'static + Send + Clone {
     /// The key used to group inputs.
     type Key: 'static + Debug + Eq + Hash + Clone + Send + Sync;
