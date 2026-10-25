@@ -28,20 +28,36 @@ impl Limits {
     pub fn new(
         /// Limits the maximum size of a batch.
         ///
+        /// Larger batches usually spread per-batch costs over more items, up to a point, but take
+        /// longer to process. Where that point is depends on the processor, so measure it.
+        ///
         /// Defaults to 100.
         #[builder(default = 100)]
         max_batch_size: usize,
         /// Limits the maximum number of batches that can be processed concurrently for a key,
         /// including resource acquisition.
         ///
+        /// It doesn't limit concurrency across keys: with `n` active keys, up to
+        /// `n * max_key_concurrency` batches can be in flight.
+        ///
+        /// Set it to 1 when the work for a key is serialised anyway, e.g. by a lock taken in
+        /// [`acquire_resources()`](crate::Processor::acquire_resources). A higher limit doesn't
+        /// help: the extra batches only wait for the lock, holding anything they acquired before
+        /// it, e.g. a connection.
+        ///
         /// Defaults to 10.
         #[builder(default = 10)]
         max_key_concurrency: usize,
         /// Limits the number of items that can be queued for a key. Once reached, new items for
-        /// the key are rejected.
+        /// the key are rejected, which is how the batcher pushes back on callers.
         ///
         /// Items are queued until their batch starts processing, including while resources are
         /// being acquired for it.
+        ///
+        /// The limit also bounds how much memory a key's queued items use. A larger queue absorbs
+        /// bigger bursts, but uses more memory, and items can wait longer in it. If callers give up
+        /// after a timeout, an item that would wait longer than that is better rejected straight
+        /// away, so its caller finds out sooner.
         ///
         /// Defaults to `max_batch_size * max_key_concurrency * 2`.
         max_key_queued_items: Option<usize>,
