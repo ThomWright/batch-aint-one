@@ -261,14 +261,14 @@ impl<P: Processor> Worker<P> {
         batch_queue: &mut BatchQueue<P>,
         metrics_recorder: &dyn MetricsRecorder,
     ) -> bool {
-        let cancelled = batch_queue.remove_cancelled();
-        Self::record_cancelled(metrics_recorder, cancelled);
-        cancelled > 0
+        let num_cancelled = batch_queue.remove_cancelled();
+        Self::record_cancelled(metrics_recorder, num_cancelled);
+        num_cancelled > 0
     }
 
-    fn record_cancelled(metrics_recorder: &dyn MetricsRecorder, cancelled: usize) {
-        if cancelled > 0 {
-            metrics_recorder.items_cancelled(cancelled);
+    fn record_cancelled(metrics_recorder: &dyn MetricsRecorder, num_cancelled: usize) {
+        if num_cancelled > 0 {
+            metrics_recorder.items_cancelled(num_cancelled);
         }
     }
 
@@ -378,13 +378,9 @@ impl<P: Processor> Worker<P> {
             .resource_acquisition_completed(acquisition_duration, true);
 
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
-        let cancelled = batch_queue.resources_acquired(
-            resources,
-            span,
-            self.processor.clone(),
-            self.msg_tx.clone(),
-        );
-        Self::record_cancelled(&*self.metrics_recorder, cancelled);
+        let num_cancelled =
+            batch_queue.process(resources, span, self.processor.clone(), self.msg_tx.clone());
+        Self::record_cancelled(&*self.metrics_recorder, num_cancelled);
 
         self.start_acquisitions(&key, Event::ResourcesAcquired);
         self.remove_if_idle(&key);
@@ -400,8 +396,8 @@ impl<P: Processor> Worker<P> {
             .resource_acquisition_completed(acquisition_duration, false);
 
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
-        let cancelled = batch_queue.acquisition_failed(err);
-        Self::record_cancelled(&*self.metrics_recorder, cancelled);
+        let num_cancelled = batch_queue.fail(err);
+        Self::record_cancelled(&*self.metrics_recorder, num_cancelled);
 
         self.start_acquisitions(&key, Event::BatchFinished);
         self.remove_if_idle(&key);
@@ -808,8 +804,8 @@ mod test {
     #[tokio::test]
     async fn drops_items_cancelled_before_they_are_received() {
         let mut worker = new_worker();
-        let cancelled = Arc::new(Mutex::new(0));
-        worker.metrics_recorder = Box::new(CancellationMetrics(Arc::clone(&cancelled)));
+        let num_cancelled = Arc::new(Mutex::new(0));
+        worker.metrics_recorder = Box::new(CancellationMetrics(Arc::clone(&num_cancelled)));
 
         let (item, rx) = new_item("K1", "I1");
         drop(rx);
@@ -819,7 +815,7 @@ mod test {
             worker.batch_queues.is_empty(),
             "should not queue the item, or create a queue for its key"
         );
-        assert_eq!(*cancelled.lock().unwrap(), 1);
+        assert_eq!(*num_cancelled.lock().unwrap(), 1);
     }
 
     #[derive(Debug)]

@@ -137,7 +137,7 @@ impl<P: Processor> BatchQueue<P> {
     /// Process a batch of the oldest items with resources acquired for it.
     ///
     /// Returns how many cancelled items were skipped.
-    pub(crate) fn resources_acquired(
+    pub(crate) fn process(
         &mut self,
         resources: P::Resources,
         span: Span,
@@ -146,28 +146,28 @@ impl<P: Processor> BatchQueue<P> {
     ) -> usize {
         self.mark_acquisition_finished();
 
-        let (batch, cancelled) = self.take_batch();
+        let (batch, num_cancelled) = self.take_batch();
         if batch.is_empty() {
             debug!(
                 "Resources acquired with no items to process. Dropping them. Batcher: {}",
                 self.batcher_name
             );
-            return cancelled;
+            return num_cancelled;
         }
 
         self.processing += 1;
         batch.process(processor, resources, span, on_finished);
-        cancelled
+        num_cancelled
     }
 
     /// Fail a batch of the oldest items, since resources couldn't be acquired for it.
     ///
     /// Returns how many cancelled items were skipped.
-    pub(crate) fn acquisition_failed(&mut self, err: BatchError<P::Error>) -> usize {
+    pub(crate) fn fail(&mut self, err: BatchError<P::Error>) -> usize {
         self.mark_acquisition_finished();
-        let (batch, cancelled) = self.take_batch();
+        let (batch, num_cancelled) = self.take_batch();
         batch.fail(err);
-        cancelled
+        num_cancelled
     }
 
     pub(crate) fn mark_processed(&mut self) {
@@ -192,20 +192,20 @@ impl<P: Processor> BatchQueue<P> {
     fn take_batch(&mut self) -> (Batch<P>, usize) {
         let max = self.limits.max_batch_size;
         let mut items = Vec::with_capacity(max.min(self.items.len()));
-        let mut cancelled = 0;
+        let mut num_cancelled = 0;
         while items.len() < max {
             let Some(item) = self.items.pop_front() else {
                 break;
             };
             if item.is_cancelled() {
-                cancelled += 1;
+                num_cancelled += 1;
             } else {
                 items.push(item);
             }
         }
 
         let batch = Batch::new(Arc::clone(&self.batcher_name), self.key.clone(), items);
-        (batch, cancelled)
+        (batch, num_cancelled)
     }
 }
 
@@ -334,9 +334,9 @@ mod tests {
         queue.start_acquiring(EchoProcessor, tx.clone());
 
         // The results stand in for both acquisitions, in either order: neither is tied to items.
-        queue.resources_acquired((), Span::none(), EchoProcessor, tx.clone());
+        queue.process((), Span::none(), EchoProcessor, tx.clone());
         assert_eq!(queue.queued_items(), 1, "should take a full batch");
-        queue.resources_acquired((), Span::none(), EchoProcessor, tx);
+        queue.process((), Span::none(), EchoProcessor, tx);
 
         let mut outputs = Vec::new();
         for rx in receivers {
@@ -355,8 +355,8 @@ mod tests {
         queue.start_acquiring(EchoProcessor, tx.clone());
         queue.start_acquiring(EchoProcessor, tx.clone());
 
-        queue.resources_acquired((), Span::none(), EchoProcessor, tx.clone());
-        queue.resources_acquired((), Span::none(), EchoProcessor, tx);
+        queue.process((), Span::none(), EchoProcessor, tx.clone());
+        queue.process((), Span::none(), EchoProcessor, tx);
 
         assert_eq!(queue.processing(), 1, "only one batch had items");
         assert_eq!(queue.in_flight(), 1);
@@ -378,7 +378,7 @@ mod tests {
             .collect();
         queue.start_acquiring(EchoProcessor, tx.clone());
 
-        let skipped = queue.resources_acquired((), Span::none(), EchoProcessor, tx);
+        let skipped = queue.process((), Span::none(), EchoProcessor, tx);
 
         assert_eq!(skipped, 1);
         assert_eq!(
@@ -422,7 +422,7 @@ mod tests {
             .collect();
         queue.start_acquiring(EchoProcessor, tx);
 
-        queue.acquisition_failed(BatchError::ResourceAcquisitionFailed("nope".to_string()));
+        queue.fail(BatchError::ResourceAcquisitionFailed("nope".to_string()));
 
         for rx in receivers.drain(..2) {
             let (result, _) = rx.await.unwrap();
