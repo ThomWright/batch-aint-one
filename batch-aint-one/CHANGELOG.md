@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MetricsRecorder::items_cancelled`, recording items dropped without being processed because their callers stopped waiting.
 - `Limits::max_key_queued_items`, limiting how many items can be queued per key. It defaults to `max_batch_size * max_key_concurrency * 2`, which rejects at the same point as the previous default.
 - `Processor` and `MetricsRecorder` now document which methods may panic: panics in `Processor::acquire_resources()` and `Processor::process()` are caught, but the processor's other trait implementations, those of its associated types, and `MetricsRecorder` methods must not panic.
+- `Processor` now documents that the batcher doesn't time out `acquire_resources()` or `process()`, so implementations should bound them.
 
 ### Changed
 

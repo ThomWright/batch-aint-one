@@ -22,6 +22,18 @@ use std::{
 /// - `Drop` on any of the associated types.
 ///
 /// If one does, the batcher may stop processing items for a key, or stop altogether.
+///
+/// # Timeouts
+///
+/// The batcher doesn't time out [`acquire_resources()`](Self::acquire_resources) or
+/// [`process()`](Self::process). Each call holds one of its key's
+/// [`max_key_concurrency`](crate::LimitsBuilder::max_key_concurrency) slots until it returns, and
+/// [`WorkerHandle::wait_for_shutdown()`](crate::WorkerHandle::wait_for_shutdown) waits for it. So
+/// a call that never returns uses up a slot for good, and stops shutdown from completing.
+///
+/// Bound them in the implementation instead, returning an [`Error`](Self::Error) when a timeout
+/// expires. Where the work happens elsewhere, e.g. on a remote server, dropping the future only
+/// stops waiting for it, so prefer a timeout that also stops the work.
 pub trait Processor: 'static + Send + Clone {
     /// The key used to group inputs.
     type Key: 'static + Debug + Eq + Hash + Clone + Send + Sync;
