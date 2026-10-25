@@ -92,7 +92,7 @@ async fn loaded_reject_on_full() {
             Limits::builder()
                 .max_key_concurrency(1)
                 .max_batch_size(10)
-                .max_batch_queue_size(1)
+                .max_key_queued_items(10)
                 .build(),
         )
         .batching_policy(BatchingPolicy::Duration(

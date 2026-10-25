@@ -351,14 +351,14 @@ mod tests {
                 Limits::builder()
                     .max_batch_size(1)
                     .max_key_concurrency(1)
-                    .max_batch_queue_size(1)
+                    .max_key_queued_items(1)
                     .build(),
             )
             .batching_policy(BatchingPolicy::Size)
             .metrics(factory)
             .build();
 
-        // With max_batch_size=1 and max_batch_queue_size=1:
+        // With max_batch_size=1 and max_key_queued_items=1:
         // - Item 1 fills a batch and starts processing (slow processor keeps it in flight)
         // - Item 2 fills the replacement batch (queue is now full)
         // - Item 3 is rejected because the queue is full

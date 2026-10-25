@@ -142,7 +142,7 @@ impl KeyState {
     }
 
     fn is_queue_full(&self) -> bool {
-        self.queued >= self.limits.max_batch_queue_size * self.limits.max_batch_size
+        self.queued >= self.limits.max_key_queued_items
     }
 
     fn has_full_batch_uncovered(&self) -> bool {
@@ -288,11 +288,11 @@ mod tests {
         use super::*;
 
         #[test]
-        fn rejects_once_the_queue_holds_its_limit_of_batches_worth_of_items() {
+        fn rejects_once_the_queue_holds_its_limit_of_items() {
             let limits = Limits::builder()
                 .max_batch_size(5)
                 .max_key_concurrency(1)
-                .max_batch_queue_size(2)
+                .max_key_queued_items(10)
                 .build();
             let policy = BatchingPolicy::Size;
 
@@ -314,7 +314,7 @@ mod tests {
             let limits = Limits::builder()
                 .max_batch_size(5)
                 .max_key_concurrency(1)
-                .max_batch_queue_size(1)
+                .max_key_queued_items(5)
                 .build();
 
             assert_matches!(

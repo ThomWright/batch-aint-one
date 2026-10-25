@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MetricsRecorder::gauge_recording` and `GaugeRecording`, to choose when gauges are recorded: after every change (the default), on an interval, or only when `WorkerHandle::record_gauges()` is called.
 - `WorkerHandle::record_gauges()`, to record the current gauges on demand.
 - `MetricsRecorder::items_cancelled`, recording items dropped without being processed because their callers stopped waiting.
+- `Limits::max_key_queued_items`, limiting how many items can be queued per key. It defaults to `max_batch_size * max_key_concurrency * 2`, which rejects at the same point as the previous default.
 
 ### Changed
 
@@ -29,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gauges are recorded once more when the worker shuts down, so the final values aren't left stale.
 - With `GaugeRecording::OnChange`, gauges are now also recorded after timeouts and resource acquisition, which can start processing a batch.
 - Batchers without metrics no longer compute gauges.
+
+### Deprecated
+
+- `LimitsBuilder::max_batch_queue_size`, in favour of `max_key_queued_items`. It still limits the queue to `max_batch_queue_size * max_batch_size` items, unless `max_key_queued_items` is set.
 
 ### Fixed
 

@@ -79,7 +79,7 @@ async fn variable_timing(
             Limits::builder()
                 .max_batch_size(batch_size)
                 .max_key_concurrency(key_concurrency)
-                .max_batch_queue_size(10)
+                .max_key_queued_items(10 * batch_size)
                 .build(),
         )
         .batching_policy(policy)

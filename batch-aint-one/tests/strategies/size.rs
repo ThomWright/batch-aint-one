@@ -75,7 +75,7 @@ async fn max_concurrency_limit() {
             Limits::builder()
                 .max_batch_size(1)
                 .max_key_concurrency(2)
-                .max_batch_queue_size(2)
+                .max_key_queued_items(2)
                 .build(),
         )
         .batching_policy(BatchingPolicy::Size)

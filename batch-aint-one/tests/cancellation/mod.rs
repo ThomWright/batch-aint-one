@@ -149,7 +149,7 @@ async fn cancelled_items_do_not_count_against_the_queue_limit() {
         Limits::builder()
             .max_batch_size(2)
             .max_key_concurrency(1)
-            .max_batch_queue_size(1)
+            .max_key_queued_items(2)
             .build(),
         BatchingPolicy::Size,
     );

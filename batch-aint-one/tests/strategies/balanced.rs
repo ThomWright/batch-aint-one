@@ -303,7 +303,7 @@ async fn rejects_when_exceeding_queue_size() {
                 Limits::builder()
                     .max_batch_size(10)
                     .max_key_concurrency(1)
-                    .max_batch_queue_size(2)
+                    .max_key_queued_items(20)
                     .build(),
             )
             .batching_policy(BatchingPolicy::Balanced { min_size_hint: 5 })
