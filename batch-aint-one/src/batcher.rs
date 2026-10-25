@@ -41,10 +41,14 @@ impl<P: Processor> Batcher<P> {
     /// Create a new batcher.
     #[builder]
     pub fn new(
+        /// Identifies the batcher in tracing spans and logs, and is passed to the
+        /// [`MetricsRecorderFactory`].
         name: impl Into<String>,
         processor: P,
         limits: Limits,
         batching_policy: BatchingPolicy,
+        /// Creates the batcher's [`MetricsRecorder`](crate::MetricsRecorder). Without it, no
+        /// metrics are recorded.
         metrics: Option<Box<dyn MetricsRecorderFactory>>,
     ) -> Self {
         let name = name.into();
