@@ -66,9 +66,11 @@ async fn loaded() {
 
 #[tokio::test]
 async fn max_concurrency_limit() {
+    tokio::time::pause();
+
     let batcher = Batcher::builder()
         .name("test_max_concurrency_limit")
-        .processor(SimpleBatchProcessor(Duration::ZERO))
+        .processor(SimpleBatchProcessor(Duration::from_millis(10)))
         .limits(
             Limits::builder()
                 .max_batch_size(1)
@@ -80,8 +82,16 @@ async fn max_concurrency_limit() {
         .build();
 
     // Two processed for A immediately
-    let h1 = tokio_test::task::spawn(batcher.add("A".to_string(), "1".to_string()));
-    let h2 = tokio_test::task::spawn(batcher.add("A".to_string(), "2".to_string()));
+    let h1 = tokio::spawn({
+        let batcher = batcher.clone();
+        async move { batcher.add("A".to_string(), "1".to_string()).await }
+    });
+    let h2 = tokio::spawn({
+        let batcher = batcher.clone();
+        async move { batcher.add("A".to_string(), "2".to_string()).await }
+    });
+    // Until processing starts, their items still count against the queue limit.
+    tokio::time::sleep(Duration::from_millis(1)).await;
 
     // Two processed for A after another finished
     let h3 = tokio_test::task::spawn(batcher.add("A".to_string(), "3".to_string()));
@@ -95,8 +105,8 @@ async fn max_concurrency_limit() {
 
     let (o1, o2, o3, o4, o5, o6) = join!(h1, h2, h3, h4, h5, h6);
 
-    assert_eq!(o1.unwrap(), "1 processed for A".to_string());
-    assert_eq!(o2.unwrap(), "2 processed for A".to_string());
+    assert_eq!(o1.unwrap().unwrap(), "1 processed for A".to_string());
+    assert_eq!(o2.unwrap().unwrap(), "2 processed for A".to_string());
     assert_eq!(o3.unwrap(), "3 processed for A".to_string());
     assert_eq!(o4.unwrap(), "4 processed for A".to_string());
     assert_matches!(

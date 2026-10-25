@@ -107,12 +107,6 @@ async fn test_tracing() {
         "batch.size shouldn't be emitted as a string",
     );
 
-    assert_eq!(
-        process_span.follows_from().len(),
-        2,
-        "should follow from both handler spans"
-    );
-
     let resource_spans: Vec<_> = storage
         .all_spans()
         .filter(|span| span.metadata().name().contains("acquire resources"))
@@ -122,14 +116,17 @@ async fn test_tracing() {
         1,
         "should be a single span for acquiring resources"
     );
-    let resource_span_parent = resource_spans
-        .first()
-        .unwrap()
-        .parent()
-        .expect("resource span should have a parent");
+    let resource_span = *resource_spans.first().unwrap();
+
+    let follows_from: Vec<_> = process_span.follows_from().collect();
     assert_eq!(
-        resource_span_parent, process_span,
-        "resource acquisition should be a child of the outer process span"
+        follows_from.len(),
+        3,
+        "should follow from both handler spans and the resource acquisition span"
+    );
+    assert!(
+        follows_from.contains(&resource_span),
+        "should follow from the resource acquisition span"
     );
 
     let inner_process_spans: Vec<_> = storage
@@ -145,10 +142,10 @@ async fn test_tracing() {
         .first()
         .unwrap()
         .parent()
-        .expect("resource span should have a parent");
+        .expect("inner process span should have a parent");
     assert_eq!(
         inner_span_parent, process_span,
-        "resource acquisition should be a child of the outer process span"
+        "inner process span should be a child of the outer process span"
     );
 
     let link_back_spans: Vec<_> = storage

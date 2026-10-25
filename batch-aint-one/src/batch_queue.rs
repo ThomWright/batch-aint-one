@@ -1,120 +1,151 @@
-use std::{collections::VecDeque, fmt::Debug};
+use std::{collections::VecDeque, fmt::Debug, sync::Arc};
 
-use tokio::{sync::mpsc, time::Instant};
+use tokio::sync::mpsc;
+use tracing::{Span, debug, info, instrument::WithSubscriber};
 
 use crate::{
     BatchError, Limits,
     batch::{Batch, BatchItem},
-    batch_inner::Generation,
+    batch_inner::BatchInner,
+    policies::KeyState,
     processor::Processor,
     worker::Message,
 };
 
-/// A double-ended queue for queueing up multiple batches for later processing.
+/// A key's queued items, and how many of its batches are in flight.
+///
+/// Items wait in the order they were received. A batch is only formed once resources have been
+/// acquired for it, from the oldest items, so whichever acquisition completes first takes them.
 pub(crate) struct BatchQueue<P: Processor> {
-    batcher_name: String,
-
-    queue: VecDeque<Batch<P>>,
-
+    inner: Arc<BatchInner<P>>,
+    items: VecDeque<BatchItem<P>>,
     limits: Limits,
-
-    /// The number of batches with this key that are currently pre-acquiring resources.
-    pre_acquiring: usize,
-
-    /// The number of batches with this key that are currently processing.
+    /// The number of batches with this key that are acquiring resources.
+    acquiring: usize,
+    /// The number of batches with this key that are processing.
     processing: usize,
 }
 
 impl<P: Processor> BatchQueue<P> {
     pub(crate) fn new(batcher_name: String, key: P::Key, limits: Limits) -> Self {
-        let mut queue = VecDeque::with_capacity(limits.max_batch_queue_size);
-
-        let processing = 0;
-        let pre_acquiring = 0;
-        queue.push_back(Batch::new(batcher_name.clone(), key));
-
         Self {
-            batcher_name,
-            queue,
+            inner: Arc::new(BatchInner::new(batcher_name, key)),
+            items: VecDeque::new(),
             limits,
-            pre_acquiring,
-            processing,
+            acquiring: 0,
+            processing: 0,
         }
     }
 
-    /// Is the next batch – the one at the front of the queue – full?
-    pub(crate) fn is_next_batch_full(&self) -> bool {
-        let next = self.queue.front().expect("Should always be non-empty");
-        next.is_full(self.limits.max_batch_size)
+    pub(crate) fn state(&self) -> KeyState {
+        let oldest_uncovered = self.items.get(self.acquiring * self.limits.max_batch_size);
+        KeyState {
+            queued: self.items.len(),
+            acquiring: self.acquiring,
+            processing: self.processing,
+            oldest_uncovered_received_at: oldest_uncovered.and_then(|item| item.received_at),
+            limits: self.limits,
+        }
     }
 
-    pub(crate) fn has_last_batch_reached_size(&self, size: usize) -> bool {
-        let last = self.queue.back().expect("Should always be non-empty");
-        last.len() >= size
-    }
-
-    pub(crate) fn is_last_batch_acquiring_resources(&self) -> bool {
-        let last = self.queue.back().expect("Should always be non-empty");
-        last.has_started_acquiring()
-    }
-
-    pub(crate) fn has_next_batch_timeout_expired(&self) -> bool {
-        let next = self.queue.front().expect("Should always be non-empty");
-        next.has_timeout_expired()
-    }
-
-    /// Is this batch queue full?
-    pub(crate) fn is_full(&self) -> bool {
-        let back = self.queue.back().expect("Should always be non-empty");
-        self.queue.len() >= self.limits.max_batch_queue_size
-            && back.len() >= self.limits.max_batch_size
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        // We always have at least one (possibly empty) batch in the queue.
-        self.queue.len() == 1
-            && self
-                .queue
-                .front()
-                .expect("Should always be non-empty")
-                .is_empty()
-    }
-
-    pub(crate) fn last_space_in_batch(&self) -> bool {
-        let back = self.queue.back().expect("Should always be non-empty");
-        back.has_single_space(self.limits.max_batch_size)
-    }
-
-    pub(crate) fn adding_to_new_batch(&self) -> bool {
-        let back = self.queue.back().expect("Should always be non-empty");
-        back.is_new_batch() || back.is_full(self.limits.max_batch_size)
-    }
-
-    /// Are we currently processing any batches for this key?
-    pub(crate) fn is_processing(&self) -> bool {
-        self.processing > 0
+    pub(crate) fn push(&mut self, item: BatchItem<P>) {
+        self.items.push_back(item);
     }
 
     /// Is this key idle, i.e. no queued items and no batches in flight?
     pub(crate) fn is_idle(&self) -> bool {
-        self.is_empty() && self.processing == 0 && self.pre_acquiring == 0
+        self.items.is_empty() && self.acquiring == 0 && self.processing == 0
     }
 
     /// How many batches are acquiring resources or processing.
     pub(crate) fn in_flight(&self) -> usize {
-        self.pre_acquiring + self.processing
+        self.acquiring + self.processing
     }
 
     pub(crate) fn processing(&self) -> usize {
         self.processing
     }
 
+    /// How many full batches the queued items would make, counting a partial one.
     pub(crate) fn queued(&self) -> usize {
-        self.queue.len()
+        self.items.len().div_ceil(self.limits.max_batch_size)
     }
 
     pub(crate) fn queued_items(&self) -> usize {
-        self.queue.iter().map(Batch::len).sum()
+        self.items.len()
+    }
+
+    /// Start a batch by acquiring resources for it.
+    ///
+    /// Once acquired, or once acquisition fails, a message will be sent back to the worker.
+    pub(crate) fn start_batch(&mut self, processor: P, tx: mpsc::UnboundedSender<Message<P>>) {
+        self.acquiring += 1;
+        soft_assert!(
+            self.in_flight() <= self.limits.max_key_concurrency,
+            "batches in flight should not exceed max key concurrency"
+        );
+
+        let inner = Arc::clone(&self.inner);
+        // Spawn a new task so we can acquire resources for multiple batches concurrently, without
+        // blocking the run loop.
+        tokio::spawn(
+            async move {
+                let start = tokio::time::Instant::now();
+                let result = Arc::clone(&inner).acquire_resources(processor).await;
+                let acquisition_duration = start.elapsed();
+
+                let key = inner.key().clone();
+                let msg = match result {
+                    Ok((resources, span)) => Message::ResourcesAcquired {
+                        key,
+                        resources,
+                        span,
+                        acquisition_duration,
+                    },
+                    Err(err) => Message::ResourceAcquisitionFailed {
+                        key,
+                        err,
+                        acquisition_duration,
+                    },
+                };
+                if tx.send(msg).is_err() {
+                    info!(
+                        "Tried to signal resource acquisition had finished but the worker has shut down. Batcher: {}",
+                        inner.name()
+                    );
+                }
+            }
+            .with_current_subscriber(),
+        );
+    }
+
+    /// Process a batch of the oldest items with resources acquired for it.
+    pub(crate) fn resources_acquired(
+        &mut self,
+        resources: P::Resources,
+        span: Span,
+        processor: P,
+        on_finished: mpsc::UnboundedSender<Message<P>>,
+    ) {
+        self.mark_acquisition_finished();
+
+        let batch = self.take_batch();
+        if batch.is_empty() {
+            debug!(
+                "Resources acquired with no items to process. Dropping them. Batcher: {}",
+                self.inner.name()
+            );
+            return;
+        }
+
+        self.processing += 1;
+        batch.process(processor, resources, span, on_finished);
+    }
+
+    /// Fail a batch of the oldest items, since resources couldn't be acquired for it.
+    pub(crate) fn acquisition_failed(&mut self, err: BatchError<P::Error>) {
+        self.mark_acquisition_finished();
+        self.take_batch().fail(err);
     }
 
     pub(crate) fn mark_processed(&mut self) {
@@ -125,281 +156,36 @@ impl<P: Processor> BatchQueue<P> {
         self.processing = self.processing.saturating_sub(1);
     }
 
-    fn increment_processing_count(&mut self) {
-        self.processing += 1;
-
+    fn mark_acquisition_finished(&mut self) {
         soft_assert!(
-            self.processing <= self.limits.max_key_concurrency,
-            "Processing count should not exceed max key concurrency"
+            self.acquiring > 0,
+            "acquiring count should never go below zero"
         );
+        self.acquiring = self.acquiring.saturating_sub(1);
     }
 
-    /// Store pre-acquired resources on the batch for the given generation, making it ready for
-    /// processing.
-    pub(crate) fn resources_acquired(
-        &mut self,
-        generation: Generation,
-        resources: P::Resources,
-        span: tracing::Span,
-    ) {
-        self.mark_resource_acquisition_finished();
-
-        let Some(batch) = self
-            .queue
-            .iter_mut()
-            .find(|batch| batch.is_generation(generation))
-        else {
-            soft_assert!(
-                false,
-                "No batch found for generation {:?} in batch queue '{}'",
-                generation,
-                self.batcher_name
-            );
-            return;
-        };
-
-        batch.resources_acquired(resources, span);
-    }
-
-    pub(crate) fn mark_resource_acquisition_finished(&mut self) {
-        soft_assert!(
-            self.pre_acquiring > 0,
-            "pre-acquiring count should never go below zero"
-        );
-        self.pre_acquiring = self.pre_acquiring.saturating_sub(1);
-    }
-
-    fn increment_resource_acquisition_count(&mut self) {
-        self.pre_acquiring += 1;
-
-        soft_assert!(
-            self.pre_acquiring <= self.limits.max_key_concurrency,
-            "pre-acquiring count should not exceed max key concurrency"
-        );
-    }
-
-    /// Are we currently at maximum total capacity for this key?
-    ///
-    /// Includes both processing and pre-acquiring batches.
-    pub(crate) fn at_max_total_processing_capacity(&self) -> bool {
-        self.pre_acquiring + self.processing >= self.limits.max_key_concurrency
-    }
-
-    pub(crate) fn push(&mut self, item: BatchItem<P>) {
-        let back = self.queue.back_mut().expect("Should always be non-empty");
-
-        if back.is_full(self.limits.max_batch_size) {
-            let mut new_back = back.new_generation();
-            new_back.push(item);
-            self.queue.push_back(new_back);
-        } else {
-            back.push(item);
-        }
-    }
-
-    pub(crate) fn has_batch_ready(&self) -> bool {
-        for batch in &self.queue {
-            if batch.is_ready() {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Is there a batch which could be processed now, if we ignore its deadline?
-    pub(crate) fn has_batch_to_flush(&self) -> bool {
-        self.queue.iter().any(|batch| batch.can_flush())
-    }
-
-    pub(crate) fn is_generation_ready(&self, generation: Generation) -> bool {
-        for batch in &self.queue {
-            if batch.is_generation(generation) {
-                return batch.is_ready();
-            }
-        }
-
-        false
-    }
-
-    fn take_next_batch(&mut self) -> Option<Batch<P>> {
-        let batch = self.queue.pop_front().expect("Should always be non-empty");
-
-        if self.queue.is_empty() {
-            self.queue.push_back(batch.new_generation())
-        }
-
-        Some(batch)
-    }
-
-    pub(crate) fn take_next_ready_batch(&mut self) -> Option<Batch<P>> {
-        self.take_first(|batch| batch.is_ready())
-    }
-
-    /// Take the first batch matching the predicate, ensuring the queue remains non-empty.
-    fn take_first(&mut self, predicate: impl Fn(&Batch<P>) -> bool) -> Option<Batch<P>> {
-        for (index, batch) in self.queue.iter().enumerate() {
-            if predicate(batch) {
-                let batch = self
-                    .queue
-                    .remove(index)
-                    .expect("Should exist, we just found it");
-
-                if self.queue.is_empty() {
-                    self.queue.push_back(batch.new_generation())
-                }
-
-                return Some(batch);
-            }
-        }
-
-        None
-    }
-
-    pub(crate) fn process_next_ready_batch(
-        &mut self,
-        processor: P,
-        on_finished: mpsc::UnboundedSender<Message<P>>,
-    ) {
-        let Some(batch) = self.take_next_ready_batch() else {
-            soft_assert!(
-                false,
-                "No ready batch found in batch queue '{}'",
-                self.batcher_name
-            );
-            return;
-        };
-
-        self.increment_processing_count();
-
-        batch.process(processor, on_finished);
-    }
-
-    /// Process the first batch which can be processed now, ignoring its deadline.
-    pub(crate) fn flush_next_batch(
-        &mut self,
-        processor: P,
-        on_finished: mpsc::UnboundedSender<Message<P>>,
-    ) {
-        let Some(batch) = self.take_first(|batch| batch.can_flush()) else {
-            soft_assert!(
-                false,
-                "No batch to flush found in batch queue '{}'",
-                self.batcher_name
-            );
-            return;
-        };
-
-        self.increment_processing_count();
-
-        batch.process(processor, on_finished);
-    }
-
-    pub(crate) fn process_next_batch(
-        &mut self,
-        processor: P,
-        on_finished: mpsc::UnboundedSender<Message<P>>,
-    ) {
-        let Some(batch) = self.take_next_batch() else {
-            soft_assert!(
-                false,
-                "No next batch found in batch queue '{}'",
-                self.batcher_name
-            );
-            return;
-        };
-
-        self.increment_processing_count();
-
-        batch.process(processor, on_finished);
-    }
-
-    fn take_generation(&mut self, generation: Generation) -> Option<Batch<P>> {
-        self.take_first(|batch| batch.is_generation(generation))
-    }
-
-    pub(crate) fn process_generation(
-        &mut self,
-        generation: Generation,
-        processor: P,
-        tx: mpsc::UnboundedSender<Message<P>>,
-    ) {
-        let Some(batch) = self.take_generation(generation) else {
-            soft_assert!(
-                false,
-                "No batch found for generation {:?} in batch queue '{}'",
-                generation,
-                self.batcher_name
-            );
-            return;
-        };
-
-        self.increment_processing_count();
-
-        batch.process(processor, tx);
-    }
-
-    pub(crate) fn fail_generation(&mut self, generation: Generation, error: BatchError<P::Error>) {
-        self.mark_resource_acquisition_finished();
-
-        let Some(batch) = self.take_generation(generation) else {
-            soft_assert!(
-                false,
-                "No batch found for generation {:?} in batch queue '{}'",
-                generation,
-                self.batcher_name
-            );
-            return;
-        };
-
-        batch.fail(error);
-    }
-
-    /// Acquire resources for the first batch that hasn't yet acquired resources.
-    pub(crate) fn pre_acquire_resources(
-        &mut self,
-        processor: P,
-        tx: mpsc::UnboundedSender<Message<P>>,
-    ) {
-        let Some(batch) = self
-            .queue
-            .iter_mut()
-            .find(|batch| !batch.has_started_acquiring())
-        else {
-            soft_assert!(
-                false,
-                "No batch found needing resource acquisition in batch queue '{}'",
-                self.batcher_name
-            );
-            return;
-        };
-
-        batch.pre_acquire_resources(processor, tx);
-
-        self.increment_resource_acquisition_count();
-    }
-
-    /// Make the last batch wait until `deadline` before it's ready to process.
-    pub(crate) fn set_deadline(&mut self, deadline: Instant) {
-        let back = self.queue.back_mut().expect("Should always be non-empty");
-        back.set_deadline(deadline);
+    /// Take up to `max_batch_size` of the oldest items.
+    fn take_batch(&mut self) -> Batch<P> {
+        let len = self.items.len().min(self.limits.max_batch_size);
+        Batch::new(Arc::clone(&self.inner), self.items.drain(..len).collect())
     }
 }
 
 impl<P: Processor> Debug for BatchQueue<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
-            batcher_name,
-            queue,
+            inner,
+            items,
             limits,
+            acquiring,
             processing,
-            pre_acquiring,
         } = self;
         f.debug_struct("BatchQueue")
-            .field("batcher_name", &batcher_name)
-            .field("queue", &queue)
+            .field("batcher_name", &inner.name())
+            .field("key", inner.key())
+            .field("items_len", &items.len())
+            .field("acquiring", &acquiring)
             .field("processing", &processing)
-            .field("pre_acquiring", &pre_acquiring)
             .field("limits", limits)
             .finish()
     }
@@ -407,60 +193,163 @@ impl<P: Processor> Debug for BatchQueue<P> {
 
 #[cfg(test)]
 mod tests {
-    use tokio::sync::oneshot;
+    use std::time::Duration;
+
+    use tokio::{
+        sync::oneshot,
+        time::{self, Instant},
+    };
     use tracing::Span;
 
     use super::*;
+    use crate::error::BatchResult;
 
     #[derive(Clone)]
-    struct DummyProcessor;
-    impl Processor for DummyProcessor {
+    struct EchoProcessor;
+
+    impl Processor for EchoProcessor {
         type Key = String;
         type Input = String;
         type Output = String;
         type Error = String;
         type Resources = ();
+
         async fn acquire_resources(&self, _key: String) -> Result<(), String> {
             Ok(())
         }
+
         async fn process(
             &self,
             _key: String,
-            _inputs: impl Iterator<Item = String> + Send,
+            inputs: impl Iterator<Item = String> + Send,
             _resources: (),
         ) -> Result<Vec<String>, String> {
-            Ok(vec![])
+            Ok(inputs.collect())
         }
     }
 
-    fn item(key: &str) -> BatchItem<DummyProcessor> {
-        let (tx, _rx) = oneshot::channel();
-        BatchItem {
-            key: key.to_string(),
-            input: "item".to_string(),
-            submitted_at: tokio::time::Instant::now(),
-            received_at: None,
+    type OutputReceiver = oneshot::Receiver<(BatchResult<String, String>, Option<Span>)>;
+
+    fn item(input: &str) -> (BatchItem<EchoProcessor>, OutputReceiver) {
+        let (tx, rx) = oneshot::channel();
+        let item = BatchItem {
+            key: "key".to_string(),
+            input: input.to_string(),
+            submitted_at: Instant::now(),
+            received_at: Some(Instant::now()),
             tx,
             requesting_span: Span::none(),
-        }
+        };
+        (item, rx)
+    }
+
+    fn queue(max_batch_size: usize) -> BatchQueue<EchoProcessor> {
+        let limits = Limits::builder()
+            .max_batch_size(max_batch_size)
+            .max_key_concurrency(2)
+            .build();
+        BatchQueue::new("test".to_string(), "key".to_string(), limits)
     }
 
     #[tokio::test]
-    async fn queued_items_sums_across_batches() {
-        let limits = Limits::builder().max_batch_size(2).build();
-        let mut queue: BatchQueue<DummyProcessor> =
-            BatchQueue::new("test".to_string(), "key".to_string(), limits);
-
-        for _ in 0..3 {
-            queue.push(item("key"));
+    async fn counts_queued_items_and_batches_worth() {
+        let mut queue = queue(2);
+        for input in ["1", "2", "3"] {
+            queue.push(item(input).0);
         }
 
-        // The 3rd item can't fit in the first (now full) batch, so it starts a new one.
-        assert_eq!(queue.queued(), 2, "should have split into 2 batches");
+        assert_eq!(queue.queued_items(), 3);
+        assert_eq!(queue.queued(), 2, "a full batch and a partial one");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn oldest_uncovered_item_is_after_those_acquiring_will_take() {
+        let mut queue = queue(2);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        queue.push(item("1").0);
+        queue.push(item("2").0);
+        queue.start_batch(EchoProcessor, tx);
+        time::advance(Duration::from_millis(10)).await;
+        let third_received_at = Instant::now();
+        queue.push(item("3").0);
+
+        assert_eq!(
+            queue.state().oldest_uncovered_received_at,
+            Some(third_received_at)
+        );
+    }
+
+    #[tokio::test]
+    async fn whichever_acquisition_completes_first_takes_the_oldest_items() {
+        let mut queue = queue(2);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let receivers: Vec<_> = ["1", "2", "3"]
+            .into_iter()
+            .map(|input| {
+                let (item, rx) = item(input);
+                queue.push(item);
+                rx
+            })
+            .collect();
+        queue.start_batch(EchoProcessor, tx.clone());
+        queue.start_batch(EchoProcessor, tx.clone());
+
+        // The results stand in for both acquisitions, in either order: neither is tied to items.
+        queue.resources_acquired((), Span::none(), EchoProcessor, tx.clone());
+        assert_eq!(queue.queued_items(), 1, "should take a full batch");
+        queue.resources_acquired((), Span::none(), EchoProcessor, tx);
+
+        let mut outputs = Vec::new();
+        for rx in receivers {
+            outputs.push(rx.await.unwrap().0.unwrap());
+        }
+        assert_eq!(outputs, ["1", "2", "3"]);
+        assert!(queue.queued_items() == 0 && queue.processing() == 2);
+    }
+
+    #[tokio::test]
+    async fn drops_resources_acquired_with_no_items_to_process() {
+        let mut queue = queue(2);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        queue.push(item("1").0);
+        queue.start_batch(EchoProcessor, tx.clone());
+        queue.start_batch(EchoProcessor, tx.clone());
+
+        queue.resources_acquired((), Span::none(), EchoProcessor, tx.clone());
+        queue.resources_acquired((), Span::none(), EchoProcessor, tx);
+
+        assert_eq!(queue.processing(), 1, "only one batch had items");
+        assert_eq!(queue.in_flight(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_acquisition_fails_a_batch_of_the_oldest_items() {
+        let mut queue = queue(2);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut receivers: Vec<_> = ["1", "2", "3"]
+            .into_iter()
+            .map(|input| {
+                let (item, rx) = item(input);
+                queue.push(item);
+                rx
+            })
+            .collect();
+        queue.start_batch(EchoProcessor, tx);
+
+        queue.acquisition_failed(BatchError::ResourceAcquisitionFailed("nope".to_string()));
+
+        for rx in receivers.drain(..2) {
+            let (result, _) = rx.await.unwrap();
+            assert!(matches!(
+                result,
+                Err(BatchError::ResourceAcquisitionFailed(_))
+            ));
+        }
         assert_eq!(
             queue.queued_items(),
-            3,
-            "should count every item, not just batches"
+            1,
+            "the newest item should still be queued"
         );
+        assert_eq!(queue.in_flight(), 0);
     }
 }

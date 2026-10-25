@@ -1,18 +1,11 @@
 use std::{fmt::Debug, iter, mem, sync::Arc, time::Duration};
 
-use tokio::{
-    sync::{mpsc, oneshot},
-    time::Instant,
-};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{Level, Span, info, instrument::WithSubscriber, span};
 
 use crate::{
-    BatchError,
-    batch_inner::{BatchInner, Generation},
-    error::BatchResult,
-    metrics::BatchStats,
-    processor::Processor,
-    worker::Message,
+    BatchError, batch_inner::BatchInner, error::BatchResult, metrics::BatchStats,
+    processor::Processor, worker::Message,
 };
 
 #[derive(Debug)]
@@ -29,244 +22,56 @@ pub(crate) struct BatchItem<P: Processor> {
 
 type SendOutput<O, E> = oneshot::Sender<(BatchResult<O, E>, Option<Span>)>;
 
-/// A batch of items to process.
-///
-/// State management is handled here, including timeouts, concurrency tracking, and resource
-/// acquisition.
+/// A batch of items to process, taken from its key's queue once resources have been acquired for
+/// it.
 pub(crate) struct Batch<P: Processor> {
     inner: Arc<BatchInner<P>>,
     items: Vec<BatchItem<P>>,
-    /// If set, the batch isn't ready to process until this time.
-    deadline: Option<Instant>,
-    state: BatchState<P>,
-}
-
-enum BatchState<P: Processor> {
-    New,
-    Acquiring,
-    ReadyForProcessing {
-        resources: P::Resources,
-        /// The span in which the resources were acquired.
-        span: Span,
-    },
-    Processing,
 }
 
 impl<P: Processor> Debug for Batch<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Batch {
-            inner,
-            items,
-            deadline,
-            state,
-        } = self;
+        let Batch { inner, items } = self;
         f.debug_struct("Batch")
             .field("name", &inner.name())
             .field("key", &inner.key())
-            .field("generation", &inner.generation())
             .field("items_len", &items.len())
-            .field("deadline", &deadline)
-            .field("state", &state)
             .finish()
     }
 }
 
-impl<P: Processor> Debug for BatchState<P> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BatchState::New => {
-                write!(f, "New")
-            }
-            BatchState::Acquiring => {
-                write!(f, "Acquiring")
-            }
-            BatchState::ReadyForProcessing { .. } => {
-                write!(f, "ReadyForProcessing(<Resources>)")
-            }
-            BatchState::Processing => {
-                write!(f, "Processing")
-            }
-        }
-    }
-}
-
 impl<P: Processor> Batch<P> {
-    pub(crate) fn new(batcher_name: String, key: P::Key) -> Self {
-        Self {
-            inner: Arc::new(BatchInner::new(batcher_name, key)),
-            items: Vec::new(),
-            deadline: None,
-            state: BatchState::New,
-        }
-    }
-
-    pub(crate) fn new_generation(&self) -> Self {
-        Self {
-            inner: Arc::new(self.inner.new_generation()),
-            items: Vec::new(),
-            deadline: None,
-            state: BatchState::New,
-        }
-    }
-
-    /// The size of the batch.
-    pub(crate) fn len(&self) -> usize {
-        self.items.len()
-    }
-
-    pub(crate) fn is_new_batch(&self) -> bool {
-        self.is_empty()
-    }
-
-    pub(crate) fn is_full(&self, max: usize) -> bool {
-        self.len() >= max
+    pub(crate) fn new(inner: Arc<BatchInner<P>>, items: Vec<BatchItem<P>>) -> Self {
+        Self { inner, items }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.items.is_empty()
     }
 
-    pub(crate) fn has_single_space(&self, max: usize) -> bool {
-        self.len() == max - 1
-    }
-
-    pub(crate) fn is_generation(&self, generation: Generation) -> bool {
-        self.inner.generation() == generation
-    }
-
-    pub(crate) fn is_ready(&self) -> bool {
-        // To be ready, we must be able to flush, and any deadline must be in the past.
-        self.can_flush()
-            && self
-                .deadline
-                .is_none_or(|deadline| deadline <= Instant::now())
-    }
-
-    /// Can this batch be processed now, if we ignore its deadline?
-    pub(crate) fn can_flush(&self) -> bool {
-        // We must have some items to process...
-        !self.is_empty()
-            // ... and be in a processable state, i.e. not acquiring resources
-            && self.is_processable()
-    }
-
-    fn is_processable(&self) -> bool {
-        matches!(
-            self.state,
-            BatchState::New | BatchState::ReadyForProcessing { .. }
-        )
-    }
-
-    pub(crate) fn push(&mut self, item: BatchItem<P>) {
-        self.items.push(item);
-    }
-
-    pub(crate) fn has_timeout_expired(&self) -> bool {
-        self.deadline
-            .is_some_and(|deadline| deadline <= Instant::now())
-    }
-
-    pub(crate) fn has_started_acquiring(&self) -> bool {
-        !matches!(self.state, BatchState::New)
-    }
-
-    /// Acquire resources for this batch.
+    /// Process the batch with the given resources.
     ///
-    /// Once acquired, a message will be sent back to the worker.
-    pub(crate) fn pre_acquire_resources(
-        &mut self,
+    /// Once finished, a message will be sent back to the worker.
+    pub(crate) fn process(
+        self,
         processor: P,
-        tx: mpsc::UnboundedSender<Message<P>>,
+        resources: P::Resources,
+        acquire_span: Span,
+        on_finished: mpsc::UnboundedSender<Message<P>>,
     ) {
-        soft_assert!(
-            !self.has_started_acquiring(),
-            "should not try to acquire resources if already started acquiring"
-        );
-        if !self.has_started_acquiring() {
-            let name = self.inner.name().to_string();
-            let key = self.inner.key().clone();
-            let generation = self.inner.generation();
-
-            let inner_state = Arc::clone(&self.inner);
-
-            // Spawn a new task so we can process multiple batches concurrently, without blocking the
-            // run loop.
-            tokio::spawn(async move {
-                let start = tokio::time::Instant::now();
-
-                let result = inner_state
-                    .pre_acquire(processor)
-                    .with_current_subscriber()
-                    .await;
-
-                let acquisition_duration = start.elapsed();
-
-                let msg = match result {
-                    Ok((resources, span)) => Message::ResourcesAcquired {
-                        key,
-                        generation,
-                        resources,
-                        span,
-                        acquisition_duration,
-                    },
-                    Err(err) => Message::ResourceAcquisitionFailed {
-                        key,
-                        generation,
-                        err,
-                        acquisition_duration,
-                    },
-                };
-
-                if tx.send(msg).is_err() {
-                    info!(
-                        "Tried to signal resources acquisition failure but the worker has shut down. Batcher: {}",
-                        name
-                    );
-                }
-            });
-
-            self.state = BatchState::Acquiring;
-        }
-    }
-
-    /// Store pre-acquired resources, making the batch ready for processing.
-    pub(crate) fn resources_acquired(&mut self, resources: P::Resources, span: Span) {
-        soft_assert!(
-            matches!(self.state, BatchState::Acquiring),
-            "resources acquired for a batch in state {:?}",
-            self.state
-        );
-        self.state = BatchState::ReadyForProcessing { resources, span };
-    }
-
-    pub(crate) fn process(mut self, processor: P, on_finished: mpsc::UnboundedSender<Message<P>>) {
-        soft_assert!(
-            self.is_processable(),
-            "should not try to process a batch that is in state {:?}",
-            self.state
-        );
-
-        let resources = self.take_resources();
-
         // Spawn a new task so we can process multiple batches concurrently, without blocking the
         // run loop.
         tokio::spawn(
-            self.process_inner(processor, resources, on_finished)
+            self.process_inner(processor, resources, acquire_span, on_finished)
                 .with_current_subscriber(),
         );
-    }
-
-    fn take_resources(&mut self) -> Option<(P::Resources, Span)> {
-        match mem::replace(&mut self.state, BatchState::Processing) {
-            BatchState::ReadyForProcessing { resources, span } => Some((resources, span)),
-            BatchState::New | BatchState::Acquiring | BatchState::Processing => None,
-        }
     }
 
     async fn process_inner(
         mut self,
         processor: P,
-        resources: Option<(P::Resources, Span)>,
+        resources: P::Resources,
+        acquire_span: Span,
         on_finished: mpsc::UnboundedSender<Message<P>>,
     ) {
         let batch_size = self.items.len();
@@ -285,6 +90,7 @@ impl<P: Processor> Batch<P> {
             batch.size = batch_size as u64,
             batch.first_item_wait_time_secs = delay_since_first_submission,
         );
+        outer_span.follows_from(&acquire_span);
 
         // Extract the inputs, response channels, and timestamps from the batch items.
         let mut inputs = Vec::with_capacity(batch_size);
@@ -375,10 +181,6 @@ impl<P: Processor> Batch<P> {
         }
     }
 
-    pub(crate) fn set_deadline(&mut self, deadline: Instant) {
-        self.deadline = Some(deadline);
-    }
-
     fn first_submission(&self) -> Option<tokio::time::Instant> {
         self.items.first().map(|item| item.submitted_at)
     }
@@ -386,15 +188,13 @@ impl<P: Processor> Batch<P> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
-    use tokio::{
-        sync::oneshot,
-        time::{self, Instant},
-    };
+    use tokio::{sync::oneshot, time};
     use tracing::Span;
 
     use super::{Batch, BatchItem};
+    use crate::batch_inner::BatchInner;
 
     #[derive(Clone)]
     struct DummyProcessor;
@@ -418,41 +218,11 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn is_processable_timeout() {
-        let mut batch: Batch<DummyProcessor> =
-            Batch::new("test batcher".to_string(), "key".to_string());
-
-        let (tx, _rx) = oneshot::channel();
-
-        batch.push(BatchItem {
-            key: "key".to_string(),
-            input: "item".to_string(),
-            submitted_at: tokio::time::Instant::now(),
-            received_at: None,
-            tx,
-            requesting_span: Span::none(),
-        });
-
-        batch.set_deadline(Instant::now() + Duration::from_millis(50));
-
-        assert!(!batch.is_ready(), "should not be processable initially");
-
-        time::advance(Duration::from_millis(49)).await;
-
-        assert!(!batch.is_ready(), "should not be processable after 49ms",);
-
-        time::advance(Duration::from_millis(1)).await;
-
-        assert!(batch.is_ready(), "should be processable after 50ms");
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn first_submission() {
-        let mut batch: Batch<DummyProcessor> =
-            Batch::new("test batcher".to_string(), "key".to_string());
+        let mut items = Vec::new();
 
         let (tx, _rx) = oneshot::channel();
-        batch.push(BatchItem {
+        items.push(BatchItem {
             key: "key".to_string(),
             input: "item".to_string(),
             submitted_at: tokio::time::Instant::now(),
@@ -464,7 +234,7 @@ mod tests {
         time::advance(Duration::from_millis(50)).await;
 
         let (tx, _rx) = oneshot::channel();
-        batch.push(BatchItem {
+        items.push(BatchItem {
             key: "key".to_string(),
             input: "item".to_string(),
             submitted_at: tokio::time::Instant::now(),
@@ -472,8 +242,15 @@ mod tests {
             tx,
             requesting_span: Span::none(),
         });
+        let batch: Batch<DummyProcessor> = Batch::new(
+            Arc::new(BatchInner::new(
+                "test batcher".to_string(),
+                "key".to_string(),
+            )),
+            items,
+        );
 
-        assert!(batch.len() == 2, "batch should have 2 items");
+        assert!(batch.items.len() == 2, "batch should have 2 items");
         assert!(
             batch.first_submission().is_some(),
             "first submission should be set"

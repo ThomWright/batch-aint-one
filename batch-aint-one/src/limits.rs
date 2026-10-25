@@ -6,12 +6,12 @@ use bon::bon;
 ///
 /// Most limits apply per key. `max_items_awaiting_worker` applies to the whole batcher.
 ///
-/// New items are rejected when the batch queue for their key is full: `max_batch_queue_size`
-/// batches are queued, and the newest batch already contains `max_batch_size` items.
+/// Items are queued until their batch starts processing, including while resources are being
+/// acquired for it. New items are rejected when `max_batch_queue_size * max_batch_size` items are
+/// queued for their key.
 ///
 /// `max_key_concurrency * max_batch_size` is the maximum number of items that can be processed
-/// concurrently for a key, and `max_batch_queue_size * max_batch_size` is the maximum number of
-/// items that can be queued for a key.
+/// concurrently for a key.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Limits {

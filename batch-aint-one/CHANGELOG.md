@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Every policy now starts a batch by acquiring resources, and forms the batch from the oldest queued items once they've been acquired. Previously `Size` and `Duration` formed the batch first, and so did `Immediate` and `Balanced` after another batch finished. Items which arrive while resources are being acquired now join the batch, so batches can be larger without waiting longer.
+- When resource acquisitions for a key complete out of order, the first to complete now processes the oldest items, instead of the items waiting for that particular acquisition.
+- Under `Size` and `Duration`, items now count against the queue limit until their batch starts processing, including while its resources are being acquired, as they already did under `Immediate` and `Balanced`. With slow resource acquisition, items can be rejected sooner.
+- `BatchStats`' processing duration no longer includes resource acquisition under `Size` and `Duration`, matching `Immediate` and `Balanced`. Acquisition is reported by `MetricsRecorder::resource_acquisition_completed`.
+- A failed resource acquisition fails the oldest queued items, up to `max_batch_size`, instead of the items that joined the batch it was for.
+- `MetricsRecorder::queue_depth_changed` now reports how many batches the queued items would fill, counting a partial one. Keys with nothing queued now count as 0, instead of 1.
 - Dropping the last `Batcher` no longer aborts the worker. Resource acquisition and processing already in progress run to completion, and `WorkerHandle::wait_for_shutdown()` now waits for them, instead of returning while they were still running. Batches which haven't started are still dropped, and so are resources acquired after the drop, without processing.
 - While shutting down, the worker processes batches without waiting for the batching policy: a partial batch doesn't wait to fill up, and a `Duration` batch doesn't wait for its deadline. The concurrency limits still apply. Previously, a `Size` policy's final partial batch could stop shutdown from ever completing.
 - Gauges are recorded once more when the worker shuts down, so the final values aren't left stale.

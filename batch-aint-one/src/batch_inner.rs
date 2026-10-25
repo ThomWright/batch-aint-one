@@ -9,46 +9,18 @@ use tracing::{Instrument, Level, Span, instrument::WithSubscriber, span};
 
 use crate::{BatchError, error::ProcessorInvariantViolation, processor::Processor};
 
-/// Core batch data.
+/// The batcher name and key that batches and resource acquisitions run under.
 ///
-/// Includes inner processing and resource acquisition.
+/// Runs resource acquisition and processing, catching panics.
 #[derive(Debug)]
 pub(crate) struct BatchInner<P: Processor> {
     batcher_name: String,
     key: P::Key,
-    generation: Generation,
-}
-
-/// Identifies a batch within its key's batch queue, so resource acquisition results can be
-/// matched to the batch they were acquired for.
-///
-/// Generations are not unique across the lifetime of a key: when an idle key's batch queue is
-/// removed and later recreated, the counter restarts. This is safe because a batch acquiring
-/// resources keeps its queue alive until the result has been handled.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
-pub(crate) struct Generation(u32);
-
-impl Generation {
-    pub(crate) fn next(&self) -> Self {
-        Self(self.0.wrapping_add(1))
-    }
 }
 
 impl<P: Processor> BatchInner<P> {
     pub fn new(batcher_name: String, key: P::Key) -> Self {
-        Self {
-            batcher_name,
-            key,
-            generation: Generation::default(),
-        }
-    }
-
-    pub fn new_generation(&self) -> Self {
-        Self {
-            batcher_name: self.batcher_name.clone(),
-            key: self.key.clone(),
-            generation: self.generation.next(),
-        }
+        Self { batcher_name, key }
     }
 
     pub fn name(&self) -> &str {
@@ -59,15 +31,11 @@ impl<P: Processor> BatchInner<P> {
         &self.key
     }
 
-    pub fn generation(&self) -> Generation {
-        self.generation
-    }
-
     pub async fn process(
         self: Arc<Self>,
         processor: P,
         inputs: Vec<P::Input>,
-        resources: Option<(P::Resources, Span)>,
+        resources: P::Resources,
         parent_span: Span,
     ) -> Vec<Result<P::Output, BatchError<P::Error>>> {
         let batch_size = inputs.len();
@@ -97,27 +65,13 @@ impl<P: Processor> BatchInner<P> {
         self: Arc<Self>,
         processor: P,
         inputs: Vec<P::Input>,
-        resources: Option<(P::Resources, Span)>,
+        resources: P::Resources,
         parent_span: Span,
     ) -> Result<Vec<P::Output>, BatchError<P::Error>> {
         let key = self.key.clone();
         let name = self.batcher_name.clone();
         let batch_size = inputs.len();
 
-        // Acquire resources (if we don't have them already).
-        let resources = self
-            .acquire_resources(processor.clone(), resources, parent_span.clone())
-            .await;
-
-        // Early exit if we failed to acquire resources.
-        let resources = match resources {
-            Ok(resources) => resources,
-            Err(err) => {
-                return Err(BatchError::ResourceAcquisitionFailed(err));
-            }
-        };
-
-        // Now process the batch.
         let inner_span = span!(
             parent: &parent_span,
             Level::INFO,
@@ -145,20 +99,20 @@ impl<P: Processor> BatchInner<P> {
         }
     }
 
-    pub async fn pre_acquire(
+    pub async fn acquire_resources(
         self: Arc<Self>,
         processor: P,
     ) -> Result<(P::Resources, Span), BatchError<P::Error>> {
         let key = self.key.clone();
 
-        let span = span!(Level::INFO, "pre-acquire resources", batch.name = self.batcher_name, batch.key = ?key);
+        let span = span!(Level::INFO, "acquire resources", batch.name = self.batcher_name, batch.key = ?key);
 
-        let result = self.pre_acquire_inner(processor, span.clone()).await;
+        let result = self.acquire_resources_inner(processor, span.clone()).await;
 
         result.map(|resources| (resources, span))
     }
 
-    async fn pre_acquire_inner(
+    async fn acquire_resources_inner(
         &self,
         processor: P,
         span: Span,
@@ -178,38 +132,6 @@ impl<P: Processor> BatchInner<P> {
         .await
         .map_err(join_error_to_batch_error)
         .and_then(|r| r.map_err(BatchError::ResourceAcquisitionFailed))
-    }
-
-    /// Acquire resources for processing, either from pre-acquisition or on-demand.
-    async fn acquire_resources(
-        self: Arc<Self>,
-        processor: P,
-        resources: Option<(P::Resources, Span)>,
-        parent_span: Span,
-    ) -> Result<P::Resources, P::Error> {
-        // Try to use pre-acquired resources if available
-        match resources {
-            Some((resources, acquire_span)) => {
-                // We've pre-acquired resources
-                parent_span.follows_from(acquire_span);
-                Ok(resources)
-            }
-            None => {
-                // Not pre-acquired, so acquire now
-                let acquire_span = span!(
-                    parent: &parent_span,
-                    Level::INFO,
-                    "acquire resources",
-                    batch.name = self.batcher_name,
-                    batch.key = ?self.key
-                );
-
-                processor
-                    .acquire_resources(self.key.clone())
-                    .instrument(acquire_span.clone())
-                    .await
-            }
-        }
     }
 }
 

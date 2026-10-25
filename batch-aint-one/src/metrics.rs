@@ -53,7 +53,8 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     /// hotspots without per-key labels.
     fn processing_concurrency_changed(&self, _total: usize, _max_per_key: usize) {}
 
-    /// Gauge: the total number of batches queued for processing.
+    /// Gauge: the total number of batches the queued items would fill, counting a partial batch
+    /// for each key.
     ///
     /// `max_per_key` is the deepest queue across any single key, useful for detecting
     /// saturation without per-key labels.
@@ -61,7 +62,7 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
 
     /// Gauge: the total number of items queued for processing.
     ///
-    /// Unlike [`queue_depth_changed`](Self::queue_depth_changed), which counts batches, this
+    /// Unlike [`queue_depth_changed`](Self::queue_depth_changed), which counts batches' worth of items, this
     /// counts individual items, so it isn't affected by `max_batch_size`.
     ///
     /// `max_per_key` is the highest number of items queued across any single key, useful for
@@ -103,7 +104,7 @@ pub enum GaugeRecording {
 pub struct BatchStats {
     /// The number of items in the batch.
     pub size: usize,
-    /// How long the batch took to process (including resource acquisition if not pre-acquired).
+    /// How long the batch took to process, not including resource acquisition.
     pub processing_duration: Duration,
     /// Whether the batch processed successfully.
     pub success: bool,

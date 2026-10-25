@@ -9,7 +9,7 @@ use std::{
 };
 
 use assert_matches::assert_matches;
-use batch_aint_one::{BatchError, Batcher, BatchingPolicy, Limits, Processor};
+use batch_aint_one::{BatchError, Batcher, BatchingPolicy, Limits, OnFull, Processor};
 use futures::future::join_all;
 use rstest::rstest;
 use tokio::sync::Mutex;
@@ -143,6 +143,51 @@ async fn immediate_batches_while_acquiring() {
     assert_eq!(batch_sizes.len(), 2);
     assert_eq!(batch_sizes[0], 10);
     assert_eq!(batch_sizes[1], 10);
+}
+
+/// Given we acquire resources before processing
+/// When we use a Duration batching strategy
+///  And an item arrives while resources are being acquired for a batch
+/// Then it should join that batch
+#[tokio::test]
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+async fn duration_batches_while_acquiring() {
+    tokio::time::pause();
+
+    let acquisition_dur = Duration::from_millis(100);
+    let processing_dur = Duration::from_millis(5);
+
+    let processor = ResourceAcquiringProcessor::new(acquisition_dur, processing_dur);
+
+    let batcher = Batcher::builder()
+        .name("duration_batches_while_acquiring")
+        .processor(processor.clone())
+        .limits(Limits::builder().max_batch_size(10).build())
+        .batching_policy(BatchingPolicy::Duration(
+            Duration::from_millis(10),
+            OnFull::Process,
+        ))
+        .build();
+
+    let first = tokio::spawn({
+        let batcher = batcher.clone();
+        async move { batcher.add("key".to_string(), "1".to_string()).await }
+    });
+    // After the first item's deadline, while resources are being acquired.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let second = batcher.add("key".to_string(), "2".to_string()).await;
+
+    assert_eq!(
+        first.await.unwrap().unwrap(),
+        "Item 1 processed for key with resources key_0"
+    );
+    assert_eq!(
+        second.unwrap(),
+        "Item 2 processed for key with resources key_0"
+    );
+    let batches = processor.batches.lock().await;
+    assert_eq!(batches.get("key").unwrap(), &vec![2]);
 }
 
 /// Given we acquire resources before processing

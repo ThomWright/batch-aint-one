@@ -23,11 +23,10 @@ use tracing::{Span, debug, info};
 use crate::{
     BatchError,
     batch::BatchItem,
-    batch_inner::Generation,
     batch_queue::BatchQueue,
     limits::Limits,
     metrics::{BatchStats, GaugeRecording, MetricsRecorder},
-    policies::{BatchingPolicy, OnAdd, OnDeadline, OnFinish, OnGenerationEvent},
+    policies::{BatchingPolicy, Event},
     processor::Processor,
 };
 
@@ -59,13 +58,12 @@ pub(crate) struct Worker<P: Processor> {
     /// Controls when to start processing a batch.
     batching_policy: BatchingPolicy,
 
-    /// Unprocessed batches, grouped by key `K`.
+    /// Queued items and batches in flight, grouped by key `K`.
     batch_queues: HashMap<P::Key, BatchQueue<P>>,
-    /// When to check keys for batches whose deadlines have passed.
+    /// When to ask the batching policy again whether to start a batch for a key.
     ///
-    /// The deadlines themselves live on the batches. An entry is only a reminder to check its key,
-    /// so it can outlive the batch it was made for: the batch may have been processed early, or
-    /// its queue removed. Checking then finds nothing ready and does nothing.
+    /// An entry is only a reminder to check its key, so it can be stale: the items it was for may
+    /// have been processed already, or the queue removed. Checking then starts nothing.
     wake_ups: BTreeMap<Instant, Vec<P::Key>>,
 
     metrics_recorder: Box<dyn MetricsRecorder>,
@@ -82,14 +80,12 @@ pub(crate) struct Worker<P: Processor> {
 pub(crate) enum Message<P: Processor> {
     ResourcesAcquired {
         key: P::Key,
-        generation: Generation,
         resources: P::Resources,
         span: Span,
         acquisition_duration: Duration,
     },
     ResourceAcquisitionFailed {
         key: P::Key,
-        generation: Generation,
         err: BatchError<P::Error>,
         acquisition_duration: Duration,
     },
@@ -104,25 +100,21 @@ impl<P: Processor> Debug for Message<P> {
         match self {
             Message::ResourcesAcquired {
                 key,
-                generation,
                 resources: _,
                 span: _,
                 acquisition_duration: _,
             } => f
                 .debug_tuple("ResourcesAcquired")
                 .field(key)
-                .field(generation)
                 .field(&"<Resources>")
                 .finish(),
             Message::ResourceAcquisitionFailed {
                 key,
-                generation,
                 err,
                 acquisition_duration: _,
             } => f
                 .debug_tuple("ResourceAcquisitionFailed")
                 .field(key)
-                .field(generation)
                 .field(err)
                 .finish(),
             Message::Finished { key, metrics: _ } => f.debug_tuple("Finished").field(key).finish(),
@@ -208,7 +200,7 @@ impl<P: Processor> Worker<P> {
         (WorkerHandle { control_tx }, item_tx)
     }
 
-    /// Add an item to the batch.
+    /// Add an item to its key's queue, unless the queue is full.
     fn add(&mut self, mut item: BatchItem<P>) {
         self.metrics_recorder
             .item_received(item.submitted_at.elapsed());
@@ -220,44 +212,26 @@ impl<P: Processor> Worker<P> {
             BatchQueue::new(self.batcher_name.clone(), key.clone(), self.limits)
         });
 
-        match self.batching_policy.on_add(batch_queue) {
-            OnAdd::AddAndProcess => {
-                batch_queue.push(item);
+        if let Some(reason) = self.batching_policy.should_reject(&batch_queue.state()) {
+            self.metrics_recorder.item_rejected();
 
-                self.process_next_batch(&key);
+            if item
+                .tx
+                .send((Err(BatchError::Rejected(reason)), None))
+                .is_err()
+            {
+                // Whatever was waiting for the output must have shut down. Presumably it
+                // doesn't care anymore, but we log here anyway. There's not much else we can do.
+                debug!(
+                    "Unable to send output over oneshot channel. Receiver deallocated. Batcher: {}",
+                    self.batcher_name
+                );
             }
-            OnAdd::AddAndAcquireResources => {
-                batch_queue.push(item);
-
-                batch_queue.pre_acquire_resources(self.processor.clone(), self.msg_tx.clone());
-            }
-            OnAdd::AddAndProcessAfter(duration) => {
-                batch_queue.push(item);
-
-                let deadline = Instant::now() + duration;
-                batch_queue.set_deadline(deadline);
-                self.wake_ups.entry(deadline).or_default().push(key);
-            }
-            OnAdd::Add => {
-                batch_queue.push(item);
-            }
-            OnAdd::Reject(reason) => {
-                self.metrics_recorder.item_rejected();
-
-                if item
-                    .tx
-                    .send((Err(BatchError::Rejected(reason)), None))
-                    .is_err()
-                {
-                    // Whatever was waiting for the output must have shut down. Presumably it
-                    // doesn't care anymore, but we log here anyway. There's not much else we can do.
-                    debug!(
-                        "Unable to send output over oneshot channel. Receiver deallocated. Batcher: {}",
-                        self.batcher_name
-                    );
-                }
-            }
+            return;
         }
+
+        batch_queue.push(item);
+        self.start_batches(&key, Event::ItemAdded);
     }
 
     /// Get the batch queue for the given key, which should always exist when handling an event
@@ -269,22 +243,32 @@ impl<P: Processor> Worker<P> {
         batch_queues.get_mut(key).expect("batch queue should exist")
     }
 
-    fn process_generation(&mut self, key: P::Key, generation: Generation) {
-        let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
-
-        batch_queue.process_generation(generation, self.processor.clone(), self.msg_tx.clone());
-    }
-
-    fn process_next_ready_batch(&mut self, key: &P::Key) {
+    /// Start as many batches for the key as the batching policy allows after `event`, then
+    /// schedule the policy's next wake-up, if it wants one.
+    fn start_batches(&mut self, key: &P::Key, mut event: Event) {
         let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
+        let now = Instant::now();
 
-        batch_queue.process_next_ready_batch(self.processor.clone(), self.msg_tx.clone());
-    }
+        while self
+            .batching_policy
+            .should_start_batch(event, &batch_queue.state(), now)
+        {
+            batch_queue.start_batch(self.processor.clone(), self.msg_tx.clone());
+            event = Event::BatchStarted;
+        }
 
-    fn process_next_batch(&mut self, key: &P::Key) {
-        let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
-
-        batch_queue.process_next_batch(self.processor.clone(), self.msg_tx.clone());
+        // A wake-up that's already due would fire straight away and find nothing more to start.
+        // The policy is asked again when a batch finishes instead.
+        if let Some(wake_up) = self
+            .batching_policy
+            .wake_up_at(&batch_queue.state())
+            .filter(|&wake_up| wake_up > now)
+        {
+            let keys = self.wake_ups.entry(wake_up).or_default();
+            if !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
     }
 
     /// Check every key whose wake-up time has passed.
@@ -297,30 +281,46 @@ impl<P: Processor> Worker<P> {
             }
             let batch_keys = entry.remove();
             for key in batch_keys {
-                self.on_deadline(key);
+                self.on_wake_up_for(key);
             }
         }
     }
 
-    /// Process the key's next ready batch, if the batching policy allows it.
-    fn on_deadline(&mut self, key: P::Key) {
-        let Some(batch_queue) = self.batch_queues.get_mut(&key) else {
-            debug!("Deadline for a batch queue which no longer exists. Ignoring.");
+    fn on_wake_up_for(&mut self, key: P::Key) {
+        if !self.batch_queues.contains_key(&key) {
+            debug!("Wake-up for a batch queue which no longer exists. Ignoring.");
             return;
-        };
+        }
 
-        match self.batching_policy.on_deadline(batch_queue) {
-            OnDeadline::ProcessNextReady => {
-                self.process_next_ready_batch(&key);
+        self.start_batches(&key, Event::WakeUp);
+    }
+
+    fn handle_message(&mut self, msg: Message<P>) {
+        match msg {
+            Message::ResourcesAcquired {
+                key,
+                resources,
+                span,
+                acquisition_duration,
+            } => {
+                self.on_resources_acquired(key, resources, span, acquisition_duration);
             }
-            OnDeadline::DoNothing => {}
+            Message::ResourceAcquisitionFailed {
+                key,
+                err,
+                acquisition_duration,
+            } => {
+                self.on_resource_acquisition_failed(key, err, acquisition_duration);
+            }
+            Message::Finished { key, metrics } => {
+                self.on_batch_finished(&key, metrics);
+            }
         }
     }
 
-    fn on_resource_acquired(
+    fn on_resources_acquired(
         &mut self,
         key: P::Key,
-        generation: Generation,
         resources: P::Resources,
         span: Span,
         acquisition_duration: Duration,
@@ -329,24 +329,20 @@ impl<P: Processor> Worker<P> {
             .resource_acquisition_completed(acquisition_duration, true);
 
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
+        batch_queue.resources_acquired(
+            resources,
+            span,
+            self.processor.clone(),
+            self.msg_tx.clone(),
+        );
 
-        batch_queue.resources_acquired(generation, resources, span);
-
-        match self
-            .batching_policy
-            .on_resources_acquired(generation, batch_queue)
-        {
-            OnGenerationEvent::Process => {
-                self.process_generation(key, generation);
-            }
-            OnGenerationEvent::DoNothing => {}
-        }
+        self.start_batches(&key, Event::ResourcesAcquired);
+        self.remove_if_idle(&key);
     }
 
     fn on_resource_acquisition_failed(
         &mut self,
         key: P::Key,
-        generation: Generation,
         err: BatchError<P::Error>,
         acquisition_duration: Duration,
     ) {
@@ -354,20 +350,20 @@ impl<P: Processor> Worker<P> {
             .resource_acquisition_completed(acquisition_duration, false);
 
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
+        batch_queue.acquisition_failed(err);
 
-        batch_queue.fail_generation(generation, err);
-
-        self.process_next_and_clean_up(&key);
+        self.start_batches(&key, Event::BatchFinished);
+        self.remove_if_idle(&key);
     }
 
     fn on_batch_finished(&mut self, key: &P::Key, metrics: BatchStats) {
         self.metrics_recorder.batch_completed(&metrics);
 
         let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
-
         batch_queue.mark_processed();
 
-        self.process_next_and_clean_up(key);
+        self.start_batches(key, Event::BatchFinished);
+        self.remove_if_idle(key);
     }
 
     fn record_gauges(&self) {
@@ -392,37 +388,21 @@ impl<P: Processor> Worker<P> {
             .queue_items_changed(total_items, max_items);
     }
 
-    /// After a batch has left the queue (either processed or having failed to acquire resources),
-    /// apply the batching policy's finish action and drop the queue if the key is now idle.
-    fn process_next_and_clean_up(&mut self, key: &P::Key) {
-        let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
-
-        match self.batching_policy.on_finish(batch_queue) {
-            OnFinish::ProcessNextReady => {
-                self.process_next_ready_batch(key);
-            }
-            OnFinish::ProcessNext => {
-                self.process_next_batch(key);
-            }
-            OnFinish::DoNothing => {}
-        }
-
-        // Remove the queue for idle keys, otherwise the map grows unboundedly as new keys are
-        // seen. A key can only become idle once a batch leaves the queue, so these handlers are
-        // the only place we need to do this.
+    /// Remove the queue if the key is now idle, otherwise the map grows unboundedly as new keys
+    /// are seen. A key can only become idle once a batch leaves flight, so the handlers for
+    /// spawned tasks' messages are the only place this is needed.
+    fn remove_if_idle(&mut self, key: &P::Key) {
         if Self::queue_mut(&mut self.batch_queues, key).is_idle() {
             self.batch_queues.remove(key);
         }
     }
 
-    /// Process every batch that can be processed now, within the concurrency limits, regardless
-    /// of the batching policy.
+    /// Start every batch that can start now, within the concurrency limits, regardless of the
+    /// batching policy.
     fn flush(&mut self) {
         for batch_queue in self.batch_queues.values_mut() {
-            while !batch_queue.at_max_total_processing_capacity()
-                && batch_queue.has_batch_to_flush()
-            {
-                batch_queue.flush_next_batch(self.processor.clone(), self.msg_tx.clone());
+            while batch_queue.state().can_start_batch() {
+                batch_queue.start_batch(self.processor.clone(), self.msg_tx.clone());
             }
         }
     }
@@ -532,24 +512,13 @@ impl<P: Processor> Worker<P> {
                 }
 
                 Some(msg) = self.msg_rx.recv() => {
-                    match msg {
-                        Message::ResourcesAcquired { key, generation, resources, span, acquisition_duration } => {
-                            self.on_resource_acquired(key, generation, resources, span, acquisition_duration);
-                        }
-                        Message::ResourceAcquisitionFailed { key, generation, err, acquisition_duration } => {
-                            self.on_resource_acquisition_failed(key, generation, err, acquisition_duration);
-                        }
-                        Message::Finished { key, metrics } => {
-                            self.on_batch_finished(&key, metrics);
-                        }
-                    }
+                    self.handle_message(msg);
                 }
             }
 
             // Waiting for a batch to fill up or reach its deadline could hold up shutdown, maybe
             // forever. Flushing after every event, rather than once, also catches batches which
-            // become processable later: when capacity frees up, resources are acquired, or items
-            // are added.
+            // can start later: when capacity frees up, or items are added.
             if self.shutting_down {
                 self.flush();
             }
@@ -719,21 +688,22 @@ mod test {
             requesting_span: Span::none(),
         });
 
-        // max_batch_size is 1, so the batch processes immediately.
+        // max_batch_size is 1, so the batch starts immediately. Handle the acquisition and
+        // Finished messages, as the run loop would.
+        handle_next_message(&mut worker).await;
         let output = rx.await.unwrap().0.unwrap();
         assert_eq!(output, "I1 processed");
-
-        // Handle the Finished message, as the run loop would.
-        let msg = worker.msg_rx.recv().await.unwrap();
-        let Message::Finished { key, metrics } = msg else {
-            panic!("expected Finished message, got {:?}", msg);
-        };
-        worker.on_batch_finished(&key, metrics);
+        handle_next_message(&mut worker).await;
 
         assert!(
             worker.batch_queues.is_empty(),
             "the batch queue for an idle key should be removed"
         );
+    }
+
+    async fn handle_next_message(worker: &mut Worker<SimpleBatchProcessor>) {
+        let msg = worker.msg_rx.recv().await.unwrap();
+        worker.handle_message(msg);
     }
 
     type OutputReceiver = oneshot::Receiver<(BatchResult<String, String>, Option<Span>)>;
@@ -763,33 +733,46 @@ mod test {
         worker.add(item);
         let (item, rx) = new_item("K1", "I2");
         worker.add(item);
+        handle_next_message(&mut worker).await;
         rx.await.unwrap().0.unwrap();
-        let Some(Message::Finished { key, metrics }) = worker.msg_rx.recv().await else {
-            panic!("expected Finished message");
-        };
-        worker.on_batch_finished(&key, metrics);
+        handle_next_message(&mut worker).await;
         assert!(worker.batch_queues.is_empty());
 
         tokio::time::advance(Duration::from_secs(5)).await;
         let (item, _rx) = new_item("K1", "I3");
         worker.add(item);
 
-        // The first batch's wake-up: the new batch's deadline hasn't passed yet.
+        // The first batch's wake-up: the new item hasn't waited long enough yet.
         tokio::time::advance(Duration::from_secs(5)).await;
         worker.on_wake_up();
-        assert_eq!(worker.batch_queues["K1"].processing(), 0);
+        assert_eq!(worker.batch_queues["K1"].in_flight(), 0);
 
-        // The new batch's own wake-up.
+        // The new item's own wake-up.
         tokio::time::advance(Duration::from_secs(5)).await;
         worker.on_wake_up();
-        assert_eq!(worker.batch_queues["K1"].processing(), 1);
+        assert_eq!(worker.batch_queues["K1"].in_flight(), 1);
     }
 
     #[tokio::test]
-    async fn ignores_deadline_for_removed_batch_queue() {
+    async fn ignores_wake_up_for_removed_batch_queue() {
         let mut worker = new_worker();
 
-        worker.on_deadline("K1".to_string());
+        worker.on_wake_up_for("K1".to_string());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn schedules_one_wake_up_per_key_however_many_items_are_added() {
+        let mut worker = new_worker();
+        worker.limits = Limits::builder().max_batch_size(10).build();
+        worker.batching_policy = BatchingPolicy::Duration(Duration::from_secs(10), OnFull::Process);
+
+        for input in ["I1", "I2", "I3"] {
+            let (item, _rx) = new_item("K1", input);
+            worker.add(item);
+        }
+
+        let keys: Vec<_> = worker.wake_ups.values().flatten().collect();
+        assert_eq!(keys, ["K1"]);
     }
 
     #[tokio::test]
@@ -887,7 +870,7 @@ mod test {
 
         let limits = worker.limits;
 
-        // Key "A": 3 items split across 2 batches (one full, one with a single item).
+        // Key "A": 3 items, more than one batch's worth.
         let queue_a = worker
             .batch_queues
             .entry("A".to_string())
@@ -896,7 +879,7 @@ mod test {
             queue_a.push(dummy_item("A"));
         }
 
-        // Key "B": 1 item in a single batch.
+        // Key "B": 1 item.
         let queue_b = worker
             .batch_queues
             .entry("B".to_string())
