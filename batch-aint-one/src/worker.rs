@@ -568,7 +568,7 @@ impl WorkerHandle {
     ///
     /// While shutting down, batches are processed without waiting for the batching policy, e.g. a
     /// partial batch doesn't wait to fill up and a [`Duration`](crate::BatchingPolicy::Duration)
-    /// batch doesn't wait for its deadline. The concurrency limits still apply.
+    /// batch doesn't wait for the full duration. The concurrency limits still apply.
     ///
     /// Shutdown may never complete if new items keep being added, so stop whatever adds them
     /// first. For example, in an HTTP service: stop the server and let in-flight requests finish,

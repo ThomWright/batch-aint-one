@@ -77,16 +77,16 @@ async fn loaded_process_on_full() {
 
 /// Given we use a Duration strategy
 /// When we submit more items at once than the maximum queue size
-///  And we reject when full
+///  And we wait when full
 /// Then only one batch should succeed, the rest should get rejected
 #[tokio::test]
-async fn loaded_reject_on_full() {
+async fn loaded_wait_on_full() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(50);
 
     let batcher = Batcher::builder()
-        .name("test_loaded_reject_on_full")
+        .name("test_loaded_wait_on_full")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
             Limits::builder()
@@ -97,7 +97,7 @@ async fn loaded_reject_on_full() {
         )
         .batching_policy(BatchingPolicy::Duration(
             Duration::from_millis(10),
-            OnFull::Reject,
+            OnFull::Wait,
         ))
         .build();
 
@@ -119,18 +119,18 @@ async fn loaded_reject_on_full() {
     assert_eq!(err.len(), 90);
 }
 
-/// Given we use a Duration strategy, and reject when full
+/// Given we use a Duration strategy, and wait when full
 /// When a full batch is queued, and another batch finishes before the full batch's deadline
-/// Then the full batch should still wait for its deadline
+/// Then the full batch should still wait for the full duration
 #[tokio::test]
-async fn reject_on_full_waits_for_the_deadline_when_another_batch_finishes() {
+async fn wait_on_full_waits_for_the_full_duration_when_another_batch_finishes() {
     tokio::time::pause();
 
     let processing_dur = Duration::from_millis(3);
     let batching_dur = Duration::from_millis(10);
 
     let batcher = Batcher::builder()
-        .name("test_reject_on_full_waits_for_the_deadline")
+        .name("test_wait_on_full_waits_for_the_full_duration")
         .processor(SimpleBatchProcessor(processing_dur))
         .limits(
             Limits::builder()
@@ -138,7 +138,7 @@ async fn reject_on_full_waits_for_the_deadline_when_another_batch_finishes() {
                 .max_key_concurrency(2)
                 .build(),
         )
-        .batching_policy(BatchingPolicy::Duration(batching_dur, OnFull::Reject))
+        .batching_policy(BatchingPolicy::Duration(batching_dur, OnFull::Wait))
         .build();
 
     let add = |i: i32| {
@@ -146,7 +146,7 @@ async fn reject_on_full_waits_for_the_deadline_when_another_batch_finishes() {
         tokio::spawn(async move { batcher.add("key".to_string(), i.to_string()).await })
     };
 
-    // The first batch starts at its deadline, and finishes while the next is full.
+    // The first batch starts after the duration, and finishes while the next is full.
     let first = add(1);
     tokio::time::sleep(batching_dur + Duration::from_millis(1)).await;
     let start = Instant::now();

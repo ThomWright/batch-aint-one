@@ -33,12 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
+- `OnFull::Reject`, in favour of `OnFull::Wait`, which behaves the same. Items are only rejected by the queue limit, whichever `OnFull` is used.
 - `LimitsBuilder::max_batch_queue_size`, in favour of `max_key_queued_items`. It still limits the queue to `max_batch_queue_size * max_batch_size` items, unless `max_key_queued_items` is set.
 - `MetricsRecorder::queue_depth_changed`, in favour of `queue_items_changed`. Batches only exist once they're processing, so it's still called, with how many batches the queued items would fill.
 
 ### Fixed
 
-- `Duration` with `OnFull::Reject` no longer acquires resources for a full batch early when another batch finishes. It waits for the oldest item's deadline, as documented.
+- `Duration` with `OnFull::Reject` no longer acquires resources for a full batch early when another batch finishes. It waits until the oldest item has waited for the full duration, as documented.
 - Items added just as a shutting-down worker exits are now processed. Previously they could be dropped, and their callers got `BatchError::Rx`.
 
 ### Internal

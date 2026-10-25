@@ -88,8 +88,12 @@ pub enum OnFull {
     /// as soon as another batch finishes.
     Process,
 
-    /// Don't acquire resources for a batch early. Once the key's queue is full (see [`Limits`]), new items are
-    /// rejected.
+    /// Wait until the oldest queued item has waited for the given duration, even when enough
+    /// items are queued to fill a batch.
+    Wait,
+
+    /// Behaves like [`Wait`](Self::Wait).
+    #[deprecated(note = "use `Wait`, which behaves the same")]
     Reject,
 }
 
@@ -496,21 +500,34 @@ mod tests {
         }
 
         #[test]
-        fn reject_on_full_does_not_start_a_full_batch_early() {
+        fn wait_on_full_does_not_start_a_full_batch_early() {
             let now = Instant::now() + DURATION;
-            let policy = BatchingPolicy::Duration(DURATION, OnFull::Reject);
+            let policy = BatchingPolicy::Duration(DURATION, OnFull::Wait);
 
             let full = waited(limits(2, 1), 2, Duration::ZERO, now);
             assert!(!policy.should_start_acquiring(Event::ItemAdded, &full, now));
         }
 
         #[test]
-        fn reject_on_full_does_not_start_a_full_batch_early_when_another_finishes() {
+        fn wait_on_full_does_not_start_a_full_batch_early_when_another_finishes() {
+            let now = Instant::now() + DURATION;
+            let policy = BatchingPolicy::Duration(DURATION, OnFull::Wait);
+
+            let full = waited(limits(2, 1), 2, Duration::ZERO, now);
+            assert!(!policy.should_start_acquiring(Event::BatchFinished, &full, now));
+        }
+
+        #[test]
+        #[allow(deprecated)]
+        fn reject_on_full_behaves_like_wait() {
             let now = Instant::now() + DURATION;
             let policy = BatchingPolicy::Duration(DURATION, OnFull::Reject);
 
             let full = waited(limits(2, 1), 2, Duration::ZERO, now);
+            assert!(!policy.should_start_acquiring(Event::ItemAdded, &full, now));
             assert!(!policy.should_start_acquiring(Event::BatchFinished, &full, now));
+            let waited_full = waited(limits(2, 1), 2, DURATION, now);
+            assert!(policy.should_start_acquiring(Event::WakeUp, &waited_full, now));
         }
 
         #[test]
