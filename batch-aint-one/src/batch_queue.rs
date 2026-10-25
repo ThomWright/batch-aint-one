@@ -77,10 +77,10 @@ impl<P: Processor> BatchQueue<P> {
         self.items.len()
     }
 
-    /// Start a batch by acquiring resources for it.
+    /// Start acquiring resources for a new batch.
     ///
     /// Once acquired, or once acquisition fails, a message will be sent back to the worker.
-    pub(crate) fn start_batch(&mut self, processor: P, tx: mpsc::UnboundedSender<Message<P>>) {
+    pub(crate) fn start_acquiring(&mut self, processor: P, tx: mpsc::UnboundedSender<Message<P>>) {
         self.acquiring += 1;
         soft_assert!(
             self.in_flight() <= self.limits.max_key_concurrency,
@@ -276,7 +276,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         queue.push(item("1").0);
         queue.push(item("2").0);
-        queue.start_batch(EchoProcessor, tx);
+        queue.start_acquiring(EchoProcessor, tx);
         time::advance(Duration::from_millis(10)).await;
         let third_received_at = Instant::now();
         queue.push(item("3").0);
@@ -299,8 +299,8 @@ mod tests {
                 rx
             })
             .collect();
-        queue.start_batch(EchoProcessor, tx.clone());
-        queue.start_batch(EchoProcessor, tx.clone());
+        queue.start_acquiring(EchoProcessor, tx.clone());
+        queue.start_acquiring(EchoProcessor, tx.clone());
 
         // The results stand in for both acquisitions, in either order: neither is tied to items.
         queue.resources_acquired((), Span::none(), EchoProcessor, tx.clone());
@@ -320,8 +320,8 @@ mod tests {
         let mut queue = queue(2);
         let (tx, _rx) = mpsc::unbounded_channel();
         queue.push(item("1").0);
-        queue.start_batch(EchoProcessor, tx.clone());
-        queue.start_batch(EchoProcessor, tx.clone());
+        queue.start_acquiring(EchoProcessor, tx.clone());
+        queue.start_acquiring(EchoProcessor, tx.clone());
 
         queue.resources_acquired((), Span::none(), EchoProcessor, tx.clone());
         queue.resources_acquired((), Span::none(), EchoProcessor, tx);
@@ -342,7 +342,7 @@ mod tests {
                 rx
             })
             .collect();
-        queue.start_batch(EchoProcessor, tx);
+        queue.start_acquiring(EchoProcessor, tx);
 
         queue.acquisition_failed(BatchError::ResourceAcquisitionFailed("nope".to_string()));
 

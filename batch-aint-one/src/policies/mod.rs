@@ -1,7 +1,7 @@
 //! Batching policies that control when batches get processed.
 //!
 //! A policy is a pure decision layer: given what happened to a key and the key's [`KeyState`], it
-//! decides whether to start a batch, reject an item, or wake up later. The worker carries the
+//! decides whether to start acquiring resources for a batch, reject an item, or wake up later. The worker carries the
 //! decisions out.
 
 use std::{
@@ -93,12 +93,14 @@ pub enum OnFull {
     Reject,
 }
 
-/// What happened to a key, prompting the worker to ask its policy whether to start a batch.
+/// What happened to a key, prompting the worker to ask its policy whether to start acquiring
+/// resources for a batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Event {
     ItemAdded,
-    /// The worker just started a batch, and is asking whether to start another.
-    BatchStarted,
+    /// The worker just started acquiring resources for a batch, and is asking whether to start
+    /// another acquisition.
+    AcquisitionStarted,
     ResourcesAcquired,
     /// A batch finished processing, or failed to acquire resources.
     BatchFinished,
@@ -129,8 +131,9 @@ impl KeyState {
             .saturating_sub(self.acquiring * self.limits.max_batch_size)
     }
 
-    /// Is there room for another batch within the concurrency limit, and an item for it to take?
-    pub(crate) fn can_start_batch(&self) -> bool {
+    /// Is there room for another acquisition within the concurrency limit, and an item for its
+    /// batch to take?
+    pub(crate) fn can_start_acquiring(&self) -> bool {
         !self.at_max_concurrency() && self.uncovered() >= 1
     }
 
@@ -186,9 +189,14 @@ impl BatchingPolicy {
         Some(RejectionReason::BatchQueueFull(concurrency))
     }
 
-    /// Should another batch start, after `event`?
-    pub(crate) fn should_start_batch(&self, event: Event, state: &KeyState, now: Instant) -> bool {
-        if !state.can_start_batch() {
+    /// Should another acquisition start, after `event`?
+    pub(crate) fn should_start_acquiring(
+        &self,
+        event: Event,
+        state: &KeyState,
+        now: Instant,
+    ) -> bool {
+        if !state.can_start_acquiring() {
             return false;
         }
         match self {
@@ -213,7 +221,7 @@ impl BatchingPolicy {
         }
     }
 
-    /// When the worker should next ask whether to start a batch, if the policy depends on time.
+    /// When the worker should next ask whether to start acquiring, if the policy depends on time.
     pub(crate) fn wake_up_at(&self, state: &KeyState) -> Option<Instant> {
         match self {
             Self::Duration(duration, _) => state
@@ -257,12 +265,18 @@ mod tests {
         }
 
         #[test]
-        fn can_start_batch_needs_capacity_and_an_uncovered_item() {
+        fn can_start_acquiring_needs_capacity_and_an_uncovered_item() {
             let limits = limits(10, 2);
-            assert!(state(limits, 1, 0, 0).can_start_batch());
-            assert!(!state(limits, 0, 0, 0).can_start_batch(), "no items");
-            assert!(!state(limits, 10, 1, 0).can_start_batch(), "all covered");
-            assert!(!state(limits, 11, 1, 1).can_start_batch(), "no capacity");
+            assert!(state(limits, 1, 0, 0).can_start_acquiring());
+            assert!(!state(limits, 0, 0, 0).can_start_acquiring(), "no items");
+            assert!(
+                !state(limits, 10, 1, 0).can_start_acquiring(),
+                "all covered"
+            );
+            assert!(
+                !state(limits, 11, 1, 1).can_start_acquiring(),
+                "no capacity"
+            );
         }
     }
 
@@ -314,7 +328,7 @@ mod tests {
         #[test]
         fn starts_for_the_first_item() {
             let now = Instant::now();
-            assert!(POLICY.should_start_batch(
+            assert!(POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(10, 2), 1, 0, 0),
                 now
@@ -324,7 +338,7 @@ mod tests {
         #[test]
         fn items_join_the_batch_acquiring_resources() {
             let now = Instant::now();
-            assert!(!POLICY.should_start_batch(
+            assert!(!POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(10, 2), 10, 1, 0),
                 now
@@ -334,7 +348,7 @@ mod tests {
         #[test]
         fn starts_another_once_the_acquiring_batch_is_full() {
             let now = Instant::now();
-            assert!(POLICY.should_start_batch(
+            assert!(POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(10, 2), 11, 1, 0),
                 now
@@ -344,7 +358,7 @@ mod tests {
         #[test]
         fn waits_at_max_concurrency() {
             let now = Instant::now();
-            assert!(!POLICY.should_start_batch(
+            assert!(!POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(10, 2), 11, 1, 1),
                 now
@@ -354,7 +368,7 @@ mod tests {
         #[test]
         fn starts_when_a_batch_finishes() {
             let now = Instant::now();
-            assert!(POLICY.should_start_batch(
+            assert!(POLICY.should_start_acquiring(
                 Event::BatchFinished,
                 &state(limits(10, 1), 3, 0, 0),
                 now
@@ -364,9 +378,9 @@ mod tests {
         #[test]
         fn does_not_start_for_items_covered_by_a_failed_acquisition_not_yet_handled() {
             // Another batch finishes before the worker handles an acquisition failure. The
-            // failing acquisition still covers its items, so they must not start another batch.
+            // failing acquisition still covers its items, so they must not start another acquisition.
             let now = Instant::now();
-            assert!(!POLICY.should_start_batch(
+            assert!(!POLICY.should_start_acquiring(
                 Event::BatchFinished,
                 &state(limits(1, 2), 1, 1, 0),
                 now
@@ -382,12 +396,12 @@ mod tests {
         #[test]
         fn waits_for_a_full_batch() {
             let now = Instant::now();
-            assert!(!POLICY.should_start_batch(
+            assert!(!POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(3, 2), 2, 0, 0),
                 now
             ));
-            assert!(POLICY.should_start_batch(
+            assert!(POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(3, 2), 3, 0, 0),
                 now
@@ -397,12 +411,12 @@ mod tests {
         #[test]
         fn waits_for_a_full_batch_beyond_those_acquiring() {
             let now = Instant::now();
-            assert!(!POLICY.should_start_batch(
+            assert!(!POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(3, 2), 5, 1, 0),
                 now
             ));
-            assert!(POLICY.should_start_batch(
+            assert!(POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(3, 2), 6, 1, 0),
                 now
@@ -412,7 +426,7 @@ mod tests {
         #[test]
         fn waits_for_a_full_batch_after_another_finishes() {
             let now = Instant::now();
-            assert!(!POLICY.should_start_batch(
+            assert!(!POLICY.should_start_acquiring(
                 Event::BatchFinished,
                 &state(limits(3, 2), 2, 0, 0),
                 now
@@ -422,7 +436,7 @@ mod tests {
         #[test]
         fn waits_at_max_concurrency() {
             let now = Instant::now();
-            assert!(!POLICY.should_start_batch(
+            assert!(!POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(1, 1), 1, 0, 1),
                 now
@@ -449,9 +463,9 @@ mod tests {
             let limits = limits(10, 1);
 
             let early = waited(limits, 1, DURATION - Duration::from_millis(1), now);
-            assert!(!policy.should_start_batch(Event::WakeUp, &early, now));
+            assert!(!policy.should_start_acquiring(Event::WakeUp, &early, now));
             let on_time = waited(limits, 1, DURATION, now);
-            assert!(policy.should_start_batch(Event::WakeUp, &on_time, now));
+            assert!(policy.should_start_acquiring(Event::WakeUp, &on_time, now));
         }
 
         #[test]
@@ -474,9 +488,9 @@ mod tests {
             let limits = limits(2, 1);
 
             let full = waited(limits, 2, Duration::ZERO, now);
-            assert!(policy.should_start_batch(Event::ItemAdded, &full, now));
+            assert!(policy.should_start_acquiring(Event::ItemAdded, &full, now));
             let partial = waited(limits, 1, Duration::ZERO, now);
-            assert!(!policy.should_start_batch(Event::ItemAdded, &partial, now));
+            assert!(!policy.should_start_acquiring(Event::ItemAdded, &partial, now));
         }
 
         #[test]
@@ -485,7 +499,7 @@ mod tests {
             let policy = BatchingPolicy::Duration(DURATION, OnFull::Reject);
 
             let full = waited(limits(2, 1), 2, Duration::ZERO, now);
-            assert!(!policy.should_start_batch(Event::ItemAdded, &full, now));
+            assert!(!policy.should_start_acquiring(Event::ItemAdded, &full, now));
         }
 
         #[test]
@@ -494,7 +508,7 @@ mod tests {
             let policy = BatchingPolicy::Duration(DURATION, OnFull::Reject);
 
             let full = waited(limits(2, 1), 2, Duration::ZERO, now);
-            assert!(policy.should_start_batch(Event::BatchFinished, &full, now));
+            assert!(policy.should_start_acquiring(Event::BatchFinished, &full, now));
         }
 
         #[test]
@@ -506,7 +520,7 @@ mod tests {
                 processing: 1,
                 ..waited(limits(2, 1), 1, DURATION, now)
             };
-            assert!(!policy.should_start_batch(Event::WakeUp, &at_max, now));
+            assert!(!policy.should_start_acquiring(Event::WakeUp, &at_max, now));
         }
     }
 
@@ -518,7 +532,7 @@ mod tests {
         #[test]
         fn starts_immediately_when_nothing_is_processing() {
             let now = Instant::now();
-            assert!(POLICY.should_start_batch(
+            assert!(POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(10, 2), 1, 0, 0),
                 now
@@ -528,7 +542,7 @@ mod tests {
         #[test]
         fn waits_below_the_hint_while_processing() {
             let now = Instant::now();
-            assert!(!POLICY.should_start_batch(
+            assert!(!POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(10, 2), 4, 0, 1),
                 now
@@ -538,7 +552,7 @@ mod tests {
         #[test]
         fn starts_at_the_hint_while_processing() {
             let now = Instant::now();
-            assert!(POLICY.should_start_batch(
+            assert!(POLICY.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(10, 2), 5, 0, 1),
                 now
@@ -548,7 +562,7 @@ mod tests {
         #[test]
         fn starts_below_the_hint_when_a_batch_finishes() {
             let now = Instant::now();
-            assert!(POLICY.should_start_batch(
+            assert!(POLICY.should_start_acquiring(
                 Event::BatchFinished,
                 &state(limits(10, 2), 3, 0, 1),
                 now
@@ -559,8 +573,8 @@ mod tests {
         fn a_finished_batch_makes_room_for_only_one_small_batch() {
             let now = Instant::now();
             // After starting a batch for the finished one, the remaining items wait again.
-            assert!(!POLICY.should_start_batch(
-                Event::BatchStarted,
+            assert!(!POLICY.should_start_acquiring(
+                Event::AcquisitionStarted,
                 &state(limits(10, 3), 13, 1, 1),
                 now
             ));
@@ -570,7 +584,7 @@ mod tests {
         fn hint_one_behaves_like_immediate() {
             let now = Instant::now();
             let policy = BatchingPolicy::Balanced { min_size_hint: 1 };
-            assert!(policy.should_start_batch(
+            assert!(policy.should_start_acquiring(
                 Event::ItemAdded,
                 &state(limits(10, 2), 1, 0, 1),
                 now

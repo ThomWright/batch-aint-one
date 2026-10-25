@@ -60,7 +60,7 @@ pub(crate) struct Worker<P: Processor> {
 
     /// Queued items and batches in flight, grouped by key `K`.
     batch_queues: HashMap<P::Key, BatchQueue<P>>,
-    /// When to ask the batching policy again whether to start a batch for a key.
+    /// When to ask the batching policy again whether to start acquiring resources for a key.
     ///
     /// An entry is only a reminder to check its key, so it can be stale: the items it was for may
     /// have been processed already, or the queue removed. Checking then starts nothing.
@@ -231,7 +231,7 @@ impl<P: Processor> Worker<P> {
         }
 
         batch_queue.push(item);
-        self.start_batches(&key, Event::ItemAdded);
+        self.start_acquisitions(&key, Event::ItemAdded);
     }
 
     /// Get the batch queue for the given key, which should always exist when handling an event
@@ -243,18 +243,18 @@ impl<P: Processor> Worker<P> {
         batch_queues.get_mut(key).expect("batch queue should exist")
     }
 
-    /// Start as many batches for the key as the batching policy allows after `event`, then
+    /// Start as many acquisitions for the key as the batching policy allows after `event`, then
     /// schedule the policy's next wake-up, if it wants one.
-    fn start_batches(&mut self, key: &P::Key, mut event: Event) {
+    fn start_acquisitions(&mut self, key: &P::Key, mut event: Event) {
         let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
         let now = Instant::now();
 
         while self
             .batching_policy
-            .should_start_batch(event, &batch_queue.state(), now)
+            .should_start_acquiring(event, &batch_queue.state(), now)
         {
-            batch_queue.start_batch(self.processor.clone(), self.msg_tx.clone());
-            event = Event::BatchStarted;
+            batch_queue.start_acquiring(self.processor.clone(), self.msg_tx.clone());
+            event = Event::AcquisitionStarted;
         }
 
         // A wake-up that's already due would fire straight away and find nothing more to start.
@@ -292,7 +292,7 @@ impl<P: Processor> Worker<P> {
             return;
         }
 
-        self.start_batches(&key, Event::WakeUp);
+        self.start_acquisitions(&key, Event::WakeUp);
     }
 
     fn handle_message(&mut self, msg: Message<P>) {
@@ -336,7 +336,7 @@ impl<P: Processor> Worker<P> {
             self.msg_tx.clone(),
         );
 
-        self.start_batches(&key, Event::ResourcesAcquired);
+        self.start_acquisitions(&key, Event::ResourcesAcquired);
         self.remove_if_idle(&key);
     }
 
@@ -352,7 +352,7 @@ impl<P: Processor> Worker<P> {
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
         batch_queue.acquisition_failed(err);
 
-        self.start_batches(&key, Event::BatchFinished);
+        self.start_acquisitions(&key, Event::BatchFinished);
         self.remove_if_idle(&key);
     }
 
@@ -362,7 +362,7 @@ impl<P: Processor> Worker<P> {
         let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
         batch_queue.mark_processed();
 
-        self.start_batches(key, Event::BatchFinished);
+        self.start_acquisitions(key, Event::BatchFinished);
         self.remove_if_idle(key);
     }
 
@@ -397,12 +397,12 @@ impl<P: Processor> Worker<P> {
         }
     }
 
-    /// Start every batch that can start now, within the concurrency limits, regardless of the
-    /// batching policy.
+    /// Start acquiring resources for every batch that can be processed now, within the
+    /// concurrency limits, regardless of the batching policy.
     fn flush(&mut self) {
         for batch_queue in self.batch_queues.values_mut() {
-            while batch_queue.state().can_start_batch() {
-                batch_queue.start_batch(self.processor.clone(), self.msg_tx.clone());
+            while batch_queue.state().can_start_acquiring() {
+                batch_queue.start_acquiring(self.processor.clone(), self.msg_tx.clone());
             }
         }
     }
@@ -688,7 +688,7 @@ mod test {
             requesting_span: Span::none(),
         });
 
-        // max_batch_size is 1, so the batch starts immediately. Handle the acquisition and
+        // max_batch_size is 1, so acquisition starts immediately. Handle the acquisition and
         // Finished messages, as the run loop would.
         handle_next_message(&mut worker).await;
         let output = rx.await.unwrap().0.unwrap();
