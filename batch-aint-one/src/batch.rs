@@ -22,6 +22,14 @@ pub(crate) struct BatchItem<P: Processor> {
 
 type SendOutput<O, E> = oneshot::Sender<(BatchResult<O, E>, Option<Span>)>;
 
+impl<P: Processor> BatchItem<P> {
+    /// Has the caller stopped waiting for the output, by dropping the future returned by
+    /// [`Batcher::add`](crate::Batcher::add)?
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.tx.is_closed()
+    }
+}
+
 /// A batch of items to process, taken from its key's queue once resources have been acquired for
 /// it.
 pub(crate) struct Batch<P: Processor> {

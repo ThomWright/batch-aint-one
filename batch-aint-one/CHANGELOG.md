@@ -13,9 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LimitsBuilder` and `BatcherBuilder` are now exported, so the API docs include their setters, e.g. each limit's default.
 - `MetricsRecorder::gauge_recording` and `GaugeRecording`, to choose when gauges are recorded: after every change (the default), on an interval, or only when `WorkerHandle::record_gauges()` is called.
 - `WorkerHandle::record_gauges()`, to record the current gauges on demand.
+- `MetricsRecorder::items_cancelled`, recording items dropped without being processed because their callers stopped waiting.
 
 ### Changed
 
+- Items whose callers stop waiting, by dropping the future returned by `Batcher::add()`, before their batch starts processing are no longer processed, and no longer count against the queue limit. Batches are made up of items whose callers are still waiting, so they stay full when callers give up. `Batcher::add()` documents the details.
 - Every policy now starts a batch by acquiring resources, and forms the batch from the oldest queued items once they've been acquired. Previously `Size` and `Duration` formed the batch first, and so did `Immediate` and `Balanced` after another batch finished. Items which arrive while resources are being acquired now join the batch, so batches can be larger without waiting longer.
 - When resource acquisitions for a key complete out of order, the first to complete now processes the oldest items, instead of the items waiting for that particular acquisition.
 - Under `Size` and `Duration`, items now count against the queue limit until their batch starts processing, including while its resources are being acquired, as they already did under `Immediate` and `Balanced`. With slow resource acquisition, items can be rejected sooner.

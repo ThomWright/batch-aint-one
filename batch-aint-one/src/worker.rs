@@ -200,11 +200,16 @@ impl<P: Processor> Worker<P> {
         (WorkerHandle { control_tx }, item_tx)
     }
 
-    /// Add an item to its key's queue, unless the queue is full.
+    /// Add an item to its key's queue, unless the queue is full or the item has been cancelled.
     fn add(&mut self, mut item: BatchItem<P>) {
         self.metrics_recorder
             .item_received(item.submitted_at.elapsed());
         item.received_at = Some(tokio::time::Instant::now());
+
+        if item.is_cancelled() {
+            Self::record_cancelled(&*self.metrics_recorder, 1);
+            return;
+        }
 
         let key = item.key.clone();
 
@@ -212,7 +217,14 @@ impl<P: Processor> Worker<P> {
             BatchQueue::new(self.batcher_name.clone(), key.clone(), self.limits)
         });
 
-        if let Some(reason) = self.batching_policy.should_reject(&batch_queue.state()) {
+        // Cancelled items don't count against the queue limit. Removing them can only make room,
+        // so it's only worth doing when the queue looks full.
+        let mut rejection = self.batching_policy.should_reject(&batch_queue.state());
+        if rejection.is_some() && Self::remove_cancelled(batch_queue, &*self.metrics_recorder) {
+            rejection = self.batching_policy.should_reject(&batch_queue.state());
+        }
+
+        if let Some(reason) = rejection {
             self.metrics_recorder.item_rejected();
 
             if item
@@ -243,16 +255,53 @@ impl<P: Processor> Worker<P> {
         batch_queues.get_mut(key).expect("batch queue should exist")
     }
 
+    /// Remove the queue's cancelled items, and record how many there were. Returns whether there
+    /// were any.
+    fn remove_cancelled(
+        batch_queue: &mut BatchQueue<P>,
+        metrics_recorder: &dyn MetricsRecorder,
+    ) -> bool {
+        let cancelled = batch_queue.remove_cancelled();
+        Self::record_cancelled(metrics_recorder, cancelled);
+        cancelled > 0
+    }
+
+    fn record_cancelled(metrics_recorder: &dyn MetricsRecorder, cancelled: usize) {
+        if cancelled > 0 {
+            metrics_recorder.items_cancelled(cancelled);
+        }
+    }
+
     /// Start as many acquisitions for the key as the batching policy allows after `event`, then
     /// schedule the policy's next wake-up, if it wants one.
     fn start_acquisitions(&mut self, key: &P::Key, mut event: Event) {
         let batch_queue = Self::queue_mut(&mut self.batch_queues, key);
         let now = Instant::now();
+        let mut removed_cancelled = false;
 
-        while self
-            .batching_policy
-            .should_start_acquiring(event, &batch_queue.state(), now)
-        {
+        loop {
+            if !self
+                .batching_policy
+                .should_start_acquiring(event, &batch_queue.state(), now)
+            {
+                break;
+            }
+            // The policy decided on counts which may include cancelled items. Fewer items never
+            // make a policy start acquiring when it otherwise wouldn't, so it only needs asking
+            // again if some were removed. Once is enough: an item cancelled since then is no
+            // different to one cancelled during acquisition.
+            if !removed_cancelled {
+                removed_cancelled = true;
+                if Self::remove_cancelled(batch_queue, &*self.metrics_recorder)
+                    && !self.batching_policy.should_start_acquiring(
+                        event,
+                        &batch_queue.state(),
+                        now,
+                    )
+                {
+                    break;
+                }
+            }
             batch_queue.start_acquiring(self.processor.clone(), self.msg_tx.clone());
             event = Event::AcquisitionStarted;
         }
@@ -329,12 +378,13 @@ impl<P: Processor> Worker<P> {
             .resource_acquisition_completed(acquisition_duration, true);
 
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
-        batch_queue.resources_acquired(
+        let cancelled = batch_queue.resources_acquired(
             resources,
             span,
             self.processor.clone(),
             self.msg_tx.clone(),
         );
+        Self::record_cancelled(&*self.metrics_recorder, cancelled);
 
         self.start_acquisitions(&key, Event::ResourcesAcquired);
         self.remove_if_idle(&key);
@@ -350,7 +400,8 @@ impl<P: Processor> Worker<P> {
             .resource_acquisition_completed(acquisition_duration, false);
 
         let batch_queue = Self::queue_mut(&mut self.batch_queues, &key);
-        batch_queue.acquisition_failed(err);
+        let cancelled = batch_queue.acquisition_failed(err);
+        Self::record_cancelled(&*self.metrics_recorder, cancelled);
 
         self.start_acquisitions(&key, Event::BatchFinished);
         self.remove_if_idle(&key);
@@ -401,6 +452,7 @@ impl<P: Processor> Worker<P> {
     /// concurrency limits, regardless of the batching policy.
     fn flush(&mut self) {
         for batch_queue in self.batch_queues.values_mut() {
+            Self::remove_cancelled(batch_queue, &*self.metrics_recorder);
             while batch_queue.state().can_start_acquiring() {
                 batch_queue.start_acquiring(self.processor.clone(), self.msg_tx.clone());
             }
@@ -751,6 +803,32 @@ mod test {
         tokio::time::advance(Duration::from_secs(5)).await;
         worker.on_wake_up();
         assert_eq!(worker.batch_queues["K1"].in_flight(), 1);
+    }
+
+    #[tokio::test]
+    async fn drops_items_cancelled_before_they_are_received() {
+        let mut worker = new_worker();
+        let cancelled = Arc::new(Mutex::new(0));
+        worker.metrics_recorder = Box::new(CancellationMetrics(Arc::clone(&cancelled)));
+
+        let (item, rx) = new_item("K1", "I1");
+        drop(rx);
+        worker.add(item);
+
+        assert!(
+            worker.batch_queues.is_empty(),
+            "should not queue the item, or create a queue for its key"
+        );
+        assert_eq!(*cancelled.lock().unwrap(), 1);
+    }
+
+    #[derive(Debug)]
+    struct CancellationMetrics(Arc<Mutex<usize>>);
+
+    impl MetricsRecorder for CancellationMetrics {
+        fn items_cancelled(&self, count: usize) {
+            *self.0.lock().unwrap() += count;
+        }
     }
 
     #[tokio::test]

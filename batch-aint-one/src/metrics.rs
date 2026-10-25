@@ -38,6 +38,12 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     /// An item was rejected because the batch queue for its key is full.
     fn item_rejected(&self) {}
 
+    /// Items were dropped without being processed, because their callers stopped waiting for
+    /// them by dropping the future returned by [`Batcher::add()`](crate::Batcher::add).
+    ///
+    /// Called with the number of items found cancelled at once.
+    fn items_cancelled(&self, _count: usize) {}
+
     /// A batch finished processing and results were sent back to callers.
     fn batch_completed(&self, _metrics: &BatchStats) {}
 
@@ -67,6 +73,9 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     ///
     /// `max_per_key` is the highest number of items queued across any single key, useful for
     /// detecting saturation without per-key labels.
+    ///
+    /// Includes items which have been cancelled but not yet noticed by the worker. It notices
+    /// them before deciding to process or reject items for their key.
     fn queue_items_changed(&self, _total: usize, _max_per_key: usize) {}
 }
 

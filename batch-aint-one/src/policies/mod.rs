@@ -190,6 +190,10 @@ impl BatchingPolicy {
     }
 
     /// Should another acquisition start, after `event`?
+    ///
+    /// `state` may count cancelled items. That's safe because fewer queued items never makes this
+    /// return true where it would otherwise return false, so the worker only asks again after
+    /// removing them. The same goes for [`should_reject`](Self::should_reject).
     pub(crate) fn should_start_acquiring(
         &self,
         event: Event,

@@ -16,6 +16,11 @@ use crate::{
 ///
 /// Items wait in the order they were received. A batch is only formed once resources have been
 /// acquired for it, from the oldest items, so whichever acquisition completes first takes them.
+///
+/// Queued items may have been [cancelled](BatchItem::is_cancelled) since they were added, so the
+/// counts in [`state()`](Self::state) are upper bounds until
+/// [`remove_cancelled()`](Self::remove_cancelled) is called. Taking a batch skips cancelled items,
+/// so they're never processed.
 pub(crate) struct BatchQueue<P: Processor> {
     batcher_name: Arc<str>,
     key: P::Key,
@@ -52,6 +57,13 @@ impl<P: Processor> BatchQueue<P> {
 
     pub(crate) fn push(&mut self, item: BatchItem<P>) {
         self.items.push_back(item);
+    }
+
+    /// Remove every cancelled item, returning how many were removed.
+    pub(crate) fn remove_cancelled(&mut self) -> usize {
+        let len = self.items.len();
+        self.items.retain(|item| !item.is_cancelled());
+        len - self.items.len()
     }
 
     /// Is this key idle, i.e. no queued items and no batches in flight?
@@ -123,32 +135,39 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     /// Process a batch of the oldest items with resources acquired for it.
+    ///
+    /// Returns how many cancelled items were skipped.
     pub(crate) fn resources_acquired(
         &mut self,
         resources: P::Resources,
         span: Span,
         processor: P,
         on_finished: mpsc::UnboundedSender<Message<P>>,
-    ) {
+    ) -> usize {
         self.mark_acquisition_finished();
 
-        let batch = self.take_batch();
+        let (batch, cancelled) = self.take_batch();
         if batch.is_empty() {
             debug!(
                 "Resources acquired with no items to process. Dropping them. Batcher: {}",
                 self.batcher_name
             );
-            return;
+            return cancelled;
         }
 
         self.processing += 1;
         batch.process(processor, resources, span, on_finished);
+        cancelled
     }
 
     /// Fail a batch of the oldest items, since resources couldn't be acquired for it.
-    pub(crate) fn acquisition_failed(&mut self, err: BatchError<P::Error>) {
+    ///
+    /// Returns how many cancelled items were skipped.
+    pub(crate) fn acquisition_failed(&mut self, err: BatchError<P::Error>) -> usize {
         self.mark_acquisition_finished();
-        self.take_batch().fail(err);
+        let (batch, cancelled) = self.take_batch();
+        batch.fail(err);
+        cancelled
     }
 
     pub(crate) fn mark_processed(&mut self) {
@@ -167,14 +186,26 @@ impl<P: Processor> BatchQueue<P> {
         self.acquiring = self.acquiring.saturating_sub(1);
     }
 
-    /// Take up to `max_batch_size` of the oldest items.
-    fn take_batch(&mut self) -> Batch<P> {
-        let len = self.items.len().min(self.limits.max_batch_size);
-        Batch::new(
-            Arc::clone(&self.batcher_name),
-            self.key.clone(),
-            self.items.drain(..len).collect(),
-        )
+    /// Take up to `max_batch_size` of the oldest items which haven't been cancelled, also
+    /// removing any cancelled items before the last one taken. Returns the batch, and how many
+    /// cancelled items were removed.
+    fn take_batch(&mut self) -> (Batch<P>, usize) {
+        let max = self.limits.max_batch_size;
+        let mut items = Vec::with_capacity(max.min(self.items.len()));
+        let mut cancelled = 0;
+        while items.len() < max {
+            let Some(item) = self.items.pop_front() else {
+                break;
+            };
+            if item.is_cancelled() {
+                cancelled += 1;
+            } else {
+                items.push(item);
+            }
+        }
+
+        let batch = Batch::new(Arc::clone(&self.batcher_name), self.key.clone(), items);
+        (batch, cancelled)
     }
 }
 
@@ -319,7 +350,8 @@ mod tests {
     async fn drops_resources_acquired_with_no_items_to_process() {
         let mut queue = queue(2);
         let (tx, _rx) = mpsc::unbounded_channel();
-        queue.push(item("1").0);
+        let (item, _output) = item("1");
+        queue.push(item);
         queue.start_acquiring(EchoProcessor, tx.clone());
         queue.start_acquiring(EchoProcessor, tx.clone());
 
@@ -328,6 +360,52 @@ mod tests {
 
         assert_eq!(queue.processing(), 1, "only one batch had items");
         assert_eq!(queue.in_flight(), 1);
+    }
+
+    #[tokio::test]
+    async fn batches_skip_cancelled_items() {
+        let mut queue = queue(2);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (cancelled, _) = item("1");
+        queue.push(cancelled);
+        let receivers: Vec<_> = ["2", "3", "4"]
+            .into_iter()
+            .map(|input| {
+                let (item, rx) = item(input);
+                queue.push(item);
+                rx
+            })
+            .collect();
+        queue.start_acquiring(EchoProcessor, tx.clone());
+
+        let skipped = queue.resources_acquired((), Span::none(), EchoProcessor, tx);
+
+        assert_eq!(skipped, 1);
+        assert_eq!(
+            queue.queued_items(),
+            1,
+            "should take a full batch of live items"
+        );
+        let mut receivers = receivers.into_iter();
+        for expected in ["2", "3"] {
+            let output = receivers.next().unwrap().await.unwrap().0.unwrap();
+            assert_eq!(output, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn removes_cancelled_items_from_anywhere_in_the_queue() {
+        let mut queue = queue(2);
+        let (first, _first_output) = item("1");
+        let (second, _) = item("2");
+        let (third, _third_output) = item("3");
+        let (fourth, _) = item("4");
+        for item in [first, second, third, fourth] {
+            queue.push(item);
+        }
+
+        assert_eq!(queue.remove_cancelled(), 2);
+        assert_eq!(queue.queued_items(), 2);
     }
 
     #[tokio::test]

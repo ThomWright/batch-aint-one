@@ -75,6 +75,16 @@ impl<P: Processor> Batcher<P> {
     }
 
     /// Add an item to be batched and processed, and await the result.
+    ///
+    /// # Cancellation
+    ///
+    /// If the returned future is dropped before the item's batch starts processing, the item isn't
+    /// processed, and doesn't count against the queue limit. Once its batch has started
+    /// processing, it runs to completion, and the item's output is discarded.
+    ///
+    /// A batch takes its items once resources have been acquired for it, so dropping the future
+    /// during acquisition counts as before processing. The batch may then be smaller than the
+    /// [`BatchingPolicy`] waited for.
     pub async fn add(&self, key: P::Key, input: P::Input) -> BatchResult<P::Output, P::Error> {
         // Record the span ID so we can link the shared processing span.
         let requesting_span = Span::current();
