@@ -210,10 +210,8 @@ impl BatchingPolicy {
                 let waited_long_enough = state
                     .oldest_uncovered_received_at
                     .is_some_and(|received_at| received_at + *duration <= now);
-                // A full batch also starts when another batch finishes, whatever `on_full` says.
-                let start_when_full =
-                    matches!(on_full, OnFull::Process) || event == Event::BatchFinished;
-                waited_long_enough || (start_when_full && state.has_full_batch_uncovered())
+                waited_long_enough
+                    || (matches!(on_full, OnFull::Process) && state.has_full_batch_uncovered())
             }
             Self::Balanced { min_size_hint } => {
                 // While other batches are processing, only use more concurrency for a big enough
@@ -507,12 +505,12 @@ mod tests {
         }
 
         #[test]
-        fn starts_a_full_batch_when_another_finishes_even_with_reject_on_full() {
+        fn reject_on_full_does_not_start_a_full_batch_early_when_another_finishes() {
             let now = Instant::now() + DURATION;
             let policy = BatchingPolicy::Duration(DURATION, OnFull::Reject);
 
             let full = waited(limits(2, 1), 2, Duration::ZERO, now);
-            assert!(policy.should_start_acquiring(Event::BatchFinished, &full, now));
+            assert!(!policy.should_start_acquiring(Event::BatchFinished, &full, now));
         }
 
         #[test]

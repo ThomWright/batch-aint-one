@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Duration` with `OnFull::Reject` no longer acquires resources for a full batch early when another batch finishes. It waits for the oldest item's deadline, as documented.
 - Items added just as a shutting-down worker exits are now processed. Previously they could be dropped, and their callers got `BatchError::Rx`.
 
 ### Internal

@@ -118,3 +118,48 @@ async fn loaded_reject_on_full() {
     assert_eq!(ok.len(), 10);
     assert_eq!(err.len(), 90);
 }
+
+/// Given we use a Duration strategy, and reject when full
+/// When a full batch is queued, and another batch finishes before the full batch's deadline
+/// Then the full batch should still wait for its deadline
+#[tokio::test]
+async fn reject_on_full_waits_for_the_deadline_when_another_batch_finishes() {
+    tokio::time::pause();
+
+    let processing_dur = Duration::from_millis(3);
+    let batching_dur = Duration::from_millis(10);
+
+    let batcher = Batcher::builder()
+        .name("test_reject_on_full_waits_for_the_deadline")
+        .processor(SimpleBatchProcessor(processing_dur))
+        .limits(
+            Limits::builder()
+                .max_batch_size(2)
+                .max_key_concurrency(2)
+                .build(),
+        )
+        .batching_policy(BatchingPolicy::Duration(batching_dur, OnFull::Reject))
+        .build();
+
+    let add = |i: i32| {
+        let batcher = batcher.clone();
+        tokio::spawn(async move { batcher.add("key".to_string(), i.to_string()).await })
+    };
+
+    // The first batch starts at its deadline, and finishes while the next is full.
+    let first = add(1);
+    tokio::time::sleep(batching_dur + Duration::from_millis(1)).await;
+    let start = Instant::now();
+    let second = add(2);
+    let third = add(3);
+
+    first.await.unwrap().unwrap();
+    second.await.unwrap().unwrap();
+    third.await.unwrap().unwrap();
+
+    assert_elapsed!(
+        start,
+        batching_dur + processing_dur,
+        Duration::from_millis(2)
+    );
+}
