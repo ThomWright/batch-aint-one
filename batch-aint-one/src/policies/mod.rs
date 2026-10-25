@@ -1,8 +1,8 @@
 //! Batching policies that control when batches get processed.
 //!
 //! A policy is a pure decision layer: given what happened to a key and the key's [`KeyState`], it
-//! decides whether to start acquiring resources for a batch, reject an item, or wake up later. The worker carries the
-//! decisions out.
+//! decides whether to start acquiring resources for a batch, reject an item, or wake up later.
+//! The worker carries the decisions out.
 
 use std::{
     fmt::{self, Debug, Display},
@@ -48,6 +48,10 @@ pub enum BatchingPolicy {
 
     /// Acquire resources for a batch once enough items are queued to fill it.
     ///
+    /// A partial batch waits until enough items arrive to fill it, however long that takes, or
+    /// until the batcher [shuts down](crate::WorkerHandle::shut_down). For a bound on the wait,
+    /// use [`Duration`](Self::Duration) with [`OnFull::Process`].
+    ///
     /// Prioritises high batch utilisation.
     Size,
 
@@ -70,7 +74,13 @@ pub enum BatchingPolicy {
     ///   any batch to complete
     /// - If at least `min_size_hint` items are waiting: acquire resources for a batch immediately
     ///
-    /// The `min_size_hint` must be <= `max_batch_size`.
+    /// A `min_size_hint` greater than `max_batch_size` is treated as `max_batch_size`.
+    ///
+    /// Use it when each batch has a cost of its own, e.g. 10 single-row `INSERT`s cost more than
+    /// one 10-row `INSERT`. While concurrency is available, [`Immediate`](Self::Immediate) starts
+    /// acquiring resources as soon as an item arrives. So when that's quick, items arriving one
+    /// after another can each end up in a batch of their own. `Balanced` makes them wait instead,
+    /// so it uses fewer, larger batches.
     ///
     /// Prioritises efficient resource usage while maintaining reasonable latency.
     Balanced {

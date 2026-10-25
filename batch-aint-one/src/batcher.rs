@@ -39,11 +39,6 @@ pub struct Batcher<P: Processor> {
 #[bon]
 impl<P: Processor> Batcher<P> {
     /// Create a new batcher.
-    ///
-    /// # Notes
-    ///
-    /// If `batching_policy` is `Balanced { min_size_hint }` where `min_size_hint` is greater than
-    /// `limits.max_batch_size`, the `min_size_hint` will be clamped to `max_batch_size`.
     #[builder]
     pub fn new(
         name: impl Into<String>,
