@@ -34,7 +34,6 @@ macro_rules! soft_assert {
 }
 
 mod batch;
-mod batch_inner;
 mod batch_queue;
 mod batcher;
 pub mod error;
@@ -42,6 +41,7 @@ mod limits;
 pub mod metrics;
 mod policies;
 mod processor;
+mod user_code;
 mod worker;
 
 pub use batcher::{Batcher, BatcherBuilder};

@@ -4,8 +4,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{Level, Span, info, instrument::WithSubscriber, span};
 
 use crate::{
-    BatchError, batch_inner::BatchInner, error::BatchResult, metrics::BatchStats,
-    processor::Processor, worker::Message,
+    BatchError, error::BatchResult, metrics::BatchStats, processor::Processor, user_code,
+    worker::Message,
 };
 
 #[derive(Debug)]
@@ -25,24 +25,33 @@ type SendOutput<O, E> = oneshot::Sender<(BatchResult<O, E>, Option<Span>)>;
 /// A batch of items to process, taken from its key's queue once resources have been acquired for
 /// it.
 pub(crate) struct Batch<P: Processor> {
-    inner: Arc<BatchInner<P>>,
+    batcher_name: Arc<str>,
+    key: P::Key,
     items: Vec<BatchItem<P>>,
 }
 
 impl<P: Processor> Debug for Batch<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Batch { inner, items } = self;
+        let Batch {
+            batcher_name,
+            key,
+            items,
+        } = self;
         f.debug_struct("Batch")
-            .field("name", &inner.name())
-            .field("key", &inner.key())
+            .field("name", batcher_name)
+            .field("key", key)
             .field("items_len", &items.len())
             .finish()
     }
 }
 
 impl<P: Processor> Batch<P> {
-    pub(crate) fn new(inner: Arc<BatchInner<P>>, items: Vec<BatchItem<P>>) -> Self {
-        Self { inner, items }
+    pub(crate) fn new(batcher_name: Arc<str>, key: P::Key, items: Vec<BatchItem<P>>) -> Self {
+        Self {
+            batcher_name,
+            key,
+            items,
+        }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -75,8 +84,8 @@ impl<P: Processor> Batch<P> {
         on_finished: mpsc::UnboundedSender<Message<P>>,
     ) {
         let batch_size = self.items.len();
-        let name = self.inner.name();
-        let key = self.inner.key();
+        let name = Arc::clone(&self.batcher_name);
+        let key = self.key.clone();
 
         let delay_since_first_submission = self
             .first_submission()
@@ -84,7 +93,7 @@ impl<P: Processor> Batch<P> {
             .unwrap_or(0.0);
 
         let outer_span = span!(Level::INFO, "process batch",
-            batch.name = &name,
+            batch.name = &*name,
             batch.key = ?key,
             // Convert to u64 so tracing will treat this as an integer instead of a string.
             batch.size = batch_size as u64,
@@ -112,9 +121,15 @@ impl<P: Processor> Batch<P> {
         // Process the batch.
         let process_start = tokio::time::Instant::now();
 
-        let outputs = Arc::clone(&self.inner)
-            .process(processor, inputs, resources, outer_span.clone())
-            .await;
+        let outputs = user_code::process(
+            processor,
+            name,
+            key.clone(),
+            inputs,
+            resources,
+            outer_span.clone(),
+        )
+        .await;
 
         let processing_duration = process_start.elapsed();
         let success = outputs.iter().all(|o| o.is_ok());
@@ -139,7 +154,7 @@ impl<P: Processor> Batch<P> {
         );
 
         // Signal that we're finished with this batch.
-        Self::finalise(key.clone(), metrics, on_finished);
+        Self::finalise(key, metrics, on_finished);
     }
 
     /// Send a failure result to every item in the batch.
@@ -194,7 +209,6 @@ mod tests {
     use tracing::Span;
 
     use super::{Batch, BatchItem};
-    use crate::batch_inner::BatchInner;
 
     #[derive(Clone)]
     struct DummyProcessor;
@@ -242,13 +256,8 @@ mod tests {
             tx,
             requesting_span: Span::none(),
         });
-        let batch: Batch<DummyProcessor> = Batch::new(
-            Arc::new(BatchInner::new(
-                "test batcher".to_string(),
-                "key".to_string(),
-            )),
-            items,
-        );
+        let batch: Batch<DummyProcessor> =
+            Batch::new(Arc::from("test batcher"), "key".to_string(), items);
 
         assert!(batch.items.len() == 2, "batch should have 2 items");
         assert!(

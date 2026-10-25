@@ -6,9 +6,9 @@ use tracing::{Span, debug, info, instrument::WithSubscriber};
 use crate::{
     BatchError, Limits,
     batch::{Batch, BatchItem},
-    batch_inner::BatchInner,
     policies::KeyState,
     processor::Processor,
+    user_code,
     worker::Message,
 };
 
@@ -17,7 +17,8 @@ use crate::{
 /// Items wait in the order they were received. A batch is only formed once resources have been
 /// acquired for it, from the oldest items, so whichever acquisition completes first takes them.
 pub(crate) struct BatchQueue<P: Processor> {
-    inner: Arc<BatchInner<P>>,
+    batcher_name: Arc<str>,
+    key: P::Key,
     items: VecDeque<BatchItem<P>>,
     limits: Limits,
     /// The number of batches with this key that are acquiring resources.
@@ -29,7 +30,8 @@ pub(crate) struct BatchQueue<P: Processor> {
 impl<P: Processor> BatchQueue<P> {
     pub(crate) fn new(batcher_name: String, key: P::Key, limits: Limits) -> Self {
         Self {
-            inner: Arc::new(BatchInner::new(batcher_name, key)),
+            batcher_name: Arc::from(batcher_name),
+            key,
             items: VecDeque::new(),
             limits,
             acquiring: 0,
@@ -85,16 +87,17 @@ impl<P: Processor> BatchQueue<P> {
             "batches in flight should not exceed max key concurrency"
         );
 
-        let inner = Arc::clone(&self.inner);
+        let batcher_name = Arc::clone(&self.batcher_name);
+        let key = self.key.clone();
         // Spawn a new task so we can acquire resources for multiple batches concurrently, without
         // blocking the run loop.
         tokio::spawn(
             async move {
                 let start = tokio::time::Instant::now();
-                let result = Arc::clone(&inner).acquire_resources(processor).await;
+                let result =
+                    user_code::acquire_resources(processor, &batcher_name, key.clone()).await;
                 let acquisition_duration = start.elapsed();
 
-                let key = inner.key().clone();
                 let msg = match result {
                     Ok((resources, span)) => Message::ResourcesAcquired {
                         key,
@@ -111,7 +114,7 @@ impl<P: Processor> BatchQueue<P> {
                 if tx.send(msg).is_err() {
                     info!(
                         "Tried to signal resource acquisition had finished but the worker has shut down. Batcher: {}",
-                        inner.name()
+                        batcher_name
                     );
                 }
             }
@@ -133,7 +136,7 @@ impl<P: Processor> BatchQueue<P> {
         if batch.is_empty() {
             debug!(
                 "Resources acquired with no items to process. Dropping them. Batcher: {}",
-                self.inner.name()
+                self.batcher_name
             );
             return;
         }
@@ -167,22 +170,27 @@ impl<P: Processor> BatchQueue<P> {
     /// Take up to `max_batch_size` of the oldest items.
     fn take_batch(&mut self) -> Batch<P> {
         let len = self.items.len().min(self.limits.max_batch_size);
-        Batch::new(Arc::clone(&self.inner), self.items.drain(..len).collect())
+        Batch::new(
+            Arc::clone(&self.batcher_name),
+            self.key.clone(),
+            self.items.drain(..len).collect(),
+        )
     }
 }
 
 impl<P: Processor> Debug for BatchQueue<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
-            inner,
+            batcher_name,
+            key,
             items,
             limits,
             acquiring,
             processing,
         } = self;
         f.debug_struct("BatchQueue")
-            .field("batcher_name", &inner.name())
-            .field("key", inner.key())
+            .field("batcher_name", batcher_name)
+            .field("key", key)
             .field("items_len", &items.len())
             .field("acquiring", &acquiring)
             .field("processing", &processing)
