@@ -49,11 +49,8 @@ pub trait Processor: 'static + Send + Clone {
 
     /// Acquire resources to be used for processing the next batch with the given key.
     ///
-    /// This method is called before processing each batch.
-    ///
-    /// For the `Immediate` and `Balanced` batching policies, resources can be acquired before the
-    /// batch is processed, and the batch will keep accumulating items until the resources are
-    /// acquired.
+    /// Called before processing each batch. While resources are being acquired, items keep
+    /// queueing, and the batch is made from the oldest queued items once they've been acquired.
     ///
     /// Can be used to e.g. acquire a database connection from a pool.
     fn acquire_resources(
