@@ -455,63 +455,6 @@ impl<P: Processor> Worker<P> {
         }
     }
 
-    /// Wait for every in-flight resource acquisition and processing task to finish, after the
-    /// last [`Batcher`](crate::Batcher) has been dropped.
-    ///
-    /// Nothing can be waiting for an output, so batches which haven't started are dropped, and so
-    /// are resources acquired for them. Only control requests and reports from spawned tasks are
-    /// handled here, so no new work can start.
-    async fn finish_in_flight(&mut self) {
-        let mut in_flight: usize = self.batch_queues.values().map(BatchQueue::in_flight).sum();
-        self.batch_queues.clear();
-        self.wake_ups.clear();
-        info!(
-            "Batch worker '{}' is shutting down, waiting for {} in-flight batches",
-            &self.batcher_name, in_flight
-        );
-        if self.gauge_recording == GaugeRecording::OnChange {
-            self.record_gauges();
-        }
-
-        while in_flight > 0 {
-            tokio::select! {
-                Some(msg) = self.control_rx.recv() => {
-                    match msg {
-                        ControlMessage::Register(notifier) => {
-                            self.shutdown_notifiers.push(notifier.0);
-                        }
-                        // Already shutting down.
-                        ControlMessage::ShutDown => {}
-                        ControlMessage::RecordGauges(done) => {
-                            self.record_gauges();
-                            // The caller may have stopped waiting, which is fine.
-                            let _ = done.send(());
-                        }
-                    }
-                }
-
-                Some(msg) = self.msg_rx.recv() => {
-                    match msg {
-                        Message::ResourcesAcquired { acquisition_duration, .. } => {
-                            self.metrics_recorder
-                                .resource_acquisition_completed(acquisition_duration, true);
-                        }
-                        Message::ResourceAcquisitionFailed { acquisition_duration, .. } => {
-                            self.metrics_recorder
-                                .resource_acquisition_completed(acquisition_duration, false);
-                        }
-                        Message::Finished { metrics, .. } => {
-                            self.metrics_recorder.batch_completed(&metrics);
-                        }
-                    }
-                    in_flight -= 1;
-                }
-            }
-        }
-
-        self.record_gauges();
-    }
-
     fn all_keys_idle(&self) -> bool {
         self.batch_queues.values().all(|q| q.is_idle())
     }
@@ -551,10 +494,17 @@ impl<P: Processor> Worker<P> {
                         // because every `Batcher` was dropped. Either way, shutdown carries on
                         // processing every batch, as requested.
                         None if self.shutting_down => self.items_drained = true,
-                        // Every `Batcher` has been dropped.
+                        // Every `Batcher` has been dropped. No special handling is needed: each
+                        // `add` borrows a `Batcher`, so every queued item has been cancelled, and
+                        // a normal shutdown drops them rather than processing them. It still
+                        // waits for work in progress.
                         None => {
-                            self.finish_in_flight().await;
-                            return;
+                            info!(
+                                "Every Batcher for '{}' has been dropped, shutting down",
+                                &self.batcher_name
+                            );
+                            self.shutting_down = true;
+                            self.items_drained = true;
                         }
                     }
                 }
@@ -815,6 +765,26 @@ mod test {
             worker.batch_queues.is_empty(),
             "should not queue the item, or create a queue for its key"
         );
+        assert_eq!(*num_cancelled.lock().unwrap(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn counts_items_queued_when_every_batcher_is_dropped_as_cancelled() {
+        let mut worker = new_worker();
+        worker.limits = Limits::builder().max_batch_size(2).build();
+        let num_cancelled = Arc::new(Mutex::new(0));
+        worker.metrics_recorder = Box::new(CancellationMetrics(Arc::clone(&num_cancelled)));
+
+        let (item, rx) = new_item("K1", "I1");
+        worker.add(item);
+        // Every caller is gone once every `Batcher` is, since `add` borrows one.
+        drop(rx);
+
+        // The worker's item channel has no senders, as if every `Batcher` had been dropped.
+        tokio::time::timeout(Duration::from_secs(1), worker.run())
+            .await
+            .expect("worker should exit");
+
         assert_eq!(*num_cancelled.lock().unwrap(), 1);
     }
 

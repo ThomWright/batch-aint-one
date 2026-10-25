@@ -25,8 +25,8 @@ use crate::{
 /// ## Drop
 ///
 /// When the last instance of a `Batcher` is dropped, nothing can still be waiting for an output,
-/// so the worker drops any batches which haven't started. Resource acquisition and processing
-/// already in progress run to completion, then the worker exits.
+/// so the worker drops every queued item. Resource acquisition and processing already in
+/// progress run to completion, then the worker exits.
 ///
 /// To process every batch first, call [`WorkerHandle::shut_down()`].
 #[derive(Debug)]
