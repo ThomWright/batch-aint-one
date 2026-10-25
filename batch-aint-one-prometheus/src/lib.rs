@@ -158,7 +158,7 @@ impl BatchMetrics {
         let queue_depth = IntGaugeVec::new(
             Opts::new(
                 "queue_depth",
-                "Total number of batches queued for processing",
+                "Deprecated, use queue_items. Total number of batches the queued items would fill",
             )
             .namespace(prefix),
             batcher_labels,
@@ -166,7 +166,7 @@ impl BatchMetrics {
         let queue_depth_max_per_key = IntGaugeVec::new(
             Opts::new(
                 "queue_depth_max_per_key",
-                "Deepest batch queue across any single key",
+                "Deprecated, use queue_items_max_per_key. Most batches the queued items would fill for any single key",
             )
             .namespace(prefix),
             batcher_labels,
@@ -610,6 +610,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn records_gauge_metrics() {
         let registry = Registry::new();
         let metrics = BatchMetrics::new(&registry).unwrap();

@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `batch_items_cancelled_total` counter, tracking `MetricsRecorder::items_cancelled`.
 - `BatchMetrics::with_gauge_recording`, to choose when batchers update the gauges, e.g. only on scrape with `GaugeRecording::OnDemand`.
 
+### Deprecated
+
+- The `batch_queue_depth` and `batch_queue_depth_max_per_key` gauges, in favour of `batch_queue_items` and `batch_queue_items_max_per_key`. They're still exported, and now count how many batches the queued items would fill.
+
 ## 0.2.1
 
 ### Added

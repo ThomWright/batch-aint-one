@@ -104,7 +104,7 @@ let families = registry.gather();
 | `batch_active_keys`                           | Gauge     | batcher          | Number of keys with active batch queues                          |
 | `batch_processing_concurrency`                | Gauge     | batcher          | Total number of batches currently processing                     |
 | `batch_processing_concurrency_max_per_key`    | Gauge     | batcher          | Highest batch processing concurrency across any single key       |
-| `batch_queue_depth`                           | Gauge     | batcher          | Total number of batches queued for processing                    |
-| `batch_queue_depth_max_per_key`               | Gauge     | batcher          | Deepest batch queue across any single key                        |
+| `batch_queue_depth`                           | Gauge     | batcher          | Deprecated: use `batch_queue_items`                              |
+| `batch_queue_depth_max_per_key`               | Gauge     | batcher          | Deprecated: use `batch_queue_items_max_per_key`                  |
 | `batch_queue_items`                           | Gauge     | batcher          | Total number of items queued for processing                      |
 | `batch_queue_items_max_per_key`               | Gauge     | batcher          | Highest number of items queued across any single key             |

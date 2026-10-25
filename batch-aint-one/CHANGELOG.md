@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 
 - `LimitsBuilder::max_batch_queue_size`, in favour of `max_key_queued_items`. It still limits the queue to `max_batch_queue_size * max_batch_size` items, unless `max_key_queued_items` is set.
+- `MetricsRecorder::queue_depth_changed`, in favour of `queue_items_changed`. Batches only exist once they're processing, so it's still called, with how many batches the queued items would fill.
 
 ### Fixed
 

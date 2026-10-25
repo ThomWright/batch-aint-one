@@ -429,6 +429,7 @@ impl<P: Processor> Worker<P> {
 
         self.metrics_recorder
             .processing_concurrency_changed(total_processing, max_processing);
+        #[allow(deprecated)]
         self.metrics_recorder
             .queue_depth_changed(total_queued, max_queued);
         self.metrics_recorder

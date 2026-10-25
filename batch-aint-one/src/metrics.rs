@@ -64,12 +64,10 @@ pub trait MetricsRecorder: Debug + Send + Sync + 'static {
     ///
     /// `max_per_key` is the deepest queue across any single key, useful for detecting
     /// saturation without per-key labels.
+    #[deprecated(note = "use `queue_items_changed`, which counts items")]
     fn queue_depth_changed(&self, _total: usize, _max_per_key: usize) {}
 
     /// Gauge: the total number of items queued for processing.
-    ///
-    /// Unlike [`queue_depth_changed`](Self::queue_depth_changed), which counts batches' worth of items, this
-    /// counts individual items, so it isn't affected by `max_batch_size`.
     ///
     /// `max_per_key` is the highest number of items queued across any single key, useful for
     /// detecting saturation without per-key labels.
