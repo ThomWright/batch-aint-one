@@ -30,6 +30,7 @@ pub struct BatchMetrics {
     items_received_total: IntCounterVec,
     channel_duration_seconds: HistogramVec,
     items_rejected_total: IntCounterVec,
+    items_cancelled_total: IntCounterVec,
     batches_completed_total: IntCounterVec,
     batch_size: HistogramVec,
     batch_processing_duration_seconds: HistogramVec,
@@ -76,6 +77,14 @@ impl BatchMetrics {
             Opts::new(
                 "items_rejected_total",
                 "Items rejected due to a full batch queue",
+            )
+            .namespace(prefix),
+            batcher_labels,
+        )?;
+        let items_cancelled_total = IntCounterVec::new(
+            Opts::new(
+                "items_cancelled_total",
+                "Items dropped unprocessed because their callers stopped waiting",
             )
             .namespace(prefix),
             batcher_labels,
@@ -179,6 +188,7 @@ impl BatchMetrics {
         registry.register(Box::new(items_received_total.clone()))?;
         registry.register(Box::new(channel_duration_seconds.clone()))?;
         registry.register(Box::new(items_rejected_total.clone()))?;
+        registry.register(Box::new(items_cancelled_total.clone()))?;
         registry.register(Box::new(batches_completed_total.clone()))?;
         registry.register(Box::new(batch_size.clone()))?;
         registry.register(Box::new(batch_processing_duration_seconds.clone()))?;
@@ -197,6 +207,7 @@ impl BatchMetrics {
             items_received_total,
             channel_duration_seconds,
             items_rejected_total,
+            items_cancelled_total,
             batches_completed_total,
             batch_size,
             batch_processing_duration_seconds,
@@ -273,6 +284,13 @@ impl MetricsRecorder for BatchMetricsRecorder {
             .items_rejected_total
             .with_label_values(&[&self.batcher_name])
             .inc();
+    }
+
+    fn items_cancelled(&self, count: usize) {
+        self.metrics
+            .items_cancelled_total
+            .with_label_values(&[&self.batcher_name])
+            .inc_by(count as u64);
     }
 
     fn batch_completed(&self, metrics: &BatchStats) {
@@ -482,6 +500,26 @@ mod tests {
                 &[("batcher", "test")]
             ),
             1.0,
+        );
+    }
+
+    #[test]
+    fn records_items_cancelled() {
+        let registry = Registry::new();
+        let metrics = BatchMetrics::new(&registry).unwrap();
+        let recorder = metrics.recorder("test");
+
+        recorder.items_cancelled(2);
+        recorder.items_cancelled(3);
+
+        let families = registry.gather();
+        assert_eq!(
+            get_counter_value(
+                &families,
+                "batch_items_cancelled_total",
+                &[("batcher", "test")]
+            ),
+            5.0,
         );
     }
 

@@ -94,6 +94,7 @@ let families = registry.gather();
 | `batch_items_received_total`                  | Counter   | batcher          | Items received by the batcher                                    |
 | `batch_channel_duration_seconds`              | Histogram | batcher          | Time from an item being submitted until the worker picked it up  |
 | `batch_items_rejected_total`                  | Counter   | batcher          | Items rejected due to a full batch queue                         |
+| `batch_items_cancelled_total`                 | Counter   | batcher          | Items dropped unprocessed because their callers stopped waiting  |
 | `batch_batches_completed_total`               | Counter   | batcher, success | Batches that finished processing                                 |
 | `batch_batch_size`                            | Histogram | batcher          | Number of items per batch                                        |
 | `batch_batch_processing_duration_seconds`     | Histogram | batcher, success | Time taken to process a batch                                    |

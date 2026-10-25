@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `batch_items_cancelled_total` counter, tracking `MetricsRecorder::items_cancelled`.
 - `BatchMetrics::with_gauge_recording`, to choose when batchers update the gauges, e.g. only on scrape with `GaugeRecording::OnDemand`.
 
 ## 0.2.1
