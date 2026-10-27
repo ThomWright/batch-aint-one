@@ -143,30 +143,57 @@ async fn items_cancelled_during_acquisition_are_not_processed() {
 async fn cancelled_items_do_not_count_against_the_queue_limit() {
     tokio::time::pause();
 
-    let processor = RecordingProcessor::default();
+    let processor = RecordingProcessor::with_acquisition(Duration::from_millis(100));
     let batcher = batcher(
         &processor,
         Limits::builder()
-            .max_batch_size(2)
+            .max_batch_size(1)
             .max_key_concurrency(1)
             .max_key_queued_items(2)
             .build(),
-        BatchingPolicy::Size,
+        BatchingPolicy::Immediate,
+    );
+
+    // Item 1's resources are being acquired, so item 2 waits in the queue, which is now full.
+    let first = add(&batcher, "1").await;
+    let second = add(&batcher, "2").await;
+    cancel(second).await;
+    let third = add(&batcher, "3").await;
+
+    assert_eq!(first.await.unwrap().unwrap(), "1");
+    assert_eq!(third.await.unwrap().unwrap(), "3");
+    assert_eq!(processor.batches(), [["1"], ["3"]]);
+}
+
+/// Given an item is waiting for concurrency behind one whose caller stopped waiting
+/// When a batch finishes, freeing up concurrency
+/// Then the item should be processed
+#[tokio::test]
+async fn items_behind_a_cancelled_item_are_processed() {
+    tokio::time::pause();
+
+    let processor = RecordingProcessor::with_acquisition(Duration::from_millis(100));
+    let batcher = batcher(
+        &processor,
+        Limits::builder()
+            .max_batch_size(1)
+            .max_key_concurrency(1)
+            .max_key_queued_items(3)
+            .build(),
+        BatchingPolicy::Immediate,
     );
 
     let first = add(&batcher, "1").await;
-    cancel(first).await;
     let second = add(&batcher, "2").await;
     let third = add(&batcher, "3").await;
+    cancel(second).await;
 
-    // If the cancelled item had taken a place in the queue, item 3 would be rejected, or wait
-    // forever for a full batch.
+    assert_eq!(first.await.unwrap().unwrap(), "1");
     let third = tokio::time::timeout(Duration::from_secs(1), third)
         .await
         .expect("item 3 should be processed");
     assert_eq!(third.unwrap().unwrap(), "3");
-    assert_eq!(second.await.unwrap().unwrap(), "2");
-    assert_eq!(processor.batches(), [["2", "3"]]);
+    assert_eq!(processor.batches(), [["1"], ["3"]]);
 }
 
 /// Given we use a Duration strategy

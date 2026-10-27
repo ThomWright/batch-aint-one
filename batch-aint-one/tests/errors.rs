@@ -13,6 +13,19 @@ fn inner_error_reported_as_source() {
     assert_eq!(source.to_string(), "underlying error");
 }
 
+#[test]
+fn inner_returns_the_processors_error() {
+    assert_matches!(
+        BatchError::BatchFailed("process".to_string()).inner(),
+        Ok(e) if e == "process"
+    );
+    assert_matches!(
+        BatchError::ResourceAcquisitionFailed("acquire".to_string()).inner(),
+        Ok(e) if e == "acquire"
+    );
+    assert_matches!(BatchError::<String>::Panic.inner(), Err(BatchError::Panic));
+}
+
 /// A processor that returns fewer outputs than inputs.
 #[derive(Debug, Clone)]
 struct WrongOutputCountProcessor;

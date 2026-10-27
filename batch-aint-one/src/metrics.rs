@@ -406,6 +406,47 @@ mod tests {
         assert_eq!(*inner.active_keys.last().unwrap(), 0);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn gauges_sum_and_max_across_keys() {
+        let (state, factory) = test_metrics_with(GaugeRecording::OnDemand);
+        let batcher = Batcher::builder()
+            .name("test")
+            .processor(SimpleProcessor {
+                process_delay: Duration::from_millis(100),
+            })
+            .limits(
+                Limits::builder()
+                    .max_batch_size(2)
+                    .max_key_concurrency(1)
+                    .max_key_queued_items(5)
+                    .build(),
+            )
+            .batching_policy(BatchingPolicy::Size)
+            .metrics(factory)
+            .build();
+
+        // Each key's first two items are processed as a batch, and the rest are queued: 3 for
+        // "A" and 1 for "B".
+        for (key, items) in [("A", 5), ("B", 3)] {
+            for i in 0..items {
+                let batcher = batcher.clone();
+                tokio::spawn(async move { batcher.add(key.to_string(), i.to_string()).await });
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+
+        batcher.worker_handle().record_gauges().await;
+
+        let inner = state.lock().unwrap();
+        assert_eq!(inner.processing_concurrency, (2, 1));
+        assert_eq!(
+            inner.queue_depth,
+            (3, 2),
+            "batches the queued items would fill"
+        );
+        assert_eq!(inner.queue_items, (4, 3));
+    }
+
     fn batcher_with(factory: Box<dyn MetricsRecorderFactory>) -> Batcher<SimpleProcessor> {
         Batcher::builder()
             .name("test")
