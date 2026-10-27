@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## 0.3.0
+
 ### Added
 
 - `batch_items_cancelled_total` counter, tracking `MetricsRecorder::items_cancelled`.
