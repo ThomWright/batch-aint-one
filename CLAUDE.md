@@ -19,7 +19,7 @@ These mirror CI (`.github/workflows/ci.yaml`):
 ```sh
 cargo build
 cargo doc
-cargo test -- --test-threads 1                     # CI runs tests single-threaded
+cargo test
 cargo fmt --all -- --check
 cargo clippy --all-features -- --deny warnings
 ```
