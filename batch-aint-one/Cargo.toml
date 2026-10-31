@@ -30,6 +30,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 assert_matches = "1.5.0"
+criterion = { version = "0.8.2", features = ["async_tokio"] }
 doc-comment = "0.3.3"
 futures = "0.3.29"
 rand = "0.9.2"
@@ -38,3 +39,7 @@ tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 tokio-test = "0.4.3"
 tracing-capture = "0.2.0-beta.1"
 tracing-subscriber = "0.3.18"
+
+[[bench]]
+name = "batcher"
+harness = false
