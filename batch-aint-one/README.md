@@ -129,6 +129,12 @@ fn example() {
 
 This depends on the batching policy used. `BatchingPolicy::Immediate` optimises for latency and processes items as soon as possible.
 
+## Minimum supported Rust version
+
+The minimum supported Rust version is declared as `rust-version` in `Cargo.toml`.
+
+It may be raised to any stable release at least 6 months old, when a language feature or dependency needs it. Raising it is not treated as a breaking change, and is listed in the changelog. Cargo's MSRV-aware resolver, the default from edition 2024, picks the newest release of this crate that supports your toolchain.
+
 ## Roadmap
 
 - [x] Tests

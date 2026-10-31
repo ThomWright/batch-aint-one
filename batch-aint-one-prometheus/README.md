@@ -108,3 +108,7 @@ let families = registry.gather();
 | `batch_queue_depth_max_per_key`               | Gauge     | batcher          | Deprecated: use `batch_queue_items_max_per_key`                  |
 | `batch_queue_items`                           | Gauge     | batcher          | Total number of items queued for processing                      |
 | `batch_queue_items_max_per_key`               | Gauge     | batcher          | Highest number of items queued across any single key             |
+
+## Minimum supported Rust version
+
+The same as `batch-aint-one`, following [its policy](https://github.com/ThomWright/batch-aint-one/blob/main/batch-aint-one/README.md#minimum-supported-rust-version).

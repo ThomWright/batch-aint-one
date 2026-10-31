@@ -35,7 +35,7 @@ cargo test -p batcher-harness -- --ignored       # property-test soak run, 10,00
 cargo test -p simulator -- --ignored test_longer_simulation   # long run, writes plots to simulator/tests/output (needs gnuplot)
 ```
 
-The minimum supported Rust version is 1.87.0 (CI's `pinned` build); avoid newer language/std features.
+The minimum supported Rust version is 1.87.0 (`rust-version`, and CI's `pinned` builds); avoid newer language/std features. Per the policy in `batch-aint-one/README.md`, it may be raised to any stable release at least 6 months old when a feature or dependency needs it: update both, and note it in each crate's changelog.
 
 ## Architecture (core crate)
 

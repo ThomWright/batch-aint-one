@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A minimum supported Rust version policy, in the README.
+
 ## 0.3.0
 
 ### Added
