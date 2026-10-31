@@ -6,6 +6,7 @@ use tracing::{Level, Span, span};
 
 use crate::{
     batch::BatchItem,
+    cancellation::{Cancellations, ResultReceiver},
     error::BatchResult,
     limits::Limits,
     metrics::{MetricsRecorderFactory, NoopMetricsRecorder},
@@ -34,6 +35,7 @@ pub struct Batcher<P: Processor> {
     name: String,
     worker: Arc<WorkerHandle>,
     item_tx: mpsc::Sender<BatchItem<P>>,
+    cancellations: Arc<Cancellations>,
 }
 
 #[bon]
@@ -58,18 +60,21 @@ impl<P: Processor> Batcher<P> {
 
         let batching_policy = batching_policy.normalise(limits);
 
+        let cancellations = Arc::default();
         let (handle, item_tx) = Worker::spawn(
             name.clone(),
             processor,
             limits,
             batching_policy,
             metrics_recorder,
+            Arc::clone(&cancellations),
         );
 
         Self {
             name,
             worker: Arc::new(handle),
             item_tx,
+            cancellations,
         }
     }
 
@@ -100,7 +105,7 @@ impl<P: Processor> Batcher<P> {
             })
             .await?;
 
-        let (output, batch_span) = rx.await?;
+        let (output, batch_span) = ResultReceiver::new(rx, &self.cancellations).recv().await?;
 
         {
             let link_back_span = span!(Level::INFO, "batch finished");
@@ -143,6 +148,7 @@ impl<P: Processor> Clone for Batcher<P> {
             name: self.name.clone(),
             worker: self.worker.clone(),
             item_tx: self.item_tx.clone(),
+            cancellations: Arc::clone(&self.cancellations),
         }
     }
 }

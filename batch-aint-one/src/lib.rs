@@ -36,6 +36,7 @@ macro_rules! soft_assert {
 mod batch;
 mod batch_queue;
 mod batcher;
+mod cancellation;
 pub mod error;
 mod limits;
 pub mod metrics;

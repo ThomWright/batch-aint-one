@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A minimum supported Rust version policy, in the README.
 
+### Changed
+
+- Rejecting an item because its key's queue is full no longer takes time proportional to the queue's length, unless a caller has stopped waiting since the queue was last checked. With the default limits, a rejection took about 8 times as long as with a short queue, which slowed the worker most when it was already overloaded.
+
 ## 0.16.0
 
 ### Added

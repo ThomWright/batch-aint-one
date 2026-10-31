@@ -30,6 +30,8 @@ pub(crate) struct BatchQueue<P: Processor> {
     acquiring: usize,
     /// The number of batches with this key that are processing.
     processing: usize,
+    /// The [cancellation count](crate::cancellation::Cancellations) when cancelled items were last removed.
+    cancellations_removed: usize,
 }
 
 impl<P: Processor> BatchQueue<P> {
@@ -41,6 +43,7 @@ impl<P: Processor> BatchQueue<P> {
             limits,
             acquiring: 0,
             processing: 0,
+            cancellations_removed: 0,
         }
     }
 
@@ -60,7 +63,15 @@ impl<P: Processor> BatchQueue<P> {
     }
 
     /// Remove every cancelled item, returning how many were removed.
-    pub(crate) fn remove_cancelled(&mut self) -> usize {
+    ///
+    /// `cancellations` is the [cancellation count](crate::cancellation::Cancellations), read before calling. If it
+    /// hasn't changed since the last call, nothing can have been cancelled, so the queue isn't
+    /// checked.
+    pub(crate) fn remove_cancelled(&mut self, cancellations: usize) -> usize {
+        if cancellations == self.cancellations_removed {
+            return 0;
+        }
+        self.cancellations_removed = cancellations;
         let len = self.items.len();
         self.items.retain(|item| !item.is_cancelled());
         len - self.items.len()
@@ -218,6 +229,7 @@ impl<P: Processor> Debug for BatchQueue<P> {
             limits,
             acquiring,
             processing,
+            cancellations_removed,
         } = self;
         f.debug_struct("BatchQueue")
             .field("batcher_name", batcher_name)
@@ -225,6 +237,7 @@ impl<P: Processor> Debug for BatchQueue<P> {
             .field("items_len", &items.len())
             .field("acquiring", &acquiring)
             .field("processing", &processing)
+            .field("cancellations_removed", &cancellations_removed)
             .field("limits", limits)
             .finish()
     }
@@ -404,7 +417,7 @@ mod tests {
             queue.push(item);
         }
 
-        assert_eq!(queue.remove_cancelled(), 2);
+        assert_eq!(queue.remove_cancelled(1), 2);
         assert_eq!(queue.queued_items(), 2);
     }
 

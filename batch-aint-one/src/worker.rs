@@ -11,6 +11,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Debug,
+    sync::Arc,
     time::Duration,
 };
 
@@ -24,6 +25,7 @@ use crate::{
     BatchError,
     batch::BatchItem,
     batch_queue::BatchQueue,
+    cancellation::Cancellations,
     limits::Limits,
     metrics::{BatchStats, GaugeRecording, MetricsRecorder},
     policies::{BatchingPolicy, Event},
@@ -65,6 +67,7 @@ pub(crate) struct Worker<P: Processor> {
     /// An entry is only a reminder to check its key, so it can be stale: the items it was for may
     /// have been processed already, or the queue removed. Checking then starts nothing.
     wake_ups: BTreeMap<Instant, Vec<P::Key>>,
+    cancellations: Arc<Cancellations>,
 
     metrics_recorder: Box<dyn MetricsRecorder>,
     gauge_recording: GaugeRecording,
@@ -145,6 +148,7 @@ impl<P: Processor> Worker<P> {
         limits: Limits,
         batching_policy: BatchingPolicy,
         metrics_recorder: Box<dyn MetricsRecorder>,
+        cancellations: Arc<Cancellations>,
     ) -> (WorkerHandle, mpsc::Sender<BatchItem<P>>) {
         let (item_tx, item_rx) = mpsc::channel(limits.max_items_awaiting_worker);
         // Unbounded so spawned tasks never wait to report back. Only internal tasks send on this
@@ -187,6 +191,7 @@ impl<P: Processor> Worker<P> {
 
             batch_queues: HashMap::new(),
             wake_ups: BTreeMap::new(),
+            cancellations,
 
             metrics_recorder,
             gauge_recording,
@@ -220,7 +225,9 @@ impl<P: Processor> Worker<P> {
         // Cancelled items don't count against the queue limit. Removing them can only make room,
         // so it's only worth doing when the queue looks full.
         let mut rejection = self.batching_policy.should_reject(&batch_queue.state());
-        if rejection.is_some() && Self::remove_cancelled(batch_queue, &*self.metrics_recorder) {
+        if rejection.is_some()
+            && Self::remove_cancelled(batch_queue, &self.cancellations, &*self.metrics_recorder)
+        {
             rejection = self.batching_policy.should_reject(&batch_queue.state());
         }
 
@@ -259,9 +266,10 @@ impl<P: Processor> Worker<P> {
     /// were any.
     fn remove_cancelled(
         batch_queue: &mut BatchQueue<P>,
+        cancellations: &Cancellations,
         metrics_recorder: &dyn MetricsRecorder,
     ) -> bool {
-        let num_cancelled = batch_queue.remove_cancelled();
+        let num_cancelled = batch_queue.remove_cancelled(cancellations.count());
         Self::record_cancelled(metrics_recorder, num_cancelled);
         num_cancelled > 0
     }
@@ -292,7 +300,7 @@ impl<P: Processor> Worker<P> {
             // different to one cancelled during acquisition.
             if !removed_cancelled {
                 removed_cancelled = true;
-                if Self::remove_cancelled(batch_queue, &*self.metrics_recorder)
+                if Self::remove_cancelled(batch_queue, &self.cancellations, &*self.metrics_recorder)
                     && !self.batching_policy.should_start_acquiring(
                         event,
                         &batch_queue.state(),
@@ -449,7 +457,7 @@ impl<P: Processor> Worker<P> {
     /// concurrency limits, regardless of the batching policy.
     fn flush(&mut self) {
         for batch_queue in self.batch_queues.values_mut() {
-            Self::remove_cancelled(batch_queue, &*self.metrics_recorder);
+            Self::remove_cancelled(batch_queue, &self.cancellations, &*self.metrics_recorder);
             while batch_queue.state().can_start_acquiring() {
                 batch_queue.start_acquiring(self.processor.clone(), self.msg_tx.clone());
             }
@@ -667,6 +675,7 @@ mod test {
             batching_policy: BatchingPolicy::Size,
             batch_queues: HashMap::new(),
             wake_ups: BTreeMap::new(),
+            cancellations: Arc::default(),
             metrics_recorder: Box::new(crate::metrics::NoopMetricsRecorder),
             gauge_recording: GaugeRecording::OnDemand,
             gauge_interval: None,
@@ -828,6 +837,7 @@ mod test {
             Limits::builder().max_items_awaiting_worker(5).build(),
             BatchingPolicy::Size,
             Box::new(crate::metrics::NoopMetricsRecorder),
+            Arc::default(),
         );
 
         assert_eq!(item_tx.max_capacity(), 5);
@@ -841,6 +851,7 @@ mod test {
             Limits::builder().max_batch_size(2).build(),
             BatchingPolicy::Size,
             Box::new(crate::metrics::NoopMetricsRecorder),
+            Arc::default(),
         );
 
         let rx1 = {
