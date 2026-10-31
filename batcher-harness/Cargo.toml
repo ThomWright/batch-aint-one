@@ -1,0 +1,15 @@
+[package]
+name = "batcher-harness"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+batch-aint-one = { path = "../batch-aint-one" }
+futures = "0.3.29"
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "test-util"] }

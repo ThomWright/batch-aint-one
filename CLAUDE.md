@@ -10,6 +10,7 @@ A Rust workspace for batching items from concurrent async requests into a single
 | --- | --- |
 | `batch-aint-one` | Core library, published to crates.io |
 | `batch-aint-one-prometheus` | `MetricsRecorderFactory` implementation for Prometheus, published separately |
+| `batcher-harness` | Unpublished property-test harness for the core crate: generates a configuration and a sequence of operations, runs them against a real `Batcher`, and checks its documented behaviour after every step |
 | `simulator` | Unpublished, WIP tool for comparing policies/limits under simulated load (throughput, latency, resource usage) |
 
 ## Commands
@@ -30,6 +31,7 @@ Narrower runs:
 cargo test -p batch-aint-one --lib worker::test     # unit tests in a module
 cargo test -p batch-aint-one --test tests strategies::balanced   # integration tests
 cargo test -p batch-aint-one --doc                  # includes README.md example via doc-comment
+cargo test -p batcher-harness -- --ignored       # property-test soak run, 10,000 cases, ~8 minutes
 cargo test -p simulator -- --ignored test_longer_simulation   # long run, writes plots to simulator/tests/output (needs gnuplot)
 ```
 

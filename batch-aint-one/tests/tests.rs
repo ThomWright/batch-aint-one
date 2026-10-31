@@ -1,7 +1,6 @@
 mod cancellation;
 mod errors;
 mod panic;
-mod properties;
 mod resources;
 mod shutdown;
 mod strategies;

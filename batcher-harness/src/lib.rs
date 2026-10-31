@@ -1,14 +1,15 @@
-//! Property tests of the whole batcher.
+//! A harness for property tests of the whole batcher.
 //!
-//! Each case generates a configuration and a sequence of operations: adds, callers giving up,
-//! resource acquisitions and batches finishing (or failing, or panicking), time passing, and
-//! shutdown. The test processor holds every call until the sequence releases it, so the sequence
-//! decides the order things finish in. After every step, the harness checks that what the batcher
-//! did is consistent with its documented behaviour.
+//! Each case is a configuration and a sequence of operations: adds, callers giving up, resource
+//! acquisitions and batches finishing (or failing, or panicking), time passing, and shutdown.
+//! [`run`] runs one case against a real [`Batcher`]. The test processor holds every call until
+//! the sequence releases it, so the sequence decides the order things finish in. After every
+//! step, the harness checks that what the batcher did is consistent with its documented
+//! behaviour, and panics if not.
 //!
 //! It doesn't predict which batches form. It tracks what it did, e.g. which items are still
 //! queued, and checks invariants against that: limits, results, and that a batch starts acquiring
-//! resources exactly when the policy's rule allows it (see [`Harness::policy_allows`]).
+//! resources exactly when the policy's rule allows it (see `Harness::policy_allows`).
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -22,7 +23,7 @@ use batch_aint_one::{
     error::{BatchError, BatchResult, ConcurrencyStatus, RejectionReason},
 };
 use futures::FutureExt;
-use proptest::{prelude::*, test_runner::FileFailurePersistence};
+use proptest::prelude::*;
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -34,37 +35,13 @@ type Input = u64;
 
 const SETTLE_YIELDS: usize = 100;
 
-proptest! {
-    #![proptest_config(proptest_config(256))]
-
-    #[test]
-    fn batcher_behaves_as_documented(config in config(), ops in prop::collection::vec(op(), 0..50)) {
-        run(config, ops);
-    }
-}
-
-/// A longer run, for soak testing locally.
-#[test]
-#[ignore]
-fn batcher_behaves_as_documented_for_longer_sequences() {
-    proptest!(proptest_config(10_000), |(
-        config in config(),
-        ops in prop::collection::vec(op(), 0..500),
-    )| {
-        run(config, ops);
-    });
-}
-
-fn proptest_config(cases: u32) -> ProptestConfig {
-    ProptestConfig {
-        cases,
-        // The default looks for the crate's `lib.rs`, which integration tests don't have.
-        failure_persistence: Some(Box::new(FileFailurePersistence::WithSource("regressions"))),
-        ..ProptestConfig::default()
-    }
-}
-
-fn run(config: Config, ops: Vec<Op>) {
+/// Run one case: build a batcher from `config`, apply `ops` in order, then shut down and release
+/// every held call.
+///
+/// # Panics
+///
+/// If the batcher does anything inconsistent with its documented behaviour.
+pub fn run(config: Config, ops: Vec<Op>) {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
@@ -80,8 +57,9 @@ fn run(config: Config, ops: Vec<Op>) {
         });
 }
 
+/// The batcher's configuration for one case.
 #[derive(Debug, Clone, Copy)]
-struct Config {
+pub struct Config {
     policy: Policy,
     max_batch_size: usize,
     max_key_concurrency: usize,
@@ -124,7 +102,8 @@ impl Policy {
     }
 }
 
-fn config() -> impl Strategy<Value = Config> {
+/// Generates configurations for [`run`].
+pub fn config() -> impl Strategy<Value = Config> {
     let policy = prop_oneof![
         Just(Policy::Immediate),
         Just(Policy::Size),
@@ -146,29 +125,36 @@ fn config() -> impl Strategy<Value = Config> {
     )
 }
 
+/// One step of a case.
 #[derive(Debug, Clone, Copy)]
-enum Op {
+pub enum Op {
     /// Add an item for a key, as an index into the configured keys.
     Add(usize),
     /// Stop waiting for a pending add, as an index into them, oldest first.
     GiveUp(usize),
     /// Let a held processor call return, as an index into them, oldest first.
     Release(usize, Outcome),
+    /// Let time pass.
     Advance(Duration),
+    /// Shut the worker down. Later adds are still sent.
     ShutDown,
 }
 
 /// How a held processor call returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Outcome {
+pub enum Outcome {
+    /// Return successfully.
     Ok,
+    /// Return an error.
     Err,
+    /// Panic.
     Panic,
     /// For `process()`, return one output too many. For `acquire_resources()`, the same as `Ok`.
     WrongOutputs,
 }
 
-fn op() -> impl Strategy<Value = Op> {
+/// Generates operations for [`run`].
+pub fn op() -> impl Strategy<Value = Op> {
     let outcome = prop_oneof![
         6 => Just(Outcome::Ok),
         1 => Just(Outcome::Err),
