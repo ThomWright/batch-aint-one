@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{Level, Span, span};
 
 use crate::{
+    BatchError,
     batch::BatchItem,
     cancellation::{Cancellations, ResultReceiver},
     error::BatchResult,
@@ -103,9 +104,13 @@ impl<P: Processor> Batcher<P> {
                 tx,
                 requesting_span,
             })
-            .await?;
+            .await
+            .map_err(|_| BatchError::Tx)?;
 
-        let (output, batch_span) = ResultReceiver::new(rx, &self.cancellations).recv().await?;
+        let (output, batch_span) = ResultReceiver::new(rx, &self.cancellations)
+            .recv()
+            .await
+            .map_err(|_| BatchError::Rx)?;
 
         {
             let link_back_span = span!(Level::INFO, "batch finished");

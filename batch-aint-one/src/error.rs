@@ -3,7 +3,6 @@
 use std::fmt::Display;
 
 use thiserror::Error;
-use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 
 /// An error that occurred while trying to batch.
 #[derive(Error, Debug, Clone)]
@@ -18,8 +17,8 @@ pub enum BatchError<E: Display> {
     /// Something went wrong while waiting for the output of a batch.
     ///
     /// Unrecoverable.
-    #[error("Error while waiting for batch results: channel closed. {0}")]
-    Rx(#[from] RecvError),
+    #[error("Error while waiting for batch results: channel closed")]
+    Rx,
 
     /// The batch queue for this key is full, so the item was rejected.
     ///
@@ -99,12 +98,6 @@ impl Display for RejectionReason {
 
 /// Result type for batch operations.
 pub type BatchResult<T, E> = std::result::Result<T, BatchError<E>>;
-
-impl<T, E: Display> From<SendError<T>> for BatchError<E> {
-    fn from(_tx_err: SendError<T>) -> Self {
-        BatchError::Tx
-    }
-}
 
 impl<E> BatchError<E>
 where
